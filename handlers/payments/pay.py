@@ -241,7 +241,7 @@ async def balance_history_handler(callback_query: CallbackQuery, session: Any):
 
     if records:
         language_code = getattr(callback_query.from_user, "language_code", None)
-        history_text = f"{BALANCE_HISTORY_HEADER}\n\n<blockquote>"
+        entries = []
         spend_labels = {
             "created": "покупка подписки",
             "renewed": "продление подписки",
@@ -254,21 +254,25 @@ async def balance_history_handler(callback_query: CallbackQuery, session: Any):
                 formatted_amount = await format_for_user(
                     session, callback_query.from_user.id, amount_rub, language_code
                 )
-                history_text += BALANCE_HISTORY_GIFT_LINE.format(amount=formatted_amount, date=date) + "\n\n"
+                entries.append(BALANCE_HISTORY_GIFT_LINE.format(amount=formatted_amount, date=date))
             elif record.kind == "spend":
                 formatted_amount = await format_for_user(
                     session, callback_query.from_user.id, abs(amount_rub), language_code
                 )
                 label = spend_labels.get(record.system, "списание")
-                history_text += f"💸 Списано: {formatted_amount} | {label}\nДата: {date}\n\n"
+                entries.append(f"💸 Списано: {formatted_amount} | {label}\nДата: {date}")
             else:
                 formatted_amount = await format_for_user(
                     session, callback_query.from_user.id, amount_rub, language_code
                 )
-                history_text += (
-                    f"Сумма: {formatted_amount}\nОплата: {record.system}\nСтатус: {record.status}\nДата: {date}\n\n"
+                entries.append(
+                    f"Сумма: {formatted_amount}\nОплата: {record.system}\nСтатус: {record.status}\nДата: {date}"
                 )
-        history_text += "</blockquote>"
+        # Каждая операция — своя цитата, между ними перенос: одна цитата на все
+        # операции читается сплошным блоком.
+        history_text = f"{BALANCE_HISTORY_HEADER}\n\n" + "\n".join(
+            f"<blockquote>{entry.strip()}</blockquote>" for entry in entries
+        )
     else:
         history_text = "❌ У вас пока нет операций с балансом."
 
