@@ -6,6 +6,7 @@ from services.payments.overpay.webhook import overpay_webhook
 from services.payments.paritypay.webhook import paritypay_webhook
 from services.payments.platega.webhook import platega_webhook
 from services.payments.wata.webhook import wata_webhook
+from services.remnawave_events.webhook import make_handler as make_remnawave_handler
 from utils.modules_loader import load_module_webhooks
 
 
@@ -15,6 +16,7 @@ WATA_WEBHOOK_PATH = "/wata/webhook"
 PARITYPAY_WEBHOOK_PATH = "/paritypay/webhook"
 PLATEGA_WEBHOOK_PATH = "/platega/webhook"
 OVERPAY_WEBHOOK_PATH = "/overpay/webhook"
+REMNAWAVE_WEBHOOK_PATH_DEFAULT = "/remnawave/webhook"
 
 
 async def register_web_routes(router: UrlDispatcher) -> None:
@@ -24,6 +26,17 @@ async def register_web_routes(router: UrlDispatcher) -> None:
     router.add_post(PARITYPAY_WEBHOOK_PATH, paritypay_webhook)
     router.add_post(PLATEGA_WEBHOOK_PATH, platega_webhook)
     router.add_post(OVERPAY_WEBHOOK_PATH, overpay_webhook)
+
+    # Настройки необязательные: в конфиге из шаблона их может не быть.
+    import settings.config as config
+
+    rw_secret = getattr(config, "REMNAWAVE_WEBHOOK_SECRET", "") or ""
+    rw_path = getattr(config, "REMNAWAVE_WEBHOOK_PATH", "") or REMNAWAVE_WEBHOOK_PATH_DEFAULT
+    if rw_secret:
+        router.add_post(rw_path, make_remnawave_handler(rw_secret))
+        print(f"[Web] Зарегистрирован приёмник событий панели: {rw_path}")
+    else:
+        print("[Web] REMNAWAVE_WEBHOOK_SECRET не задан — приёмник событий панели выключен")
 
     try:
         module_webhooks = load_module_webhooks()
