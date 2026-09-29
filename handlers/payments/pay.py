@@ -15,8 +15,6 @@ from database.access.resolution import resolve_user_optional
 from database.models import User
 from database.payments import get_balance_activity
 from handlers.payments.currency_flow import build_currency_choice_kb
-from handlers.payments.stars.handlers import process_callback_pay_stars
-from handlers.payments.tribute.handlers import process_callback_pay_tribute
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.hooks import run_hooks
 from services.payments.currency_rates import format_for_user
@@ -155,6 +153,8 @@ async def _build_pay_menu_for_currency(currency: str) -> InlineKeyboardBuilder:
 async def handle_pay_currency(callback_query: CallbackQuery, state: FSMContext, session: AsyncSession):
     currency = callback_query.data.split("|")[1]
     if currency == "STARS":
+        from handlers.payments.stars.handlers import process_callback_pay_stars
+
         return await process_callback_pay_stars(callback_query, state, session)
 
     base_builder = await _build_pay_menu_for_currency(currency)
@@ -304,4 +304,6 @@ async def back_to_pay(callback_query: CallbackQuery, state: FSMContext, session:
 
 @router.callback_query(F.data == "pay_tribute")
 async def handle_pay_tribute(callback_query: CallbackQuery, state: FSMContext, session: AsyncSession):
+    from handlers.payments.tribute.handlers import process_callback_pay_tribute
+
     await process_callback_pay_tribute(callback_query, state, session)
