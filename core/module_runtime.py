@@ -15,7 +15,7 @@
 
     from core import module_runtime as rt
 
-    rt.register_web("/devices/webhook", handler)            # путь не меняется между перезагрузками
+    rt.register_web("/example/webhook", handler)            # путь не меняется между перезагрузками
     rt.add_middleware(MyMiddleware(), observer="callback_query")
     rt.spawn(poll_forever())                                  # отменится при выгрузке
     rt.on_unload(lambda: setattr(core_mod, "fn", original))   # откат подмены

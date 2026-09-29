@@ -25,20 +25,20 @@ def make_handler(secret: str):
     async def remnawave_webhook(request: web.Request) -> web.Response:
         raw = await request.read()
         if not signature_valid(raw, request.headers.get(SIGNATURE_HEADER), secret):
-            logger.warning("[RW_EVENTS] неверная подпись от {}", request.remote)
+            logger.warning("[RemnawaveWebhook] неверная подпись от {}", request.remote)
             return web.Response(status=403)
 
         try:
             payload = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
-            logger.warning("[RW_EVENTS] тело не JSON, {} байт", len(raw))
+            logger.warning("[RemnawaveWebhook] тело не JSON, {} байт", len(raw))
             return web.Response(status=200)
         if not isinstance(payload, dict):
             return web.Response(status=200)
 
         event = extract_event(payload)
         if not event:
-            logger.info("[RW_EVENTS] событие без имени, пропущено")
+            logger.info("[RemnawaveWebhook] событие без имени, пропущено")
             return web.Response(status=200)
 
         task = asyncio.create_task(run_hooks(HOOK_NAME, event=event, data=extract_data(payload), payload=payload))
