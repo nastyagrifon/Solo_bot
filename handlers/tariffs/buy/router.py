@@ -9,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database import get_tariff_by_id
 from database.notifications import check_cold_lead_discount, check_hot_lead_discount
 from handlers.utils import edit_or_send_message, safe_answer_callback
+from hooks.hooks import run_hooks
 from hooks.processors import process_check_discount_validity
 from logger import logger
 from services.tariffs.cooldown import format_cooldown_left, get_tariff_cooldown_remaining
@@ -252,13 +253,23 @@ async def handle_user_config_confirm(callback: CallbackQuery, state: FSMContext,
     сроки, цена и перенос опций считаются там, а не здесь.
     """
     tg_id = callback.from_user.id
+    tariff_id = int(callback.data.split("|", 1)[1])
     logger.info(f"[TARIFF_CFG] handle_user_config_confirm: tg_id={tg_id}")
+
+    # Точка для модулей: до этого им приходилось перехватывать нажатие
+    # целиком. Хук, вернувший {"handled": True}, забирает покупку себе;
+    # сбой хука покупку не ломает — run_hooks его глотает и пишет в лог.
+    results = await run_hooks(
+        "purchase_confirm", callback=callback, state=state, session=session, tg_id=tg_id, tariff_id=tariff_id
+    )
+    if any(isinstance(r, dict) and r.get("handled") for r in results):
+        logger.info(f"[TARIFF_CFG] покупку забрал модуль: tg_id={tg_id} tariff_id={tariff_id}")
+        return
 
     trial = await _active_trial_key(session, tg_id)
     if trial:
         from handlers.keys.renew.router import handle_renew_config_confirm
 
-        tariff_id = int(callback.data.split("|", 1)[1])
         logger.info(f"[TARIFF_CFG] пробный ключ продлевается вместо второго: tg_id={tg_id} tariff_id={tariff_id}")
         await state.update_data(
             renew_mode="renew",
