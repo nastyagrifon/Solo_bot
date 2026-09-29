@@ -212,8 +212,61 @@ async def handle_user_traffic_choice(callback: CallbackQuery, state: FSMContext,
     await render_user_config_screen(callback, state, session=session)
 
 
+async def _active_trial_key(session: Any, tg_id: int) -> dict | None:
+    """Единственный действующий пробный ключ клиента в режиме «одна подписка».
+
+    Кнопки «Купить» (create_key) приходят и клиенту с пробником — в
+    уведомлениях, в меню модулей. Без этой проверки покупка заводит ему второй
+    ключ, хотя режим обещает одну подписку. Во всех сомнительных случаях
+    (ключей не один, пробник истёк, тариф не прочитан) возвращаем None — и
+    покупка идёт штатно: лишний ключ видно и можно поправить, потерянную
+    оплату — нет.
+    """
+    from core.bootstrap import MODES_CONFIG
+    from database import get_keys
+
+    if not bool(MODES_CONFIG.get("SINGLE_SUBSCRIPTION_MODE", False)):
+        return None
+    keys = await get_keys(session, tg_id) or []
+    if len(keys) != 1:
+        return None
+    key = keys[0]
+    client_id, email = getattr(key, "client_id", None), getattr(key, "email", None)
+    tariff_id, expiry = getattr(key, "tariff_id", None), getattr(key, "expiry_time", None)
+    if not (client_id and email and tariff_id and expiry):
+        return None
+    if int(expiry) <= int(datetime.now(timezone.utc).timestamp() * 1000):
+        return None
+    tariff = await get_tariff_by_id(session, int(tariff_id))
+    if str((tariff or {}).get("group_code") or "").lower() != "trial":
+        return None
+    return {"client_id": str(client_id), "email": str(email)}
+
+
 @router.callback_query(F.data.startswith("cfg_user_confirm|"), TariffUserConfigState.configuring)
 async def handle_user_config_confirm(callback: CallbackQuery, state: FSMContext, session: Any):
-    """Подтверждает выбор параметров тарифа и запускает покупку."""
-    logger.info(f"[TARIFF_CFG] handle_user_config_confirm: tg_id={callback.from_user.id}")
+    """Подтверждает выбор параметров тарифа и запускает покупку.
+
+    Клиенту с действующим пробником в режиме «одна подписка» покупка
+    оформляется продлением его же ключа штатным обработчиком продления:
+    сроки, цена и перенос опций считаются там, а не здесь.
+    """
+    tg_id = callback.from_user.id
+    logger.info(f"[TARIFF_CFG] handle_user_config_confirm: tg_id={tg_id}")
+
+    trial = await _active_trial_key(session, tg_id)
+    if trial:
+        from handlers.keys.renew.router import handle_renew_config_confirm
+
+        tariff_id = int(callback.data.split("|", 1)[1])
+        logger.info(f"[TARIFF_CFG] пробный ключ продлевается вместо второго: tg_id={tg_id} tariff_id={tariff_id}")
+        await state.update_data(
+            renew_mode="renew",
+            renew_client_id=trial["client_id"],
+            renew_key_name=trial["email"],
+            renew_tariff_id=tariff_id,
+        )
+        await handle_renew_config_confirm(callback, state, session)
+        return
+
     await finalize_config_and_purchase(callback, state, session=session)
