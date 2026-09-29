@@ -10,6 +10,7 @@ from core.redis_cache import cache_get, cache_key, cache_set
 from database import get_balance_trial_key_count
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.hooks import run_hooks
+from handlers.payments.fast_payment_flow import release_pending_purchase
 from middlewares.session import release_session_early
 from services.payments.currency_rates import format_for_user
 from settings.buttons import (
@@ -56,6 +57,10 @@ async def process_callback_view_profile(
     admin: bool,
     session,
 ):
+    # Выход в кабинет = клиент передумал покупать. Иначе «Мой баланс»
+    # уводит его в счёт на нехватку, пока он не отправит /start.
+    await release_pending_purchase(state)
+
     if isinstance(callback_query_or_message, CallbackQuery):
         chat = callback_query_or_message.message.chat
         user = callback_query_or_message.from_user
