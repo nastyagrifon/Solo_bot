@@ -19,6 +19,7 @@ from database import (
     get_trial,
 )
 from database.access.resolution import notify_telegram_chat_id
+from database.keys import get_key_count
 from database.models import Admin
 from database.notifications import check_cold_lead_discount, check_hot_lead_discount
 from database.tariffs import create_subgroup_hash, get_tariffs
@@ -95,7 +96,8 @@ async def handle_key_creation(
         trial_time_disabled = bool(MODES_CONFIG.get("TRIAL_TIME_DISABLED", TRIAL_TIME_DISABLE))
         if not trial_time_disabled:
             trial_status = await get_trial(session, tg_id)
-            if trial_status in [0, -1]:
+            # Пробник — только без подписок, как в стартовом меню (start.py).
+            if trial_status in [0, -1] and await get_key_count(session, tg_id) == 0:
                 trial_tariffs = await get_tariffs(session, group_code="trial")
                 if not trial_tariffs:
                     builder = InlineKeyboardBuilder()

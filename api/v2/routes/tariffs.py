@@ -378,6 +378,11 @@ async def activate_trial(
     if trial_status not in (0, -1):
         raise HTTPException(status_code=409, detail="Пробная подписка уже использована")
 
+    from database.keys import get_key_count
+
+    if await get_key_count(session, tg_id) > 0:
+        raise HTTPException(status_code=409, detail="Пробная подписка недоступна: подписка уже есть")
+
     trial_tariffs = await get_tariffs(session, group_code="trial")
     if not trial_tariffs:
         raise HTTPException(status_code=404, detail="Пробный тариф не найден")
