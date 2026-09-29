@@ -40,6 +40,22 @@ class FastFlowCouponState(StatesGroup):
     waiting_for_coupon_code = State()
 
 
+#: Пометка незавершённой покупки в FSM: её ставит этот модуль, а обработчик
+#: «Мой баланс» (pay.py) по ней уводит клиента в счёт на нехватку.
+PENDING_PURCHASE_KEYS = ("temp_key", "temp_payload", "required_amount")
+
+
+async def release_pending_purchase(state: FSMContext) -> None:
+    """Забыть незавершённую покупку: клиент вышел из воронки оплаты.
+
+    Без этого пометка живёт до /start, и «Мой баланс» снова и снова
+    открывает счёт на нехватку вместо экрана баланса.
+    """
+    data = await state.get_data()
+    if any(data.get(k) is not None for k in PENDING_PURCHASE_KEYS):
+        await state.update_data(**dict.fromkeys(PENDING_PURCHASE_KEYS))
+
+
 async def get_payment_providers_config() -> dict[str, bool]:
     config = PAYMENTS_CONFIG or {}
     return dict(config)
