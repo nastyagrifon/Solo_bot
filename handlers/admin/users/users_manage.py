@@ -25,6 +25,7 @@ from database import (
     update_trial,
 )
 from database.access.resolution import chat_id_for_user, resolve_user_optional, user_id_from_legacy_ref
+from database.keys import get_key_count
 from database.models import Admin, Identity, Key, ManualBan, Payment, Referral, Tariff, User
 from database.subscription_events import get_user_subscription_history, resolve_user_ref_by_client_id
 from database.web_notifications import notify_web
@@ -494,6 +495,12 @@ async def handle_trial_restore(
     session: AsyncSession,
 ):
     user_id = callback_data.user_id
+
+    # Как у массового restore_trials: пробник возвращаем только тем, у кого
+    # нет ни одной подписки. Иначе клиент с оплатой берёт пробник поверх неё.
+    if await get_key_count(session, user_id) > 0:
+        await callback_query.answer("У клиента есть подписка — пробник не возвращаю.", show_alert=True)
+        return
 
     await update_trial(session, user_id, 0)
     await callback_query.message.edit_text(

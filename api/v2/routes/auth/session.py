@@ -221,7 +221,8 @@ async def auth_summary(
         return int(r.scalar_one() or 0)
 
     balance = float(await _safe(lambda: get_balance(session, billing_user_id), 0.0) or 0.0)
-    trial_status = int(await _safe(lambda: get_trial(session, billing_user_id), 0) or 0)
+    # Сбой чтения не должен превращаться в «пробник доступен» (0): дефолт — «использован».
+    trial_status = int(await _safe(lambda: get_trial(session, billing_user_id), 1) or 0)
     keys = await _safe(lambda: get_keys(session, billing_user_id), None)
     keys_total = len(keys) if keys else 0
     from core.redis_cache import cache_get, cache_key, cache_set
