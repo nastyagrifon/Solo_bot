@@ -1,3 +1,4 @@
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from hooks.hooks import run_hooks
@@ -198,8 +199,22 @@ def get_providers(flags: dict[str, bool]) -> dict[str, dict[str, Any]]:
     return providers
 
 
+#: Загрузчик роутеров касс; ставит ``handlers.payments`` при импорте. Сервисный слой
+#: не импортирует обработчики сам — иначе циклический импорт.
+_router_loader: Callable[[Iterable[str]], None] | None = None
+
+
+def set_router_loader(loader: Callable[[Iterable[str]], None]) -> None:
+    global _router_loader
+    _router_loader = loader
+
+
 async def get_providers_with_hooks(flags: dict[str, bool]) -> dict[str, dict[str, Any]]:
     providers = get_providers(flags)
+    # Касса, включённая в админке на ходу, подключается здесь — до того, как меню
+    # покажет её кнопку клиенту.
+    if _router_loader is not None:
+        _router_loader(name for name, cfg in providers.items() if cfg.get("enabled"))
     results = await run_hooks("providers_config", providers=providers, flags=flags)
     for result in results:
         if not isinstance(result, dict):
