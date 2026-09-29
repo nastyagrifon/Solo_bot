@@ -46,6 +46,11 @@ dp = Dispatcher(bot=bot, storage=storage)
 
 dp.include_router(modules_hub)
 
+# Middleware модулей идут через посредников ядра — снимаются при выгрузке модуля.
+from core.module_runtime import install_middleware_proxies  # noqa: E402
+
+install_middleware_proxies(dp)
+
 load_modules_from_folder()
 
 from settings.buttons import BUTTON_ICON_CONFIG
