@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -82,6 +83,7 @@ class ModulesManager:
             pass
 
         self.purge_selective(rec.pkg)
+        _drop_bytecode(rec.pkg)
 
         mod = importlib.import_module(f"{rec.pkg}.router")
         router = getattr(mod, "router", None)
@@ -91,6 +93,9 @@ class ModulesManager:
         from utils.modules_loader import modules_hub
 
         modules_hub.include_router(router)
+        _register_legacy_webhook(name, mod)
+        # Модуль грузится на живом боте: @router.startup() сам уже не сработает.
+        await _emit_lifecycle(router, "startup", name)
 
         rec.router = router
         rec.enabled = True
@@ -119,9 +124,16 @@ class ModulesManager:
 
         from utils.modules_loader import modules_hub
 
+        await _emit_lifecycle(rec.router, "shutdown", name)
+
         sub = getattr(modules_hub, "_sub_routers", None) or getattr(modules_hub, "sub_routers", None)
         if sub and rec.router in sub:
             sub.remove(rec.router)
+
+        # Всё остальное, что модуль завёл у бота: HTTP, middleware, задачи, откаты.
+        from core import module_runtime
+
+        await module_runtime.unload(name)
 
         rec.router = None
         rec.enabled = False
@@ -168,6 +180,61 @@ class ModulesManager:
 
     def should_autostart(self, name: str) -> bool:
         return _normalize_module_name(name) not in self.disabled
+
+
+async def _emit_lifecycle(router: Router | None, event: str, name: str) -> None:
+    """Вызвать обработчики @router.startup()/@router.shutdown() модуля на живом боте.
+
+    aiogram зовёт их только при старте и остановке диспетчера. Модуль, загруженный
+    или выгруженный на ходу, иначе не поставил бы свои подмены и не запустил бы
+    фоновые циклы — или не остановил бы их. Ошибка модуля здесь не мешает загрузке.
+    """
+    if router is None:
+        return
+    # Только уже собранный бот: импорт bot.py отсюда запустил бы его сборку (тесты, старт).
+    bot_mod = sys.modules.get("bot")
+    bot, dp = getattr(bot_mod, "bot", None), getattr(bot_mod, "dp", None)
+    if bot is None or dp is None:
+        return
+    try:
+        emit = router.emit_startup if event == "startup" else router.emit_shutdown
+        await emit(**{**dp.workflow_data, "bot": bot, "dispatcher": dp})
+    except Exception as e:
+        logger.error(f"[Modules] {name}: ошибка в обработчиках {event}: {e}")
+
+
+def _drop_bytecode(pkg: str) -> None:
+    """Удалить __pycache__ пакета модуля перед повторным импортом.
+
+    Кеш байткода сверяется по времени изменения исходника с точностью до
+    секунды и по размеру. Правка «того же размера в ту же секунду» (сменили
+    одну цифру) иначе загрузит старый .pyc — перезагрузка молча отдаст
+    прежний код.
+    """
+    import shutil
+
+    spec = importlib.util.find_spec(pkg)
+    if not spec or not spec.submodule_search_locations:
+        return
+    for location in spec.submodule_search_locations:
+        for cache_dir in __import__("pathlib").Path(location).rglob("__pycache__"):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def _register_legacy_webhook(name: str, router_module) -> None:
+    """``get_webhook_data()`` модуля → обработчик в среде модулей (актуальный после перезагрузки)."""
+    getter = getattr(router_module, "get_webhook_data", None)
+    if not callable(getter):
+        return
+    try:
+        data = getter()
+    except Exception as e:
+        logger.error(f"[Modules] {name}: get_webhook_data упал: {e}")
+        return
+    if isinstance(data, dict) and data.get("path") and data.get("handler"):
+        from core import module_runtime
+
+        module_runtime.register_web(data["path"], data["handler"], module=name)
 
 
 manager = ModulesManager()

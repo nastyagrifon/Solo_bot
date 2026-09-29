@@ -38,6 +38,10 @@ async def register_web_routes(router: UrlDispatcher) -> None:
     else:
         print("[Web] REMNAWAVE_WEBHOOK_SECRET не задан — приёмник событий панели выключен")
 
+    from core import module_runtime
+
+    router.add_route("*", module_runtime.MODULE_WEB_PREFIX + "/{module}/{tail:.*}", module_runtime.module_web_dispatch)
+
     try:
         module_webhooks = load_module_webhooks()
 

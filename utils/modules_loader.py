@@ -64,7 +64,12 @@ def load_module_webhooks(folder: str = "modules") -> list[dict]:
             if hasattr(router_module, "get_webhook_data"):
                 webhook_data = router_module.get_webhook_data()
                 if isinstance(webhook_data, dict) and "path" in webhook_data and "handler" in webhook_data:
-                    webhooks.append(webhook_data)
+                    # В aiohttp регистрируется постоянный посредник, сам обработчик живёт в
+                    # среде модулей: после перезагрузки модуля запрос уходит в новый код.
+                    from core import module_runtime
+
+                    module_runtime.register_web(webhook_data["path"], webhook_data["handler"], module=name)
+                    webhooks.append({**webhook_data, "handler": module_runtime.web_proxy(webhook_data["path"])})
                     logger.info(f"[Modules] Найден вебхук в модуле {name}: {webhook_data['path']}")
         except Exception as e:
             logger.error(f"[Modules] Ошибка при загрузке вебхуков из {module_path}: {e}")
