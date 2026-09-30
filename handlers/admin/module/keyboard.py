@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from handlers.admin.panel.keyboard import AdminPanelCallback
+from handlers.admin.panel.keyboard import AdminPanelCallback, nav_row
 from settings.buttons import BACK
 from utils.modules_manager import manager
 
@@ -21,28 +21,14 @@ def build_modules_kb(page: int, total_pages: int, items: list[tuple[str, str | N
         builder.row(*row_buf)
         row_buf = []
 
-    if total_pages > 1:
-        nav = []
-        if page > 1:
-            nav.append(
-                InlineKeyboardButton(
-                    text=BACK,
-                    callback_data=AdminPanelCallback(action="modules", page=page - 1).pack(),
-                )
-            )
-        nav.append(
-            InlineKeyboardButton(
-                text=f"{page}/{total_pages}",
-                callback_data=AdminPanelCallback(action="modules", page=page).pack(),
-            )
-        )
-        if page < total_pages:
-            nav.append(
-                InlineKeyboardButton(
-                    text="Вперед ➡️",
-                    callback_data=AdminPanelCallback(action="modules", page=page + 1).pack(),
-                )
-            )
+    nav = nav_row(
+        page,
+        total_pages,
+        lambda p: AdminPanelCallback(action="modules", page=p).pack(),
+        prev_text=BACK,
+        next_text="Вперед ➡️",
+    )
+    if nav:
         builder.row(*nav)
 
     builder.row(

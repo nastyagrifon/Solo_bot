@@ -15,7 +15,7 @@ from services.users_utils import build_admin_key_ref
 from settings.buttons import BACK
 from settings.config import HWID_RESET_BUTTON
 
-from ..panel.keyboard import build_admin_back_btn
+from ..panel.keyboard import build_admin_back_btn, nav_row
 
 
 class LegacyTgRefAlias:
@@ -125,33 +125,15 @@ async def build_users_balance_kb(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
-    if total_pages > 1:
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(
-                InlineKeyboardButton(
-                    text="◀️",
-                    callback_data=AdminUserEditorCallback(
-                        action="users_balance_page", user_id=user_id, data=page - 1
-                    ).pack(),
-                )
-            )
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=f"{page + 1}/{total_pages}",
-                callback_data="noop",
-            )
-        )
-        if page < total_pages - 1:
-            nav_buttons.append(
-                InlineKeyboardButton(
-                    text="▶️",
-                    callback_data=AdminUserEditorCallback(
-                        action="users_balance_page", user_id=user_id, data=page + 1
-                    ).pack(),
-                )
-            )
-        builder.row(*nav_buttons)
+    nav = nav_row(
+        page,
+        total_pages,
+        lambda p: AdminUserEditorCallback(action="users_balance_page", user_id=user_id, data=p).pack(),
+        first=0,
+        current_cb="noop",
+    )
+    if nav:
+        builder.row(*nav)
 
     for amount in [100, 250, 500, 1000]:
         builder.row(
@@ -544,24 +526,9 @@ def build_user_gifts_kb(user_id: int, gifts: list, page: int = 0) -> InlineKeybo
     if row_buttons:
         builder.row(*row_buttons)
 
-    if total_pages > 1:
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(
-                InlineKeyboardButton(
-                    text="◀️",
-                    callback_data=f"user_gift_page|{user_id}|{page - 1}",
-                )
-            )
-        nav_buttons.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
-        if page < total_pages - 1:
-            nav_buttons.append(
-                InlineKeyboardButton(
-                    text="▶️",
-                    callback_data=f"user_gift_page|{user_id}|{page + 1}",
-                )
-            )
-        builder.row(*nav_buttons)
+    nav = nav_row(page, total_pages, lambda p: f"user_gift_page|{user_id}|{p}", first=0, current_cb="noop")
+    if nav:
+        builder.row(*nav)
 
     builder.row(build_editor_back_btn(user_id, True))
     return builder.as_markup()

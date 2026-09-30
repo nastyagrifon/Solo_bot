@@ -6,7 +6,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from core.settings.money_config import get_currency_mode
 from settings.buttons import BACK
 
-from ..panel.keyboard import AdminPanelCallback, build_admin_back_btn
+from ..panel.keyboard import AdminPanelCallback, build_admin_back_btn, nav_row
 from .settings_config import (
     ADMIN_NOTIFICATION_TITLES,
     BUTTON_TITLES,
@@ -385,29 +385,15 @@ def build_settings_remnawave_health_nodes_kb(
             )
         )
 
-    if total_pages > 1:
-        nav_row: list[InlineKeyboardButton] = []
-        if page > 1:
-            nav_row.append(
-                InlineKeyboardButton(
-                    text="⬅️",
-                    callback_data=AdminPanelCallback(action="rw_node_sel", page=page - 1).pack(),
-                )
-            )
-        nav_row.append(
-            InlineKeyboardButton(
-                text=f"{page}/{total_pages}",
-                callback_data=AdminPanelCallback(action="rw_node_sel", page=page).pack(),
-            )
-        )
-        if page < total_pages:
-            nav_row.append(
-                InlineKeyboardButton(
-                    text="➡️",
-                    callback_data=AdminPanelCallback(action="rw_node_sel", page=page + 1).pack(),
-                )
-            )
-        builder.row(*nav_row)
+    nav = nav_row(
+        page,
+        total_pages,
+        lambda p: AdminPanelCallback(action="rw_node_sel", page=p).pack(),
+        prev_text="⬅️",
+        next_text="➡️",
+    )
+    if nav:
+        builder.row(*nav)
 
     builder.row(
         InlineKeyboardButton(
@@ -468,29 +454,15 @@ def build_settings_remnawave_hosts_kb(
             )
         )
 
-    if total_pages > 1:
-        nav_row: list[InlineKeyboardButton] = []
-        if page > 1:
-            nav_row.append(
-                InlineKeyboardButton(
-                    text="⬅️",
-                    callback_data=AdminPanelCallback(action="rw_rot_hosts", page=page - 1).pack(),
-                )
-            )
-        nav_row.append(
-            InlineKeyboardButton(
-                text=f"{page}/{total_pages}",
-                callback_data=AdminPanelCallback(action="rw_rot_hosts", page=page).pack(),
-            )
-        )
-        if page < total_pages:
-            nav_row.append(
-                InlineKeyboardButton(
-                    text="➡️",
-                    callback_data=AdminPanelCallback(action="rw_rot_hosts", page=page + 1).pack(),
-                )
-            )
-        builder.row(*nav_row)
+    nav = nav_row(
+        page,
+        total_pages,
+        lambda p: AdminPanelCallback(action="rw_rot_hosts", page=p).pack(),
+        prev_text="⬅️",
+        next_text="➡️",
+    )
+    if nav:
+        builder.row(*nav)
 
     builder.row(
         InlineKeyboardButton(

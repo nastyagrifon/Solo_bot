@@ -18,6 +18,7 @@ from services.users_utils import resolve_admin_key
 from settings.buttons import BACK
 
 from ..panel.headers import menu_text, quote, section
+from ..panel.keyboard import nav_row
 from .keyboard import AdminUserEditorCallback
 
 
@@ -81,27 +82,14 @@ def _build_hosts_kb(user_id: int, key_ref: str, links: list[str], page: int) -> 
         builder.row(*row_buttons)
         row_buttons = []
 
-    if total_pages > 1:
-        nav: list[InlineKeyboardButton] = []
-        if page > 0:
-            nav.append(
-                InlineKeyboardButton(
-                    text="◀️",
-                    callback_data=AdminUserEditorCallback(
-                        action="users_keys_list", user_id=user_id, data=f"{key_ref}|{page - 1}"
-                    ).pack(),
-                )
-            )
-        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
-        if page < total_pages - 1:
-            nav.append(
-                InlineKeyboardButton(
-                    text="▶️",
-                    callback_data=AdminUserEditorCallback(
-                        action="users_keys_list", user_id=user_id, data=f"{key_ref}|{page + 1}"
-                    ).pack(),
-                )
-            )
+    nav = nav_row(
+        page,
+        total_pages,
+        lambda p: AdminUserEditorCallback(action="users_keys_list", user_id=user_id, data=f"{key_ref}|{p}").pack(),
+        first=0,
+        current_cb="noop",
+    )
+    if nav:
         builder.row(*nav)
 
     builder.row(

@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from aiogram.filters.callback_data import CallbackData
@@ -119,3 +119,34 @@ def build_admin_btn(text: str, action: str) -> InlineKeyboardButton:
         text=text,
         callback_data=AdminPanelCallback(action=action).pack(),
     )
+
+
+def nav_row(
+    page: int,
+    total: int,
+    page_cb: Callable[[int], str],
+    *,
+    first: int = 1,
+    prev_text: str = "◀️",
+    next_text: str = "▶️",
+    current_cb: str | None = None,
+) -> list[InlineKeyboardButton]:
+    """Ряд «назад · page/total · вперёд»; пустой при total <= 1.
+
+    first — номер первой страницы (0 или 1), подпись всегда с единицы.
+    current_cb — callback_data кнопки-подписи, по умолчанию page_cb(page).
+    """
+    if total <= 1:
+        return []
+    row = []
+    if page > first:
+        row.append(InlineKeyboardButton(text=prev_text, callback_data=page_cb(page - 1)))
+    row.append(
+        InlineKeyboardButton(
+            text=f"{page - first + 1}/{total}",
+            callback_data=page_cb(page) if current_cb is None else current_cb,
+        )
+    )
+    if page < total + first - 1:
+        row.append(InlineKeyboardButton(text=next_text, callback_data=page_cb(page + 1)))
+    return row
