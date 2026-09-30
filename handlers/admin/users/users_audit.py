@@ -13,10 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from audit import list_audit_events
-from core.redis_cache import cache_get, cache_key, cache_set
 from database.models import User
 from filters.admin import IsAdminFilter
-from settings.cache_config import AUDIT_HISTORY_CACHE_TTL_SEC
 
 from ..panel.headers import card, menu_text, quote, section, strip_tags
 from .keyboard import AdminUserEditorCallback, build_user_audit_kb
@@ -30,56 +28,6 @@ BALANCE_LOG_PATTERN = re.compile(
     r"(?P<tg_id>\d+) обновлён: (?P<old>-?\d+(?:\.\d+)?) → (?P<new>-?\d+(?:\.\d+)?)$"
 )
 router = Router()
-
-
-def _serialize_audit_events(events: list) -> list[dict]:
-    """Для кэша Redis: список событий в JSON-сериализуемый вид."""
-    out = []
-    for e in events:
-        out.append({
-            "event_type": e.event_type,
-            "channel": e.channel,
-            "path_or_handler": getattr(e, "path_or_handler", None) or "",
-            "actor_identity_id": getattr(e, "actor_identity_id", None),
-            "actor_tg_id": getattr(e, "actor_tg_id", None),
-            "entity_type": getattr(e, "entity_type", None),
-            "entity_id": getattr(e, "entity_id", None),
-            "result": getattr(e, "result", "success"),
-            "reason": getattr(e, "reason", None),
-            "metadata_": getattr(e, "metadata_", None),
-            "request_id": getattr(e, "request_id", None),
-            "created_at": e.created_at.isoformat() if e.created_at else None,
-        })
-    return out
-
-
-def _deserialize_audit_events(cached: list[dict]) -> list:
-    """Из кэша: список dict → объекты с атрибутами как у AuditEvent."""
-    out = []
-    for d in cached:
-        created = d.get("created_at")
-        if isinstance(created, str):
-            try:
-                created = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            except Exception:
-                created = None
-        out.append(
-            SimpleNamespace(
-                event_type=d.get("event_type", ""),
-                channel=d.get("channel", "telegram"),
-                path_or_handler=d.get("path_or_handler") or "",
-                actor_identity_id=d.get("actor_identity_id"),
-                actor_tg_id=d.get("actor_tg_id"),
-                entity_type=d.get("entity_type"),
-                entity_id=d.get("entity_id"),
-                result=d.get("result", "success"),
-                reason=d.get("reason"),
-                metadata_=d.get("metadata_"),
-                request_id=d.get("request_id"),
-                created_at=created,
-            )
-        )
-    return out
 
 
 def _event_created_at(event) -> datetime:
@@ -513,59 +461,38 @@ async def _render_user_audit(
     include_balance_logs = channel_filter == "all" and category_filter in {"all", "balance"}
     combined_limit = (page + 1) * PAGE_SIZE + 1
 
-    cache_key_str = cache_key(
-        "audit_history",
-        user_id,
-        user_identity_id or "",
-        channel_filter,
-        category_filter,
-        page,
-    )
-    cached = None if include_balance_logs else await cache_get(cache_key_str)
-    if cached is not None and isinstance(cached, list):
-        raw_events = _deserialize_audit_events(cached)
-        has_prev = page > 0
-        has_next = len(raw_events) > PAGE_SIZE
-        events = raw_events[:PAGE_SIZE]
-    else:
-        if include_balance_logs:
-            audit_events = []
-            if category_filter != "balance":
-                audit_events = await list_audit_events(
-                    session,
-                    tg_id=owner_tg_id,
-                    identity_id=user_identity_id,
-                    channel=channel,
-                    event_types=event_types,
-                    limit=combined_limit,
-                    offset=0,
-                )
-            balance_events = _load_balance_log_events(user_id, combined_limit)
-            merged_events = sorted(audit_events + balance_events, key=_event_created_at, reverse=True)
-            start = page * PAGE_SIZE
-            stop = start + PAGE_SIZE
-            has_prev = page > 0
-            has_next = len(merged_events) > stop
-            events = merged_events[start:stop]
-        else:
-            raw_events = await list_audit_events(
+    if include_balance_logs:
+        audit_events = []
+        if category_filter != "balance":
+            audit_events = await list_audit_events(
                 session,
                 tg_id=owner_tg_id,
                 identity_id=user_identity_id,
                 channel=channel,
                 event_types=event_types,
-                limit=PAGE_SIZE + 1,
-                offset=page * PAGE_SIZE,
+                limit=combined_limit,
+                offset=0,
             )
-            has_prev = page > 0
-            has_next = len(raw_events) > PAGE_SIZE
-            events = raw_events[:PAGE_SIZE]
-            if raw_events:
-                await cache_set(
-                    cache_key_str,
-                    _serialize_audit_events(raw_events),
-                    AUDIT_HISTORY_CACHE_TTL_SEC,
-                )
+        balance_events = _load_balance_log_events(user_id, combined_limit)
+        merged_events = sorted(audit_events + balance_events, key=_event_created_at, reverse=True)
+        start = page * PAGE_SIZE
+        stop = start + PAGE_SIZE
+        has_prev = page > 0
+        has_next = len(merged_events) > stop
+        events = merged_events[start:stop]
+    else:
+        raw_events = await list_audit_events(
+            session,
+            tg_id=owner_tg_id,
+            identity_id=user_identity_id,
+            channel=channel,
+            event_types=event_types,
+            limit=PAGE_SIZE + 1,
+            offset=page * PAGE_SIZE,
+        )
+        has_prev = page > 0
+        has_next = len(raw_events) > PAGE_SIZE
+        events = raw_events[:PAGE_SIZE]
 
     full_flow = channel_filter == "all" and category_filter == "all"
 
