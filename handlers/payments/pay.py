@@ -61,18 +61,6 @@ async def handle_pay(callback_query: CallbackQuery, state: FSMContext, session: 
                 filtered[key] = cfg
         providers_with_hooks = filtered
 
-    payment_handlers = []
-
-    for key, cfg in providers_with_hooks.items():
-        if not cfg.get("enabled"):
-            continue
-        handler_callback_data = cfg.get("value")
-        if not handler_callback_data:
-            continue
-        handler = globals().get(f"process_callback_{handler_callback_data}")
-        if callable(handler):
-            payment_handlers.append(handler)
-
     module_buttons = await run_hooks(
         "pay_menu_buttons",
         chat_id=callback_query.from_user.id,
@@ -81,7 +69,6 @@ async def handle_pay(callback_query: CallbackQuery, state: FSMContext, session: 
     )
 
     donations_enabled = bool(BUTTONS_CONFIG.get("DONATIONS_BUTTON_ENABLE", DONATIONS_ENABLE))
-    has_extra_menu_items = bool(module_buttons) or donations_enabled or tribute_enabled
 
     if multicurrency_enabled and not one_screen:
         show_stars = bool((providers_with_hooks.get("STARS") or {}).get("enabled"))
@@ -96,11 +83,6 @@ async def handle_pay(callback_query: CallbackQuery, state: FSMContext, session: 
             reply_markup=keyboard.as_markup(),
         )
         return
-
-    if not has_extra_menu_items:
-        enabled_providers_count = sum(1 for _, cfg in providers_with_hooks.items() if cfg.get("enabled"))
-        if enabled_providers_count == 1 and len(payment_handlers) == 1:
-            return await payment_handlers[0](callback_query, state, session)
 
     builder = InlineKeyboardBuilder()
     for key, cfg in providers_with_hooks.items():

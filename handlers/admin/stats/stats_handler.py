@@ -1053,20 +1053,10 @@ async def send_daily_stats_report(session: AsyncSession):
         logger.error(f"[Stats] Ошибка при отправке статистики: {e}")
 
 
-_MONTH_NAMES_RU = {
-    1: "Январь",
-    2: "Февраль",
-    3: "Март",
-    4: "Апрель",
-    5: "Май",
-    6: "Июнь",
-    7: "Июль",
-    8: "Август",
-    9: "Сентябрь",
-    10: "Октябрь",
-    11: "Ноябрь",
-    12: "Декабрь",
-}
+_MONTH_NAMES_RU = (
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+)
 
 
 def _month_window(year: int, month: int) -> tuple[date, date]:
@@ -1124,7 +1114,7 @@ async def send_monthly_stats_report(session: AsyncSession):
         avg_users = round(users_total / days_in_month, 1) if days_in_month else 0
         avg_revenue = round(revenue_total / days_in_month, 1) if days_in_month else 0
 
-        month_title = f"{_MONTH_NAMES_RU.get(last_day.month, '')} {last_day.year}"
+        month_title = f"{_MONTH_NAMES_RU[last_day.month - 1]} {last_day.year}"
         text = menu_text(
             "Отчёт за месяц",
             month_title,

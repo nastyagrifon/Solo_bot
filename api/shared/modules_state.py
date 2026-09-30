@@ -34,9 +34,7 @@ def prune_missing_state(installed: set[str]) -> None:
             manager.registry.pop(name, None)
         changed = True
     if changed:
-        save_state = getattr(manager, "_save_state", None)
-        if callable(save_state):
-            save_state()
+        manager._save_state()
 
 
 def module_state(name: str) -> dict:
@@ -69,9 +67,7 @@ def read_local_module_version(name: str) -> str | None:
 
 def sync_list_modules() -> list:
     """Вся синхронная работа со списком модулей (файлы, состояние). Вызывать через run_io()."""
-    refresh = getattr(manager, "refresh_state", None) or getattr(manager, "_load_state", None)
-    if callable(refresh):
-        refresh()
+    manager._load_state()
     module_names = available_module_names()
     prune_missing_state(set(module_names))
     modules = [module_state(name) for name in module_names]

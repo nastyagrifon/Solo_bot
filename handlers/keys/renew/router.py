@@ -184,14 +184,12 @@ async def process_callback_renew_key(callback_query: CallbackQuery, state: FSMCo
 
         tariffs_data = await get_tariffs(session, group_code=group_code, with_subgroup_weights=True)
         tariffs = [t for t in tariffs_data["tariffs"] if t.get("is_active")]
-        tariffs_data["subgroup_weights"]
 
         if not tariffs and discount_info.get("available"):
             logger.warning(f"[RENEW] Нет тарифов со скидкой {group_code}, fallback на {original_group_code}")
             group_code = original_group_code
             tariffs_data = await get_tariffs(session, group_code=group_code, with_subgroup_weights=True)
             tariffs = [t for t in tariffs_data["tariffs"] if t.get("is_active")]
-            tariffs_data["subgroup_weights"]
             discount_info = {"available": False}
 
         if not tariffs:

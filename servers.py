@@ -118,7 +118,6 @@ async def check_servers(sessionmaker=None):
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        offline_servers = set()
         restored_servers = set()
         online_servers = set()
 
@@ -152,7 +151,6 @@ async def check_servers(sessionmaker=None):
                         await notify_admin(server_name, "down")
                         notified_servers.add(server_name)
                         last_down_times[server_name] = current_time
-                    offline_servers.add(server_name)
 
         all_servers = {name for name, _ in server_info_list}
         true_offline_servers = all_servers - online_servers
