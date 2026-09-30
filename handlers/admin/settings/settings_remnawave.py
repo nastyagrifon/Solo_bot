@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 
 from aiogram import F, Router
@@ -132,7 +133,12 @@ def _hosts_text(hosts: list[tuple[str, dict[str, Any]]], allowed: set[str]) -> s
     )
 
 
-async def _fetch_all_hosts() -> list[tuple[str, dict[str, Any]]]:
+async def _set_cfg(**values: Any) -> None:
+    async with async_session_maker() as session:
+        await update_remnawave_config(session, {**REMNAWAVE_CONFIG, **values})
+
+
+async def _fetch_from_panels(method: str, what: str) -> list[tuple[str, dict[str, Any]]]:
     async with async_session_maker() as session:
         servers = await get_servers(session, include_enabled=True)
 
@@ -152,57 +158,20 @@ async def _fetch_all_hosts() -> list[tuple[str, dict[str, Any]]]:
                     ok = await api.login(REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD)
                     if not ok:
                         continue
-                hosts = await api.get_hosts() or []
+                items = await getattr(api, method)() or []
             except Exception as exc:
-                logger.warning("[Remnawave-Admin] Ошибка получения хостов с {}: {}", api_url, exc)
+                logger.warning("[Remnawave-Admin] Ошибка получения {} с {}: {}", what, api_url, exc)
                 continue
             finally:
                 try:
                     await api.aclose()
                 except Exception:
                     pass
-            if not isinstance(hosts, list):
+            if not isinstance(items, list):
                 continue
-            for host in hosts:
-                if host.get("uuid"):
-                    result.append((api_url, host))
-    return result
-
-
-async def _fetch_all_nodes() -> list[tuple[str, dict[str, Any]]]:
-    async with async_session_maker() as session:
-        servers = await get_servers(session, include_enabled=True)
-
-    seen_panels: set[str] = set()
-    result: list[tuple[str, dict[str, Any]]] = []
-    for cluster in servers.values():
-        for srv in cluster:
-            if srv.get("panel_type") != "remnawave":
-                continue
-            api_url = (srv.get("api_url") or "").strip()
-            if not api_url or api_url in seen_panels:
-                continue
-            seen_panels.add(api_url)
-            api = remnawave_panel.RemnawaveAPI(api_url)
-            try:
-                if not REMNAWAVE_TOKEN_LOGIN_ENABLED:
-                    ok = await api.login(REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD)
-                    if not ok:
-                        continue
-                nodes = await api.get_all_nodes() or []
-            except Exception as exc:
-                logger.warning("[Remnawave-Admin] Ошибка получения нод с {}: {}", api_url, exc)
-                continue
-            finally:
-                try:
-                    await api.aclose()
-                except Exception:
-                    pass
-            if not isinstance(nodes, list):
-                continue
-            for node in nodes:
-                if node.get("uuid"):
-                    result.append((api_url, node))
+            for item in items:
+                if item.get("uuid"):
+                    result.append((api_url, item))
     return result
 
 
@@ -248,12 +217,10 @@ async def open_node_menu(callback: CallbackQuery) -> None:
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "rw_node_toggle"), flags={"popup": True})
 async def toggle_node_health(callback: CallbackQuery) -> None:
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["NODE_HEALTH_ENABLED"] = not _node_health_enabled()
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
+    enabled = not _node_health_enabled()
+    await _set_cfg(NODE_HEALTH_ENABLED=enabled)
     await callback.answer(
-        "✅ Проверка включена" if new_cfg["NODE_HEALTH_ENABLED"] else "❌ Проверка выключена",
+        "✅ Проверка включена" if enabled else "❌ Проверка выключена",
         show_alert=True,
     )
     await callback.message.edit_text(
@@ -289,10 +256,7 @@ async def set_node_interval(message: Message, state: FSMContext) -> None:
     if not 1 <= value <= 1440:
         await message.answer(menu_text("Remnawave", "❌ Диапазон: 1–1440 минут."))
         return
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["NODE_HEALTH_INTERVAL_MIN"] = value
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
+    await _set_cfg(NODE_HEALTH_INTERVAL_MIN=value)
     await state.clear()
     await message.answer(
         text=_node_text(),
@@ -304,13 +268,11 @@ async def set_node_interval(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "rw_autodisable_toggle"), flags={"popup": True})
 async def toggle_auto_disable(callback: CallbackQuery) -> None:
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["HOST_AUTO_DISABLE_ON_NODE_DOWN"] = not _auto_disable_enabled()
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
+    enabled = not _auto_disable_enabled()
+    await _set_cfg(HOST_AUTO_DISABLE_ON_NODE_DOWN=enabled)
     await callback.answer(
         "✅ Авто-отключение хостов включено"
-        if new_cfg["HOST_AUTO_DISABLE_ON_NODE_DOWN"]
+        if enabled
         else "❌ Авто-отключение хостов выключено",
         show_alert=True,
     )
@@ -359,12 +321,10 @@ async def open_rotation_menu(callback: CallbackQuery) -> None:
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "rw_rot_toggle"), flags={"popup": True})
 async def toggle_rotation(callback: CallbackQuery) -> None:
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["HOST_ROTATION_ENABLED"] = not _host_rotation_enabled()
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
+    enabled = not _host_rotation_enabled()
+    await _set_cfg(HOST_ROTATION_ENABLED=enabled)
     await callback.answer(
-        "✅ Ротация включена" if new_cfg["HOST_ROTATION_ENABLED"] else "❌ Ротация выключена",
+        "✅ Ротация включена" if enabled else "❌ Ротация выключена",
         show_alert=True,
     )
     await callback.message.edit_text(
@@ -396,10 +356,7 @@ async def set_rotation_interval(message: Message, state: FSMContext) -> None:
     if not 5 <= value <= 1440:
         await message.answer(menu_text("Remnawave", "❌ Допустимый диапазон: 5–1440 минут"))
         return
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["HOST_ROTATION_INTERVAL_MIN"] = value
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
+    await _set_cfg(HOST_ROTATION_INTERVAL_MIN=value)
     await state.clear()
     await message.answer(
         text=_rotation_text(),
@@ -436,166 +393,85 @@ async def run_rotation_now(callback: CallbackQuery) -> None:
     await callback.message.answer(menu_text("Ротация", card(*blocks)))
 
 
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_rot_hosts"))
-async def open_rotation_hosts(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    await callback.answer(menu_text("Remnawave", "Загружаю хосты…"))
-    hosts = await _fetch_all_hosts()
-    allowed = get_host_rotation_allowed()
-    page = max(1, int(callback_data.page or 1))
-    await callback.message.edit_text(
-        text=_hosts_text(hosts, allowed),
-        reply_markup=build_settings_remnawave_hosts_kb(page, hosts, allowed),
-    )
+_HOSTS = SimpleNamespace(
+    fetch=lambda: _fetch_from_panels("get_hosts", "хостов"),
+    allowed=lambda: get_host_rotation_allowed(),
+    key="HOST_ROTATION_ALLOWED",
+    text=_hosts_text,
+    kb=build_settings_remnawave_hosts_kb,
+    loading="Загружаю хосты…",
+    missing="Хост не найден",
+    added="✅ Хост добавлен в ротацию",
+    removed="▫️ Хост убран из ротации",
+    page_on="✅ Включены",
+)
+_NODES = SimpleNamespace(
+    fetch=lambda: _fetch_from_panels("get_all_nodes", "нод"),
+    allowed=lambda: get_node_health_allowed(),
+    key="NODE_HEALTH_ALLOWED",
+    text=_health_nodes_text,
+    kb=build_settings_remnawave_health_nodes_kb,
+    loading="Загружаю ноды…",
+    missing="Нода не найдена",
+    added="✅ Нода добавлена в проверку",
+    removed="▫️ Нода убрана из проверки",
+    page_on="✅ Выбраны",
+)
+_PICKERS = {
+    **dict.fromkeys(("rw_rot_hosts", "rw_rot_toggle_host", "rw_rot_select_all", "rw_rot_clear_page"), _HOSTS),
+    **dict.fromkeys(("rw_node_sel", "rw_node_sel_toggle", "rw_node_sel_all", "rw_node_sel_clear"), _NODES),
+}
 
 
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_rot_toggle_host"), flags={"popup": True})
-async def toggle_host(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
+async def _show_picker(callback: CallbackQuery, picker: SimpleNamespace, page: int, items: list, allowed: set[str]):
+    await callback.message.edit_text(text=picker.text(items, allowed), reply_markup=picker.kb(page, items, allowed))
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action.in_(["rw_rot_hosts", "rw_node_sel"])))
+async def open_picker(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
+    picker = _PICKERS[callback_data.action]
+    await callback.answer(menu_text("Remnawave", picker.loading))
+    items = await picker.fetch()
+    await _show_picker(callback, picker, max(1, int(callback_data.page or 1)), items, picker.allowed())
+
+
+@router.callback_query(
+    AdminPanelCallback.filter(F.action.in_(["rw_rot_toggle_host", "rw_node_sel_toggle"])), flags={"popup": True}
+)
+async def toggle_picker_item(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
+    picker = _PICKERS[callback_data.action]
     idx = int(callback_data.page or 0)
-    hosts = await _fetch_all_hosts()
-    if idx < 0 or idx >= len(hosts):
-        await callback.answer("Хост не найден", show_alert=True)
+    items = await picker.fetch()
+    if idx < 0 or idx >= len(items):
+        await callback.answer(picker.missing, show_alert=True)
         return
-    _, host = hosts[idx]
-    host_uuid = str(host.get("uuid"))
-    allowed = get_host_rotation_allowed()
-    if host_uuid in allowed:
-        allowed.discard(host_uuid)
-        toast = menu_text("Remnawave", "▫️ Хост убран из ротации")
+    item_uuid = str(items[idx][1].get("uuid"))
+    allowed = picker.allowed()
+    if item_uuid in allowed:
+        allowed.discard(item_uuid)
+        toast = menu_text("Remnawave", picker.removed)
     else:
-        allowed.add(host_uuid)
-        toast = menu_text("Remnawave", "✅ Хост добавлен в ротацию")
-
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["HOST_ROTATION_ALLOWED"] = sorted(allowed)
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
-
-    page = max(1, idx // REMNAWAVE_HOSTS_PER_PAGE + 1)
+        allowed.add(item_uuid)
+        toast = menu_text("Remnawave", picker.added)
+    await _set_cfg(**{picker.key: sorted(allowed)})
     await callback.answer(toast)
-    await callback.message.edit_text(
-        text=_hosts_text(hosts, allowed),
-        reply_markup=build_settings_remnawave_hosts_kb(page, hosts, allowed),
+    await _show_picker(callback, picker, max(1, idx // REMNAWAVE_HOSTS_PER_PAGE + 1), items, allowed)
+
+
+@router.callback_query(
+    AdminPanelCallback.filter(
+        F.action.in_(["rw_rot_select_all", "rw_rot_clear_page", "rw_node_sel_all", "rw_node_sel_clear"])
     )
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_rot_select_all"))
-async def select_all_on_page(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    hosts = await _fetch_all_hosts()
-    allowed = get_host_rotation_allowed()
+)
+async def set_picker_page(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
+    picker = _PICKERS[callback_data.action]
+    select = callback_data.action in ("rw_rot_select_all", "rw_node_sel_all")
+    items = await picker.fetch()
+    allowed = picker.allowed()
     page = max(1, int(callback_data.page or 1))
     start = (page - 1) * REMNAWAVE_HOSTS_PER_PAGE
-    for _, host in hosts[start : start + REMNAWAVE_HOSTS_PER_PAGE]:
-        uuid = str(host.get("uuid"))
-        if uuid:
-            allowed.add(uuid)
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["HOST_ROTATION_ALLOWED"] = sorted(allowed)
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
-    await callback.answer(menu_text("Remnawave", "✅ Включены"))
-    await callback.message.edit_text(
-        text=_hosts_text(hosts, allowed),
-        reply_markup=build_settings_remnawave_hosts_kb(page, hosts, allowed),
-    )
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_rot_clear_page"))
-async def clear_page(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    hosts = await _fetch_all_hosts()
-    allowed = get_host_rotation_allowed()
-    page = max(1, int(callback_data.page or 1))
-    start = (page - 1) * REMNAWAVE_HOSTS_PER_PAGE
-    for _, host in hosts[start : start + REMNAWAVE_HOSTS_PER_PAGE]:
-        uuid = str(host.get("uuid"))
-        allowed.discard(uuid)
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["HOST_ROTATION_ALLOWED"] = sorted(allowed)
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
-    await callback.answer(menu_text("Remnawave", "▫️ Сброшено"))
-    await callback.message.edit_text(
-        text=_hosts_text(hosts, allowed),
-        reply_markup=build_settings_remnawave_hosts_kb(page, hosts, allowed),
-    )
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_node_sel"))
-async def open_health_nodes(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    await callback.answer(menu_text("Remnawave", "Загружаю ноды…"))
-    nodes = await _fetch_all_nodes()
-    allowed = get_node_health_allowed()
-    page = max(1, int(callback_data.page or 1))
-    await callback.message.edit_text(
-        text=_health_nodes_text(nodes, allowed),
-        reply_markup=build_settings_remnawave_health_nodes_kb(page, nodes, allowed),
-    )
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_node_sel_toggle"), flags={"popup": True})
-async def toggle_health_node(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    idx = int(callback_data.page or 0)
-    nodes = await _fetch_all_nodes()
-    if idx < 0 or idx >= len(nodes):
-        await callback.answer("Нода не найдена", show_alert=True)
-        return
-    _, node = nodes[idx]
-    node_uuid = str(node.get("uuid"))
-    allowed = get_node_health_allowed()
-    if node_uuid in allowed:
-        allowed.discard(node_uuid)
-        toast = menu_text("Remnawave", "▫️ Нода убрана из проверки")
-    else:
-        allowed.add(node_uuid)
-        toast = menu_text("Remnawave", "✅ Нода добавлена в проверку")
-
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["NODE_HEALTH_ALLOWED"] = sorted(allowed)
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
-
-    page = max(1, idx // REMNAWAVE_HOSTS_PER_PAGE + 1)
-    await callback.answer(toast)
-    await callback.message.edit_text(
-        text=_health_nodes_text(nodes, allowed),
-        reply_markup=build_settings_remnawave_health_nodes_kb(page, nodes, allowed),
-    )
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_node_sel_all"))
-async def select_all_health_nodes_on_page(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    nodes = await _fetch_all_nodes()
-    allowed = get_node_health_allowed()
-    page = max(1, int(callback_data.page or 1))
-    start = (page - 1) * REMNAWAVE_HOSTS_PER_PAGE
-    for _, node in nodes[start : start + REMNAWAVE_HOSTS_PER_PAGE]:
-        uuid = str(node.get("uuid"))
-        if uuid:
-            allowed.add(uuid)
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["NODE_HEALTH_ALLOWED"] = sorted(allowed)
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
-    await callback.answer(menu_text("Remnawave", "✅ Выбраны"))
-    await callback.message.edit_text(
-        text=_health_nodes_text(nodes, allowed),
-        reply_markup=build_settings_remnawave_health_nodes_kb(page, nodes, allowed),
-    )
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "rw_node_sel_clear"))
-async def clear_health_nodes_page(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    nodes = await _fetch_all_nodes()
-    allowed = get_node_health_allowed()
-    page = max(1, int(callback_data.page or 1))
-    start = (page - 1) * REMNAWAVE_HOSTS_PER_PAGE
-    for _, node in nodes[start : start + REMNAWAVE_HOSTS_PER_PAGE]:
-        allowed.discard(str(node.get("uuid")))
-    new_cfg = dict(REMNAWAVE_CONFIG)
-    new_cfg["NODE_HEALTH_ALLOWED"] = sorted(allowed)
-    async with async_session_maker() as session:
-        await update_remnawave_config(session, new_cfg)
-    await callback.answer(menu_text("Remnawave", "▫️ Сброшено"))
-    await callback.message.edit_text(
-        text=_health_nodes_text(nodes, allowed),
-        reply_markup=build_settings_remnawave_health_nodes_kb(page, nodes, allowed),
-    )
+    for _, item in items[start : start + REMNAWAVE_HOSTS_PER_PAGE]:
+        (allowed.add if select else allowed.discard)(str(item.get("uuid")))
+    await _set_cfg(**{picker.key: sorted(allowed)})
+    await callback.answer(menu_text("Remnawave", picker.page_on if select else "▫️ Сброшено"))
+    await _show_picker(callback, picker, page, items, allowed)
