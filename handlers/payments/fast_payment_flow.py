@@ -1,4 +1,5 @@
 from math import ceil
+from types import SimpleNamespace
 from typing import Any
 
 from aiogram import F, Router
@@ -62,6 +63,83 @@ async def release_pending_purchase(state: FSMContext | None) -> None:
 async def get_payment_providers_config() -> dict[str, bool]:
     config = PAYMENTS_CONFIG or {}
     return dict(config)
+
+
+async def _fast_pay_options() -> SimpleNamespace:
+    """Кассы быстрой оплаты по настройкам и режиму валют, плюс Tribute и Stars."""
+    providers_map = await get_providers_with_hooks(await get_payment_providers_config())
+    configured_upper = [str(p).upper() for p in (USE_NEW_PAYMENT_FLOW or [])]
+    configured_set = set(configured_upper)
+
+    providers = [
+        p
+        for p in configured_upper
+        if (providers_map.get(p) or {}).get("fast") and (providers_map.get(p) or {}).get("enabled", True)
+    ]
+    providers = sort_provider_names(providers, providers_map)
+
+    mode, one_screen = get_currency_mode()
+    multicurrency = mode == "RUB+USD"
+    if not multicurrency:
+        allowed_currency = "RUB" if mode == "RUB" else "USD"
+        providers = [
+            p
+            for p in providers
+            if str((providers_map.get(p) or {}).get("currency") or "").upper() in (allowed_currency, "RUB+USD")
+        ]
+
+    tribute_cfg = providers_map.get("TRIBUTE") or {}
+    tribute_link = (TRIBUTE_LINK or "").strip()
+    stars_cfg = providers_map.get("STARS") or {}
+    return SimpleNamespace(
+        providers_map=providers_map,
+        providers=providers,
+        configured_set=configured_set,
+        multicurrency=multicurrency,
+        one_screen=one_screen,
+        tribute_link=tribute_link,
+        tribute_enabled="TRIBUTE" in configured_set and tribute_cfg.get("enabled", True) and bool(tribute_link),
+        stars_fast="STARS" in configured_set and stars_cfg.get("fast") and stars_cfg.get("enabled", True),
+    )
+
+
+def _fast_currency_kb(opts: SimpleNamespace, coupon_text: str) -> InlineKeyboardBuilder:
+    """Выбор валюты: строка «в профиль» уходит вниз, над ней — купон."""
+    profile_row = None
+    keyboard = InlineKeyboardBuilder()
+    for row in build_currency_choice_kb(show_stars=opts.stars_fast, show_tribute=opts.tribute_enabled).export():
+        if any(getattr(button, "callback_data", None) == "profile" for button in row):
+            if profile_row is None:
+                profile_row = row
+            continue
+        keyboard.row(*row)
+
+    if BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True):
+        keyboard.row(InlineKeyboardButton(text=coupon_text, callback_data="fastflow_coupon"))
+    if profile_row:
+        keyboard.row(*profile_row)
+    else:
+        keyboard.row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
+    return keyboard
+
+
+def _fast_provider_kb(opts: SimpleNamespace, coupon_text: str) -> InlineKeyboardBuilder:
+    """Выбор кассы: кассы, Tribute ссылкой, купон, «в профиль»."""
+    keyboard = InlineKeyboardBuilder()
+    for provider_upper in opts.providers:
+        button_text = getattr(btn, provider_upper, provider_upper)
+        if opts.one_screen:
+            curr = (opts.providers_map.get(provider_upper) or {}).get("currency")
+            if curr and curr != "RUB+USD":
+                button_text = f"{button_text} ({currency_label(curr)})"
+        keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"choose_payment_provider|{provider_upper}"))
+
+    if opts.tribute_enabled:
+        keyboard.row(InlineKeyboardButton(text=getattr(btn, "TRIBUTE", "TRIBUTE"), url=opts.tribute_link))
+    if BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True):
+        keyboard.row(InlineKeyboardButton(text=coupon_text, callback_data="fastflow_coupon"))
+    keyboard.row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
+    return keyboard
 
 
 async def _run_provider_flow(
@@ -132,74 +210,17 @@ async def try_fast_payment_flow(
 
     note_block = f"{coupon_note}\n\n" if coupon_note else ""
 
-    payment_config = await get_payment_providers_config()
-    providers_map = await get_providers_with_hooks(payment_config)
+    opts = await _fast_pay_options()
+    providers, providers_map = opts.providers, opts.providers_map
 
-    configured = [str(p) for p in (USE_NEW_PAYMENT_FLOW or [])]
-    configured_upper = [p.upper() for p in configured]
-    configured_set = set(configured_upper)
-
-    providers: list[str] = []
-    for p_up in configured_upper:
-        cfg = providers_map.get(p_up) or {}
-        if cfg.get("fast") and cfg.get("enabled", True):
-            providers.append(p_up)
-    providers = sort_provider_names(providers, providers_map)
-
-    mode, one_screen = get_currency_mode()
-    multicurrency_mode = mode == "RUB+USD"
-
-    if not multicurrency_mode:
-        allowed_currency = "RUB" if mode == "RUB" else "USD"
-        filtered: list[str] = []
-        for p_up in providers:
-            cfg = providers_map.get(p_up) or {}
-            curr = str(cfg.get("currency") or "").upper()
-            if curr in (allowed_currency, "RUB+USD"):
-                filtered.append(p_up)
-        providers = filtered
-
-    if not providers and "TRIBUTE" not in configured_set:
+    if not providers and "TRIBUTE" not in opts.configured_set:
         return False
 
-    tribute_cfg = providers_map.get("TRIBUTE") or {}
-    tribute_link = (TRIBUTE_LINK or "").strip()
-    tribute_enabled = "TRIBUTE" in configured_set and tribute_cfg.get("enabled", True) and bool(tribute_link)
-
-    stars_cfg = providers_map.get("STARS") or {}
-    stars_enabled_for_fast = "STARS" in configured_set and stars_cfg.get("fast") and stars_cfg.get("enabled", True)
-
-    if multicurrency_mode and not one_screen:
-        show_stars = stars_enabled_for_fast
-        show_tribute = tribute_enabled
-        if not providers and not show_tribute:
+    if opts.multicurrency and not opts.one_screen:
+        if not providers and not opts.tribute_enabled:
             return False
 
-        keyboard_original = build_currency_choice_kb(show_stars=show_stars, show_tribute=show_tribute)
-
-        rows = keyboard_original.export()
-        profile_row = None
-        kept_rows: list[list[InlineKeyboardButton]] = []
-
-        for row in rows:
-            if any(getattr(button, "callback_data", None) == "profile" for button in row):
-                if profile_row is None:
-                    profile_row = row
-                continue
-            kept_rows.append(row)
-
-        keyboard = InlineKeyboardBuilder()
-        for row in kept_rows:
-            keyboard.row(*row)
-
-        if BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True):
-            keyboard.row(InlineKeyboardButton(text=btn.COUPON, callback_data="fastflow_coupon"))
-
-        if profile_row:
-            keyboard.row(*profile_row)
-        else:
-            keyboard.row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
-
+        keyboard = _fast_currency_kb(opts, btn.COUPON)
         lead_text = await shortfall_lead_text(
             session,
             tg_id,
@@ -220,7 +241,7 @@ async def try_fast_payment_flow(
         )
         return True
 
-    total_options = len(providers) + (1 if tribute_enabled else 0)
+    total_options = len(providers) + (1 if opts.tribute_enabled else 0)
     coupon_offer = bool(BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True)) and not temp_payload.get(
         "applied_coupon_code"
     )
@@ -235,33 +256,7 @@ async def try_fast_payment_flow(
             return True
         return False
 
-    keyboard = InlineKeyboardBuilder()
-    for provider_upper in providers:
-        button_text = getattr(btn, provider_upper, provider_upper)
-        if one_screen:
-            cfg = providers_map.get(provider_upper) or {}
-            curr = cfg.get("currency")
-            if curr and curr != "RUB+USD":
-                button_text = f"{button_text} ({currency_label(curr)})"
-        keyboard.row(
-            InlineKeyboardButton(
-                text=button_text,
-                callback_data=f"choose_payment_provider|{provider_upper}",
-            )
-        )
-
-    if tribute_enabled:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=getattr(btn, "TRIBUTE", "TRIBUTE"),
-                url=tribute_link,
-            )
-        )
-
-    if BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True):
-        keyboard.row(InlineKeyboardButton(text=btn.COUPON, callback_data="fastflow_coupon"))
-    keyboard.row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
-
+    keyboard = _fast_provider_kb(opts, btn.COUPON)
     lead_text = await shortfall_lead_text(
         session,
         tg_id,
@@ -554,40 +549,7 @@ async def fastflow_apply_coupon(message: Message, state: FSMContext, session: An
         await _finish_from_balance(message, session, str(temp_key), temp_payload_updated, message.from_user.id)
         return
 
-    payment_config = await get_payment_providers_config()
-    providers_map = await get_providers_with_hooks(payment_config)
-
-    configured = [str(p) for p in (USE_NEW_PAYMENT_FLOW or [])]
-    configured_upper = [p.upper() for p in configured]
-    configured_set = set(configured_upper)
-
-    providers: list[str] = []
-    for p_up in configured_upper:
-        cfg = providers_map.get(p_up) or {}
-        if cfg.get("fast") and cfg.get("enabled", True):
-            providers.append(p_up)
-    providers = sort_provider_names(providers, providers_map)
-
-    mode, one_screen = get_currency_mode()
-    multicurrency_mode = mode == "RUB+USD"
-
-    if not multicurrency_mode:
-        allowed_currency = "RUB" if mode == "RUB" else "USD"
-        filtered: list[str] = []
-        for p_up in providers:
-            cfg = providers_map.get(p_up) or {}
-            curr = str(cfg.get("currency") or "").upper()
-            if curr in (allowed_currency, "RUB+USD"):
-                filtered.append(p_up)
-        providers = filtered
-
-    tribute_cfg = providers_map.get("TRIBUTE") or {}
-    tribute_link = (TRIBUTE_LINK or "").strip()
-    tribute_enabled = "TRIBUTE" in configured_set and tribute_cfg.get("enabled", True) and bool(tribute_link)
-
-    stars_cfg = providers_map.get("STARS") or {}
-    stars_enabled_for_fast = "STARS" in configured_set and stars_cfg.get("fast") and stars_cfg.get("enabled", True)
-
+    opts = await _fast_pay_options()
     lead_text = await shortfall_lead_text(
         session,
         message.from_user.id,
@@ -595,72 +557,20 @@ async def fastflow_apply_coupon(message: Message, state: FSMContext, session: An
         getattr(message.from_user, "language_code", None),
     )
 
-    if multicurrency_mode and not one_screen:
-        keyboard_original = build_currency_choice_kb(show_stars=stars_enabled_for_fast, show_tribute=tribute_enabled)
-
-        rows = keyboard_original.export()
-        profile_row = None
-        kept_rows: list[list[InlineKeyboardButton]] = []
-
-        for row in rows:
-            if any(getattr(button, "callback_data", None) == "profile" for button in row):
-                if profile_row is None:
-                    profile_row = row
-                continue
-            kept_rows.append(row)
-
-        keyboard = InlineKeyboardBuilder()
-        for row in kept_rows:
-            keyboard.row(*row)
-
-        if BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True):
-            keyboard.row(InlineKeyboardButton(text=btn.COUPON_RESTART, callback_data="fastflow_coupon"))
-
-        if profile_row:
-            keyboard.row(*profile_row)
-        else:
-            keyboard.row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
-
+    if opts.multicurrency and not opts.one_screen:
         await message.answer(
             f"{lead_text}\n\n{coupon_text}\n\n{FAST_PAY_CHOOSE_CURRENCY}",
-            reply_markup=keyboard.as_markup(),
+            reply_markup=_fast_currency_kb(opts, btn.COUPON_RESTART).as_markup(),
         )
         return
 
-    if not providers and not tribute_enabled:
+    if not opts.providers and not opts.tribute_enabled:
         await message.answer(no_methods_text)
         return
 
-    keyboard = InlineKeyboardBuilder()
-    for provider_upper in providers:
-        button_text = getattr(btn, provider_upper, provider_upper)
-        if one_screen:
-            cfg = providers_map.get(provider_upper) or {}
-            curr = cfg.get("currency")
-            if curr and curr != "RUB+USD":
-                button_text = f"{button_text} ({currency_label(curr)})"
-        keyboard.row(
-            InlineKeyboardButton(
-                text=button_text,
-                callback_data=f"choose_payment_provider|{provider_upper}",
-            )
-        )
-
-    if tribute_enabled:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=getattr(btn, "TRIBUTE", "TRIBUTE"),
-                url=tribute_link,
-            )
-        )
-
-    if BUTTONS_CONFIG.get("COUPON_BUTTON_ENABLE", True):
-        keyboard.row(InlineKeyboardButton(text=btn.COUPON_RESTART, callback_data="fastflow_coupon"))
-    keyboard.row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
-
     await message.answer(
         f"{lead_text}\n\n{coupon_text}\n\n{FAST_PAY_CHOOSE_PROVIDER}",
-        reply_markup=keyboard.as_markup(),
+        reply_markup=_fast_provider_kb(opts, btn.COUPON_RESTART).as_markup(),
     )
 
 
