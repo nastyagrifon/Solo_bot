@@ -27,22 +27,7 @@ from services.clusters import ALLOWED_GROUP_CODES
 from settings.config import SUPERNODE
 
 from .aggregated_links import make_aggregated_link
-
-
-async def resolve_cluster(session: AsyncSession, cluster_id: str):
-    """Возвращает список серверов для кластера или конкретного сервера."""
-    servers = await get_servers(session)
-    cluster = servers.get(cluster_id)
-    if cluster:
-        return cluster
-    found = []
-    for _key, server_list in servers.items():
-        for s in server_list:
-            if s.get("server_name", "").lower() == cluster_id.lower():
-                found.append(s)
-    if found:
-        return found
-    raise ValueError(f"Кластер или сервер с ID/именем {cluster_id} не найден.")
+from .utils import resolve_cluster
 
 
 async def renew_on_remnawave(

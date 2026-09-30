@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from itertools import product
 
 from sqlalchemy import and_, delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
@@ -571,90 +572,28 @@ async def check_notifications_bulk(
     def _can_notify(last_time):
         return last_time is None or (now - _as_utc(last_time)) > timedelta(hours=hours)
 
+    size = _BULK_NOTIFICATION_BATCH_SIZE
+    if tg_ids and emails and len(tg_ids) == len(emails):
+        batches = _batched_pairs(tg_ids, emails, size)
+    elif tg_ids or emails:
+        batches = product(
+            _batched_list(tg_ids, size) if tg_ids else [None],
+            _batched_list(emails, size) if emails else [None],
+        )
+    else:
+        batches = [(None, None)]
+    dedupe = bool(tg_ids or emails)
+
     users: list[dict] = []
     seen: set[tuple[int, str | None]] = set()
-
-    if tg_ids and emails and len(tg_ids) == len(emails):
-        for tg_ids_chunk, emails_chunk in _batched_pairs(tg_ids, emails, _BULK_NOTIFICATION_BATCH_SIZE):
-            stmt = make_stmt(tg_ids_chunk, emails_chunk)
-            result = await session.execute(stmt)
-            for row in result:
-                key = (row.tg_id, row.email)
-                if key in seen:
-                    continue
-                seen.add(key)
-                last_time = row.last_notification_time
-                if _can_notify(last_time):
-                    users.append({
-                        "tg_id": row.tg_id,
-                        "email": row.email,
-                        "username": row.username,
-                        "first_name": row.first_name,
-                        "last_name": row.last_name,
-                        "last_notification_time": int(last_time.timestamp() * 1000) if last_time else None,
-                    })
-    elif tg_ids and emails:
-        for tg_ids_chunk in _batched_list(tg_ids, _BULK_NOTIFICATION_BATCH_SIZE):
-            for emails_chunk in _batched_list(emails, _BULK_NOTIFICATION_BATCH_SIZE):
-                stmt = make_stmt(tg_ids_chunk, emails_chunk)
-                result = await session.execute(stmt)
-                for row in result:
-                    key = (row.tg_id, row.email)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    last_time = row.last_notification_time
-                    if _can_notify(last_time):
-                        users.append({
-                            "tg_id": row.tg_id,
-                            "email": row.email,
-                            "username": row.username,
-                            "first_name": row.first_name,
-                            "last_name": row.last_name,
-                            "last_notification_time": int(last_time.timestamp() * 1000) if last_time else None,
-                        })
-    elif tg_ids:
-        for tg_ids_chunk in _batched_list(tg_ids, _BULK_NOTIFICATION_BATCH_SIZE):
-            stmt = make_stmt(tg_ids_chunk, None)
-            result = await session.execute(stmt)
-            for row in result:
-                key = (row.tg_id, row.email)
-                if key in seen:
-                    continue
-                seen.add(key)
-                last_time = row.last_notification_time
-                if _can_notify(last_time):
-                    users.append({
-                        "tg_id": row.tg_id,
-                        "email": row.email,
-                        "username": row.username,
-                        "first_name": row.first_name,
-                        "last_name": row.last_name,
-                        "last_notification_time": int(last_time.timestamp() * 1000) if last_time else None,
-                    })
-    elif emails:
-        for emails_chunk in _batched_list(emails, _BULK_NOTIFICATION_BATCH_SIZE):
-            stmt = make_stmt(None, emails_chunk)
-            result = await session.execute(stmt)
-            for row in result:
-                key = (row.tg_id, row.email)
-                if key in seen:
-                    continue
-                seen.add(key)
-                last_time = row.last_notification_time
-                if _can_notify(last_time):
-                    users.append({
-                        "tg_id": row.tg_id,
-                        "email": row.email,
-                        "username": row.username,
-                        "first_name": row.first_name,
-                        "last_name": row.last_name,
-                        "last_notification_time": int(last_time.timestamp() * 1000) if last_time else None,
-                    })
-    else:
-        stmt = make_stmt(None, None)
-        result = await session.execute(stmt)
+    for tg_ids_chunk, emails_chunk in batches:
+        result = await session.execute(make_stmt(tg_ids_chunk, emails_chunk))
         for row in result:
+            if dedupe:
+                key = (row.tg_id, row.email)
+                if key in seen:
+                    continue
+                seen.add(key)
             last_time = row.last_notification_time
             if _can_notify(last_time):
                 users.append({

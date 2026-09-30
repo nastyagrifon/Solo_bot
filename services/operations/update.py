@@ -22,6 +22,7 @@ from settings.config import PUBLIC_LINK, SUPERNODE
 
 from .aggregated_links import make_aggregated_link
 from .deletion import delete_key_from_cluster
+from .utils import resolve_cluster
 
 
 async def update_key_on_cluster(
@@ -39,19 +40,7 @@ async def update_key_on_cluster(
     external_squad_uuid: str | None = None,
 ):
     try:
-        servers = await get_servers(session)
-        cluster = servers.get(cluster_id)
-
-        if not cluster:
-            found_servers = []
-            for _key, server_list in servers.items():
-                for server_info in server_list:
-                    if server_info.get("server_name", "").lower() == cluster_id.lower():
-                        found_servers.append(server_info)
-            if found_servers:
-                cluster = found_servers
-            else:
-                raise ValueError(f"Кластер или сервер с ID/именем {cluster_id} не найден.")
+        cluster = await resolve_cluster(session, cluster_id)
 
         if tariff_id is not None:
             filtered = await filter_cluster_by_tariff(session, cluster, tariff_id, cluster_id)
