@@ -4,31 +4,17 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import aiohttp
 
-from aiogram import F, Router, types
-from aiogram.fsm.context import FSMContext
+from aiogram import Router
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import add_payment, async_session_maker
-from database.models import User
-from handlers.payments.keyboards import (
-    balance_fallback_kb,
-    build_amounts_keyboard,
-    parse_amount_from_callback,
-    pay_keyboard,
-    payment_options_for_user,
-)
-from handlers.utils import edit_or_send_message
+from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
-from services.payments.currency_rates import format_for_user, get_rub_rate, pick_currency, to_rub
+from services.payments.currency_rates import get_rub_rate
 from services.payments.payment_links import register_payment_creator
 from settings.buttons import (
-    BACK,
-    PAY_2,
     PLATEGA_CARDS,
     PLATEGA_CRYPTO,
     PLATEGA_INT,
@@ -109,259 +95,27 @@ def _platega_credentials_ok() -> bool:
     return bool((PLATEGA_MERCHANT_ID or "").strip()) and bool((PLATEGA_API_SECRET or "").strip())
 
 
-async def _get_user_language(session: AsyncSession, tg_id: int) -> str | None:
-    result = await session.execute(select(User.language_code).where(User.tg_id == tg_id))
-    return result.scalar_one_or_none()
-
-
-async def process_callback_pay_platega(
-    callback_query: types.CallbackQuery,
-    state: FSMContext,
-    session: AsyncSession,
-    method_name: str,
-):
-    try:
-        tg_id = callback_query.from_user.id
-        await state.clear()
-
-        method = PLATEGA_METHODS.get(method_name)
-        if not method or not _platega_method_enabled(method):
-            await edit_or_send_message(
-                target_message=callback_query.message,
-                text="Ошибка: выбранный способ оплаты недоступен.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-            )
-            return
-
-        if not _platega_credentials_ok():
-            logger.error("[Platega] Не заданы PLATEGA_MERCHANT_ID / PLATEGA_API_SECRET")
-            await edit_or_send_message(
-                target_message=callback_query.message,
-                text="Ошибка: платёжная система временно недоступна.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-            )
-            return
-
-        language_code = await _get_user_language(session, tg_id)
-        opts = await payment_options_for_user(
-            session,
-            tg_id,
-            language_code,
-            force_currency=method["currency"],
-        )
-        builder = build_amounts_keyboard(
-            prefix=f"platega_{method_name}",
-            pattern="{prefix}_amount|{price}",
-            back_cb="balance",
-            custom_cb=f"platega_custom_amount|{method_name}",
-            opts=opts,
-        )
-
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text=method["desc"],
-            reply_markup=builder,
-        )
-        await state.update_data(
-            platega_method=method_name,
-            message_id=callback_query.message.message_id,
-            chat_id=callback_query.message.chat.id,
-        )
-        await state.set_state(ReplenishBalancePlatega.choosing_amount)
-
-    except Exception as e:
-        logger.error(f"[Platega] Ошибка в process_callback_pay_platega для {callback_query.from_user.id}: {e}")
-        await callback_query.answer(
-            "Произошла ошибка при инициализации платежа. Попробуйте позже.",
-            show_alert=True,
-        )
-
-
-@router.callback_query(F.data == "pay_platega_sbp")
-async def _pay_platega_sbp(cb: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await process_callback_pay_platega(cb, state, session, "sbp")
-
-
-@router.callback_query(F.data == "pay_platega_cards")
-async def _pay_platega_cards(cb: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await process_callback_pay_platega(cb, state, session, "cards")
-
-
-@router.callback_query(F.data == "pay_platega_int")
-async def _pay_platega_int(cb: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await process_callback_pay_platega(cb, state, session, "int")
-
-
-@router.callback_query(F.data == "pay_platega_crypto")
-async def _pay_platega_crypto(cb: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await process_callback_pay_platega(cb, state, session, "crypto")
-
-
-@router.callback_query(F.data.startswith("platega_custom_amount|"))
-async def process_custom_amount_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    method_name = callback_query.data.split("|")[1]
-    method = PLATEGA_METHODS.get(method_name)
-    if not method:
-        return
-
-    await state.update_data(platega_method=method_name)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=BACK, callback_data=f"pay_platega_{method_name}"))
-
-    language_code = await _get_user_language(session, callback_query.from_user.id)
-    currency = pick_currency(language_code)
-    currency_text = "рублях (₽)" if currency == "RUB" else "долларах ($)"
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=f"Пожалуйста, введите сумму пополнения в {currency_text}.",
-        reply_markup=builder.as_markup(),
-    )
-    await state.set_state(ReplenishBalancePlatega.entering_custom_amount)
-
-
-@router.message(ReplenishBalancePlatega.entering_custom_amount)
-async def handle_custom_amount_input(message: types.Message, state: FSMContext, session: AsyncSession):
-    data = await state.get_data()
-    method_name = data.get("platega_method")
-    method = PLATEGA_METHODS.get(method_name)
-
-    if not method or not _platega_method_enabled(method):
-        await edit_or_send_message(
-            target_message=message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    language_code = await _get_user_language(session, message.from_user.id)
-    currency = pick_currency(language_code)
-
-    try:
-        user_amount = int(message.text.strip())
-        if user_amount <= 0:
-            raise ValueError
-
-        min_amount = PLATEGA_MIN_AMOUNTS.get(method_name, 10)
-        if currency == "USD":
-            min_amount = 1
-        currency_symbol = "$" if currency == "USD" else "₽"
-
-        if user_amount < min_amount:
-            await edit_or_send_message(
-                target_message=message,
-                text=f"❌ Минимальная сумма для оплаты через Platega — {currency_symbol}{min_amount}.",
-                reply_markup=balance_fallback_kb(),
-            )
-            return
-    except Exception:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Некорректная сумма. Введите целое число больше 0.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    if currency == "RUB":
-        amount_rub = user_amount
-    else:
-        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session_http:
-            amount_rub = int(await to_rub(user_amount, "USD", session=session_http))
-
-    await state.update_data(amount=amount_rub)
-    payment_url = await generate_platega_payment_link(amount_rub, message.chat.id, method, session)
-
-    if not payment_url:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    confirm_keyboard = pay_keyboard(payment_url, pay_text=PAY_2, back_cb="balance")
-
-    amount_text = await format_for_user(
-        session,
-        message.from_user.id,
-        float(amount_rub),
-        language_code,
-        force_currency=method["currency"],
-    )
-
-    await edit_or_send_message(
-        target_message=message,
-        text=PLATEGA_PAYMENT_MESSAGE.format(amount=amount_text),
-        reply_markup=confirm_keyboard,
-    )
-    await state.set_state(ReplenishBalancePlatega.waiting_for_payment_confirmation)
-
-
-@router.callback_query(
-    F.data.startswith("platega_sbp_amount|")
-    | F.data.startswith("platega_cards_amount|")
-    | F.data.startswith("platega_int_amount|")
-    | F.data.startswith("platega_crypto_amount|")
+process_callback_pay_platega = register_topup_flow(
+    router,
+    prefix="platega",
+    methods=PLATEGA_METHODS,
+    states=ReplenishBalancePlatega,
+    enabled=_platega_method_enabled,
+    payment_link=lambda amount, tg_id, method, session: generate_platega_payment_link(amount, tg_id, method, session),
+    payment_message=PLATEGA_PAYMENT_MESSAGE,
+    min_amount=lambda name, method: PLATEGA_MIN_AMOUNTS.get(name, 10),
+    input_min_text=lambda name: "❌ Минимальная сумма для оплаты через Platega — {symbol}{min}.",
+    amount_min_text=lambda name: "❌ Минимальная сумма для оплаты через Platega — {symbol}{min}.",
+    entry_error_log=lambda cq, e: f"[Platega] Ошибка в process_callback_pay_platega для {cq.from_user.id}: {e}",
+    multicurrency_input=True,
+    link_by_chat_id=True,
+    custom_back_cb="pay_platega_{method}",
+    custom_requires_method=True,
+    per_method_entry=True,
+    credentials_ok=_platega_credentials_ok,
+    credentials_log="[Platega] Не заданы PLATEGA_MERCHANT_ID / PLATEGA_API_SECRET",
+    credentials_text="Ошибка: платёжная система временно недоступна.",
 )
-async def process_amount_selection(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    prefixes = ["platega_sbp", "platega_cards", "platega_int", "platega_crypto"]
-    amount = parse_amount_from_callback(callback_query.data, prefixes=prefixes)
-    if amount is None:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Некорректная сумма.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    method_name = next((p.removeprefix("platega_") for p in prefixes if callback_query.data.startswith(f"{p}_amount|")), None)
-    method = PLATEGA_METHODS.get(method_name) if method_name else None
-
-    if not method or not _platega_method_enabled(method):
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    min_amount = PLATEGA_MIN_AMOUNTS.get(method_name, 10)
-    if amount < min_amount:
-        symbol = "$" if method["currency"] == "USD" else "₽"
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text=f"❌ Минимальная сумма для оплаты через Platega — {symbol}{min_amount}.",
-            reply_markup=balance_fallback_kb(),
-        )
-        return
-
-    await state.update_data(amount=amount)
-    payment_url = await generate_platega_payment_link(amount, callback_query.message.chat.id, method, session)
-
-    if not payment_url:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    confirm_keyboard = pay_keyboard(payment_url, pay_text=PAY_2, back_cb="balance")
-
-    tg_id = callback_query.from_user.id
-    language_code = await _get_user_language(session, tg_id)
-    amount_text = await format_for_user(
-        session, tg_id, float(amount), language_code, force_currency=method["currency"]
-    )
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=PLATEGA_PAYMENT_MESSAGE.format(amount=amount_text),
-        reply_markup=confirm_keyboard,
-    )
-    await state.set_state(ReplenishBalancePlatega.waiting_for_payment_confirmation)
 
 
 def _platega_headers() -> dict[str, str]:

@@ -7,35 +7,22 @@ import time
 
 import aiohttp
 
-from aiogram import F, Router, types
-from aiogram.fsm.context import FSMContext
+from aiogram import Router
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     NoEncryption,
     PrivateFormat,
     pkcs12,
 )
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
-from database.models import User
-from handlers.payments.keyboards import (
-    balance_fallback_kb,
-    build_amounts_keyboard,
-    parse_amount_from_callback,
-    pay_keyboard,
-    payment_options_for_user,
-)
-from handlers.utils import edit_or_send_message
+from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
-from services.payments.currency_rates import format_for_user
 from services.payments.payment_links import register_payment_creator
-from settings.buttons import BACK, OVERPAY_CARDS, OVERPAY_SBP, PAY_2
+from settings.buttons import OVERPAY_CARDS, OVERPAY_SBP
 from settings.config import (
     OVERPAY_API_URL,
     OVERPAY_CARDS_TERMINAL_ID,
@@ -206,211 +193,33 @@ def _base_url() -> str:
     return (OVERPAY_API_URL or "").rstrip("/")
 
 
-async def _get_user_language(session: AsyncSession, tg_id: int) -> str | None:
-    result = await session.execute(select(User.language_code).where(User.tg_id == tg_id))
-    return result.scalar_one_or_none()
+async def _payment_link(amount: int, tg_id: int, method: dict, session: AsyncSession) -> str | None:
+    result = await generate_overpay_payment_link(amount, tg_id, method, session)
+    return result[0] if result else None
 
 
-async def process_callback_pay_overpay(
-    callback_query: types.CallbackQuery,
-    state: FSMContext,
-    session: AsyncSession,
-    method_name: str,
-):
-    try:
-        tg_id = callback_query.from_user.id
-        await state.clear()
-
-        method = OVERPAY_METHODS.get(method_name)
-        if not method or not _overpay_method_enabled(method):
-            await edit_or_send_message(
-                target_message=callback_query.message,
-                text="Ошибка: выбранный способ оплаты недоступен.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-            )
-            return
-
-        if not _overpay_credentials_ok():
-            logger.error("[Overpay] Не заданы реквизиты API (URL/логин/пароль/сертификат)")
-            await edit_or_send_message(
-                target_message=callback_query.message,
-                text="Ошибка: платежная система временно недоступна.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-            )
-            return
-
-        language_code = await _get_user_language(session, tg_id)
-        opts = await payment_options_for_user(session, tg_id, language_code, force_currency="RUB")
-        builder = build_amounts_keyboard(
-            prefix=f"overpay_{method_name}",
-            pattern="{prefix}_amount|{price}",
-            back_cb="balance",
-            custom_cb=f"overpay_custom_amount|{method_name}",
-            opts=opts,
-        )
-
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text=method["desc"],
-            reply_markup=builder,
-        )
-        await state.update_data(
-            overpay_method=method_name,
-            message_id=callback_query.message.message_id,
-            chat_id=callback_query.message.chat.id,
-        )
-        await state.set_state(ReplenishBalanceOverpay.choosing_amount)
-    except Exception as e:
-        logger.error(f"[Overpay] Ошибка в process_callback_pay_overpay для {callback_query.from_user.id}: {e}")
-        await callback_query.answer(
-            "Произошла ошибка при инициализации платежа. Попробуйте позже.",
-            show_alert=True,
-        )
-
-
-@router.callback_query(F.data == "pay_overpay_cards")
-async def _pay_overpay_cards(cb: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await process_callback_pay_overpay(cb, state, session, "cards")
-
-
-@router.callback_query(F.data == "pay_overpay_sbp")
-async def _pay_overpay_sbp(cb: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await process_callback_pay_overpay(cb, state, session, "sbp")
-
-
-@router.callback_query(F.data.startswith("overpay_custom_amount|"))
-async def process_custom_amount_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    method_name = callback_query.data.split("|")[1]
-    method = OVERPAY_METHODS.get(method_name)
-    if not method:
-        return
-
-    await state.update_data(overpay_method=method_name)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=BACK, callback_data=f"pay_overpay_{method_name}"))
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text="Пожалуйста, введите сумму пополнения в рублях (₽).",
-        reply_markup=builder.as_markup(),
-    )
-    await state.set_state(ReplenishBalanceOverpay.entering_custom_amount)
-
-
-@router.message(ReplenishBalanceOverpay.entering_custom_amount)
-async def handle_custom_amount_input(message: types.Message, state: FSMContext, session: AsyncSession):
-    data = await state.get_data()
-    method_name = data.get("overpay_method")
-    method = OVERPAY_METHODS.get(method_name)
-
-    if not method or not _overpay_method_enabled(method) or not _overpay_credentials_ok():
-        await edit_or_send_message(
-            target_message=message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    try:
-        user_amount = int(message.text.strip())
-        if user_amount <= 0:
-            raise ValueError
-        if user_amount < OVERPAY_MIN_AMOUNT:
-            await edit_or_send_message(
-                target_message=message,
-                text=f"❌ Минимальная сумма для оплаты — {OVERPAY_MIN_AMOUNT}₽.",
-                reply_markup=balance_fallback_kb(),
-            )
-            return
-    except Exception:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Некорректная сумма. Введите целое число больше 0.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    await state.update_data(amount=user_amount)
-    result = await generate_overpay_payment_link(user_amount, message.from_user.id, method, session)
-    if not result:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    payment_url = result[0]
-    confirm_keyboard = pay_keyboard(payment_url, pay_text=PAY_2, back_cb="balance")
-    tg_id = message.from_user.id
-    language_code = await _get_user_language(session, tg_id)
-    amount_text = await format_for_user(session, tg_id, float(user_amount), language_code, force_currency="RUB")
-    await edit_or_send_message(
-        target_message=message,
-        text=OVERPAY_PAYMENT_MESSAGE.format(amount=amount_text),
-        reply_markup=confirm_keyboard,
-    )
-    await state.set_state(ReplenishBalanceOverpay.waiting_for_payment_confirmation)
-
-
-@router.callback_query(
-    F.data.startswith("overpay_cards_amount|") | F.data.startswith("overpay_sbp_amount|")
+process_callback_pay_overpay = register_topup_flow(
+    router,
+    prefix="overpay",
+    methods=OVERPAY_METHODS,
+    states=ReplenishBalanceOverpay,
+    enabled=_overpay_method_enabled,
+    payment_link=_payment_link,
+    payment_message=OVERPAY_PAYMENT_MESSAGE,
+    min_amount=lambda name, method: OVERPAY_MIN_AMOUNT,
+    input_min_text=lambda name: "❌ Минимальная сумма для оплаты — {min}₽.",
+    amount_min_text=lambda name: "❌ Минимальная сумма для оплаты — {min}₽.",
+    entry_error_log=lambda cq, e: f"[Overpay] Ошибка в process_callback_pay_overpay для {cq.from_user.id}: {e}",
+    multicurrency_input=False,
+    link_by_chat_id=False,
+    custom_back_cb="pay_overpay_{method}",
+    custom_requires_method=True,
+    per_method_entry=True,
+    credentials_ok=_overpay_credentials_ok,
+    credentials_log="[Overpay] Не заданы реквизиты API (URL/логин/пароль/сертификат)",
+    credentials_text="Ошибка: платежная система временно недоступна.",
+    credentials_on_amount=True,
 )
-async def process_amount_selection(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    prefixes = ["overpay_cards", "overpay_sbp"]
-    amount = parse_amount_from_callback(callback_query.data, prefixes=prefixes)
-    if amount is None:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Некорректная сумма.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    method_name = next(
-        (p.removeprefix("overpay_") for p in prefixes if callback_query.data.startswith(f"{p}_amount|")),
-        None,
-    )
-    method = OVERPAY_METHODS.get(method_name) if method_name else None
-
-    if not method or not _overpay_method_enabled(method) or not _overpay_credentials_ok():
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    if amount < OVERPAY_MIN_AMOUNT:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text=f"❌ Минимальная сумма для оплаты — {OVERPAY_MIN_AMOUNT}₽.",
-            reply_markup=balance_fallback_kb(),
-        )
-        return
-
-    await state.update_data(amount=amount)
-    result = await generate_overpay_payment_link(amount, callback_query.from_user.id, method, session)
-    if not result:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    payment_url = result[0]
-    confirm_keyboard = pay_keyboard(payment_url, pay_text=PAY_2, back_cb="balance")
-    tg_id = callback_query.from_user.id
-    language_code = await _get_user_language(session, tg_id)
-    amount_text = await format_for_user(session, tg_id, float(amount), language_code, force_currency="RUB")
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=OVERPAY_PAYMENT_MESSAGE.format(amount=amount_text),
-        reply_markup=confirm_keyboard,
-    )
-    await state.set_state(ReplenishBalanceOverpay.waiting_for_payment_confirmation)
 
 
 async def _create_via_preflight(

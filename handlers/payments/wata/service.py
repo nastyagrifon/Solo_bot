@@ -4,29 +4,17 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import aiohttp
 
-from aiogram import F, Router, types
-from aiogram.fsm.context import FSMContext
+from aiogram import Router
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import add_payment, async_session_maker
-from database.models import User
-from handlers.payments.keyboards import (
-    balance_fallback_kb,
-    build_amounts_keyboard,
-    parse_amount_from_callback,
-    pay_keyboard,
-    payment_options_for_user,
-)
-from handlers.utils import edit_or_send_message
+from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
-from services.payments.currency_rates import format_for_user, get_rub_rate, pick_currency, to_rub
+from services.payments.currency_rates import get_rub_rate
 from services.payments.payment_links import register_payment_creator
-from settings.buttons import BACK, PAY_2, WATA_INT, WATA_RU
+from settings.buttons import WATA_INT, WATA_RU
 from settings.config import (
     WATA_FAIL_URL,
     WATA_INT_TOKEN,
@@ -81,285 +69,26 @@ def _wata_method_enabled(method: dict) -> bool:
     return bool(PAYMENTS_CONFIG.get(method["provider_key"], False))
 
 
-async def get_user_language(session: AsyncSession, tg_id: int) -> str | None:
-    result = await session.execute(select(User.language_code).where(User.tg_id == tg_id))
-    return result.scalar_one_or_none()
-
-
-@router.callback_query(F.data == "pay_wata", flags={"popup": True})
-async def process_callback_pay_wata(
-    callback_query: types.CallbackQuery,
-    state: FSMContext,
-    session: AsyncSession,
-    method_name: str = None,
-):
-    try:
-        tg_id = callback_query.from_user.id
-        logger.info(f"User {tg_id} initiated Wata payment.")
-        await state.clear()
-
-        if method_name:
-            method = WATA_METHODS.get(method_name)
-            if not method or not _wata_method_enabled(method):
-                await edit_or_send_message(
-                    target_message=callback_query.message,
-                    text="Ошибка: выбранный способ оплаты недоступен.",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-                )
-                return
-
-            language_code = await get_user_language(session, tg_id)
-            opts = await payment_options_for_user(
-                session,
-                tg_id,
-                language_code,
-                force_currency=method["currency"],
-            )
-            builder = build_amounts_keyboard(
-                prefix=f"wata_{method_name}",
-                pattern="{prefix}_amount|{price}",
-                back_cb="balance",
-                custom_cb=f"wata_custom_amount|{method_name}",
-                opts=opts,
-            )
-
-            await edit_or_send_message(
-                target_message=callback_query.message,
-                text=method["desc"],
-                reply_markup=builder,
-            )
-            await state.update_data(
-                wata_method=method_name,
-                message_id=callback_query.message.message_id,
-                chat_id=callback_query.message.chat.id,
-            )
-            await state.set_state(ReplenishBalanceWata.choosing_amount)
-            return
-
-        builder = InlineKeyboardBuilder()
-        for name, method in WATA_METHODS.items():
-            if _wata_method_enabled(method):
-                builder.row(
-                    InlineKeyboardButton(
-                        text=method["button"],
-                        callback_data=f"wata_method|{name}",
-                    )
-                )
-        builder.row(InlineKeyboardButton(text=BACK, callback_data="balance"))
-
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Выберите способ оплаты через WATA:",
-            reply_markup=builder.as_markup(),
-        )
-        await state.update_data(
-            message_id=callback_query.message.message_id,
-            chat_id=callback_query.message.chat.id,
-        )
-        await state.set_state(ReplenishBalanceWata.choosing_method)
-
-    except Exception as e:
-        logger.error(f"Error in process_callback_pay_wata for user {callback_query.message.chat.id}: {e}")
-        await callback_query.answer(
-            "Произошла ошибка при инициализации платежа. Попробуйте позже.",
-            show_alert=True,
-        )
-
-
-@router.callback_query(F.data.startswith("wata_method|"))
-async def process_method_selection(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    method_name = callback_query.data.split("|")[1]
-    method = WATA_METHODS.get(method_name)
-
-    if not method or not _wata_method_enabled(method):
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    await state.update_data(wata_method=method_name)
-    tg_id = callback_query.from_user.id
-
-    language_code = await get_user_language(session, tg_id)
-    opts = await payment_options_for_user(
-        session,
-        tg_id,
-        language_code,
-        force_currency=method["currency"],
-    )
-    builder = build_amounts_keyboard(
-        prefix=f"wata_{method_name}",
-        pattern="{prefix}_amount|{price}",
-        back_cb="pay_wata",
-        custom_cb=f"wata_custom_amount|{method_name}",
-        opts=opts,
-    )
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=method["desc"],
-        reply_markup=builder,
-    )
-    await state.update_data(message_id=callback_query.message.message_id, chat_id=callback_query.message.chat.id)
-    await state.set_state(ReplenishBalanceWata.choosing_amount)
-
-
-@router.callback_query(F.data.startswith("wata_custom_amount|"))
-async def process_custom_amount_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    method_name = callback_query.data.split("|")[1]
-    await state.update_data(wata_method=method_name)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=BACK, callback_data=f"pay_wata_{method_name}"))
-
-    language_code = await get_user_language(session, callback_query.from_user.id)
-    currency = pick_currency(language_code)
-
-    currency_text = "рублях (₽)" if currency == "RUB" else "долларах ($)"
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=f"Пожалуйста, введите сумму пополнения в {currency_text}.",
-        reply_markup=builder.as_markup(),
-    )
-    await state.set_state(ReplenishBalanceWata.entering_custom_amount)
-
-
-@router.message(ReplenishBalanceWata.entering_custom_amount)
-async def handle_custom_amount_input(message: types.Message, state: FSMContext, session: AsyncSession):
-    data = await state.get_data()
-    method_name = data.get("wata_method")
-    method = WATA_METHODS.get(method_name)
-
-    if not method or not _wata_method_enabled(method):
-        await edit_or_send_message(
-            target_message=message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    language_code = await get_user_language(session, message.from_user.id)
-    currency = pick_currency(language_code)
-
-    try:
-        user_amount = int(message.text.strip())
-        if user_amount <= 0:
-            raise ValueError
-
-        min_amount = WATA_MIN_AMOUNTS.get(method_name, 10)
-        if currency == "USD":
-            min_amount = 1
-        currency_symbol = "$" if currency == "USD" else "₽"
-
-        if user_amount < min_amount:
-            await edit_or_send_message(
-                target_message=message,
-                text=f"❌ Минимальная сумма для оплаты через WATA — {currency_symbol}{min_amount}.",
-                reply_markup=balance_fallback_kb(),
-            )
-            return
-    except Exception:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Некорректная сумма. Введите целое число больше 0.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    if currency == "RUB":
-        amount_rub = user_amount
-    else:
-        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session_http:
-            amount_rub = int(await to_rub(user_amount, "USD", session=session_http))
-
-    await state.update_data(amount=amount_rub)
-    payment_url = await generate_wata_payment_link(amount_rub, message.chat.id, method, session)
-
-    if not payment_url:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    confirm_keyboard = pay_keyboard(payment_url, pay_text=PAY_2, back_cb="balance")
-
-    tg_id = message.from_user.id
-    amount_text = await format_for_user(
-        session, tg_id, float(amount_rub), language_code, force_currency=method["currency"]
-    )
-
-    await edit_or_send_message(
-        target_message=message,
-        text=WATA_PAYMENT_MESSAGE.format(amount=amount_text),
-        reply_markup=confirm_keyboard,
-    )
-
-    await state.set_state(ReplenishBalanceWata.waiting_for_payment_confirmation)
-
-
-@router.callback_query(F.data.startswith("wata_ru_amount|") | F.data.startswith("wata_int_amount|"))
-async def process_amount_selection(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    amount = parse_amount_from_callback(callback_query.data, prefixes=["wata_ru", "wata_int"])
-    if amount is None:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Некорректная сумма.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    method_name = "ru" if callback_query.data.startswith("wata_ru") else "int"
-    method = WATA_METHODS.get(method_name)
-
-    if not method or not _wata_method_enabled(method):
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="Ошибка: выбранный способ оплаты недоступен.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    min_amount = WATA_MIN_AMOUNTS.get(method_name, 10)
-    if amount < min_amount:
-        currency_symbol = "$" if method["currency"] == "USD" else "₽"
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text=f"❌ Минимальная сумма для оплаты через WATA — {currency_symbol}{min_amount}.",
-            reply_markup=balance_fallback_kb(),
-        )
-        return
-
-    await state.update_data(amount=amount)
-    payment_url = await generate_wata_payment_link(amount, callback_query.message.chat.id, method, session)
-
-    if not payment_url:
-        await edit_or_send_message(
-            target_message=callback_query.message,
-            text="❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
-        return
-
-    confirm_keyboard = pay_keyboard(payment_url, pay_text=PAY_2, back_cb="balance")
-
-    tg_id = callback_query.from_user.id
-    language_code = await get_user_language(session, tg_id)
-    amount_text = await format_for_user(
-        session, tg_id, float(amount), language_code, force_currency=method["currency"]
-    )
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=WATA_PAYMENT_MESSAGE.format(amount=amount_text),
-        reply_markup=confirm_keyboard,
-    )
-
-    await state.set_state(ReplenishBalanceWata.waiting_for_payment_confirmation)
+process_callback_pay_wata = register_topup_flow(
+    router,
+    prefix="wata",
+    methods=WATA_METHODS,
+    states=ReplenishBalanceWata,
+    enabled=_wata_method_enabled,
+    payment_link=lambda amount, tg_id, method, session: generate_wata_payment_link(amount, tg_id, method, session),
+    payment_message=WATA_PAYMENT_MESSAGE,
+    min_amount=lambda name, method: WATA_MIN_AMOUNTS.get(name, 10),
+    input_min_text=lambda name: "❌ Минимальная сумма для оплаты через WATA — {symbol}{min}.",
+    amount_min_text=lambda name: "❌ Минимальная сумма для оплаты через WATA — {symbol}{min}.",
+    entry_error_log=lambda cq, e: f"Error in process_callback_pay_wata for user {cq.message.chat.id}: {e}",
+    multicurrency_input=True,
+    link_by_chat_id=True,
+    custom_back_cb="pay_wata_{method}",
+    entry_log="User {tg_id} initiated Wata payment.",
+    menu_text="Выберите способ оплаты через WATA:",
+    method_back_cb="pay_wata",
+    entry_cb="pay_wata",
+)
 
 
 async def generate_wata_payment_link(
