@@ -4,17 +4,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.bootstrap import MODES_CONFIG
 from core.settings.tariffs_config import TARIFFS_CONFIG
-from database import get_tariff_by_id
-from handlers.utils import edit_or_send_message
-from hooks.hook_buttons import insert_hook_buttons
-from hooks.processors import process_addons_menu
 from logger import logger
 from services.payments.currency_rates import format_for_user
 from services.tariffs.pricing import calculate_config_price
 from settings.buttons import (
-    BACK,
     CONFIRM_ADDON_BUTTON_TEXT,
     DOWNGRADE_ADDON_BUTTON_TEXT,
 )
@@ -22,14 +16,14 @@ from settings.texts import (
     DOWNGRADE_INLINE_WARNING_TEXT,
 )
 
-from ....keys.utils import build_key_callback
 from ..utils import (
+    add_option_rows,
     build_addons_screen_text,
-    device_option_label,
     format_devices_label,
     format_traffic_label,
     is_not_downgrade,
-    traffic_option_label,
+    load_addons_screen_state,
+    send_addons_screen,
 )
 
 
@@ -37,15 +31,10 @@ router = Router()
 
 
 async def render_addons_screen(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    data = await state.get_data()
-    email = data.get("addon_key_email")
-    tariff_id = data.get("addon_tariff_id")
-    cfg = data.get("addon_tariff_config") or {}
-
-    logger.debug(
-        f"[ADDONS] render_addons_screen start: tg_id={callback.from_user.id} "
-        f"email={email} tariff_id={tariff_id} data={data}"
-    )
+    loaded = await load_addons_screen_state(callback, state, session, pack=False)
+    if loaded is None:
+        return
+    data, email, tariff, device_int_options, traffic_int_options = loaded
 
     current_devices = data.get("addon_current_device_limit")
     current_traffic_gb = data.get("addon_current_traffic_gb")
@@ -54,53 +43,7 @@ async def render_addons_screen(callback: CallbackQuery, state: FSMContext, sessi
     selected_devices = data.get("addon_selected_device_limit")
     selected_traffic_gb = data.get("addon_selected_traffic_gb")
 
-    if not email or not tariff_id:
-        logger.warning(f"[ADDONS] Нет email или tariff_id в состоянии: {data}")
-        await callback.message.answer("❌ Данные для изменения подписки не найдены.")
-        await state.clear()
-        return
-
-    tariff = await get_tariff_by_id(session, int(tariff_id))
-    if not tariff:
-        logger.error(f"[ADDONS] Тариф {tariff_id} не найден в render_addons_screen")
-        await callback.message.answer("❌ Тариф не найден.")
-        await state.clear()
-        return
-
     tariff_name = tariff.get("name") or "подписка"
-
-    raw_device_options = cfg.get("device_options") or []
-    raw_traffic_options = cfg.get("traffic_options_gb") or []
-
-    try:
-        device_options = sorted(
-            raw_device_options,
-            key=lambda v: (int(v) == 0, int(v)),
-        )
-    except (TypeError, ValueError):
-        device_options = raw_device_options
-
-    try:
-        traffic_options = sorted(
-            raw_traffic_options,
-            key=lambda v: (int(v) == 0, int(v)),
-        )
-    except (TypeError, ValueError):
-        traffic_options = raw_traffic_options
-
-    device_int_options: list[int] = []
-    for value in device_options:
-        try:
-            device_int_options.append(int(value))
-        except (TypeError, ValueError):
-            continue
-
-    traffic_int_options: list[int] = []
-    for value in traffic_options:
-        try:
-            traffic_int_options.append(int(value))
-        except (TypeError, ValueError):
-            continue
 
     has_device_option = bool(device_int_options)
     has_traffic_option = bool(traffic_int_options)
@@ -222,70 +165,7 @@ async def render_addons_screen(callback: CallbackQuery, state: FSMContext, sessi
         else []
     )
 
-    def _addon_stepper_row(options, selected, cb_prefix, label_fn):
-        try:
-            options = sorted(options, key=lambda v: (int(v) == 0, int(v)))
-        except (TypeError, ValueError):
-            pass
-        if not options:
-            return []
-        cur = int(selected) if selected is not None else options[0]
-        try:
-            idx = options.index(cur)
-        except ValueError:
-            idx = 0
-        prev_val = options[idx - 1] if idx > 0 else options[idx]
-        next_val = options[idx + 1] if idx < len(options) - 1 else options[idx]
-        left = "◀️" if idx > 0 else "▫️"
-        right = "▶️" if idx < len(options) - 1 else "▫️"
-        return [
-            InlineKeyboardButton(text=left, callback_data=f"{cb_prefix}|{email}|{prev_val}"),
-            InlineKeyboardButton(text=label_fn(options[idx]), callback_data=f"{cb_prefix}|{email}|{options[idx]}"),
-            InlineKeyboardButton(text=right, callback_data=f"{cb_prefix}|{email}|{next_val}"),
-        ]
-
-    use_pagination = bool((MODES_CONFIG or {}).get("TARIFF_OPTIONS_PAGINATION", True))
-    if use_pagination:
-        if allowed_devices:
-            builder.row(
-                *_addon_stepper_row(allowed_devices, selected_devices, "key_addons_devices", device_option_label)
-            )
-        if allowed_traffic:
-            builder.row(
-                *_addon_stepper_row(allowed_traffic, selected_traffic_gb, "key_addons_traffic", traffic_option_label)
-            )
-    else:
-        device_buttons = [
-            InlineKeyboardButton(
-                text=device_option_label(v)
-                + (" ✅" if selected_devices is not None and int(v) == int(selected_devices) else ""),
-                callback_data=f"key_addons_devices|{email}|{v}",
-            )
-            for v in allowed_devices
-        ]
-        traffic_buttons = [
-            InlineKeyboardButton(
-                text=traffic_option_label(v)
-                + (" ✅" if selected_traffic_gb is not None and int(v) == int(selected_traffic_gb) else ""),
-                callback_data=f"key_addons_traffic|{email}|{v}",
-            )
-            for v in allowed_traffic
-        ]
-        if device_buttons and traffic_buttons:
-            max_len = max(len(device_buttons), len(traffic_buttons))
-            for i in range(max_len):
-                row = []
-                if i < len(device_buttons):
-                    row.append(device_buttons[i])
-                if i < len(traffic_buttons):
-                    row.append(traffic_buttons[i])
-                builder.row(*row)
-        elif device_buttons:
-            for i in range(0, len(device_buttons), 2):
-                builder.row(*device_buttons[i : i + 2])
-        elif traffic_buttons:
-            for i in range(0, len(traffic_buttons), 2):
-                builder.row(*traffic_buttons[i : i + 2])
+    add_option_rows(builder, email, allowed_devices, selected_devices, allowed_traffic, selected_traffic_gb)
 
     if allow_downgrade and (devices_downgrade or traffic_downgrade):
         builder.row(
@@ -302,19 +182,4 @@ async def render_addons_screen(callback: CallbackQuery, state: FSMContext, sessi
             )
         )
 
-    builder.row(
-        InlineKeyboardButton(
-            text=BACK,
-            callback_data=build_key_callback("view_key", data.get("addon_key_client_id"), email),
-        )
-    )
-
-    module_buttons = await process_addons_menu(email=email, session=session)
-    builder = insert_hook_buttons(builder, module_buttons)
-
-    await edit_or_send_message(
-        target_message=callback.message,
-        text=text,
-        reply_markup=builder.as_markup(),
-    )
-    await callback.answer()
+    await send_addons_screen(callback, session, builder, text, data, email)
