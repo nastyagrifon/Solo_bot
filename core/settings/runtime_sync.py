@@ -3,9 +3,15 @@ from __future__ import annotations
 import asyncio
 import time
 
+from collections.abc import Callable
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from core.redis_cache import cache_get, cache_key, cache_set
+from database.models import Setting
+from database.settings_cache import settings_cache
 from settings.cache_config import (
     RUNTIME_CONFIG_SYNC_PULL_INTERVAL_SEC,
     RUNTIME_CONFIG_SYNC_TTL_SEC,
@@ -105,3 +111,81 @@ async def maybe_sync_runtime_configs(force: bool = False) -> bool:
             _apply_runtime_config(name, raw_value)
         _LOCAL_VERSION = remote_version
         return True
+
+
+# Общий цикл «строка Setting ↔ словарь *_CONFIG». Словарь правится на месте:
+# на него держат ссылки реестр и чужой код, пересоздавать его нельзя.
+Normalize = Callable[[dict[str, Any]], None]
+
+
+async def get_setting(session: AsyncSession, key: str) -> Setting | None:
+    result = await session.execute(select(Setting).where(Setting.key == key))
+    return result.scalar_one_or_none()
+
+
+def put_setting(session: AsyncSession, setting: Setting | None, key: str, value: Any, description: str) -> None:
+    """Пишет значение в найденную строку или добавляет новую."""
+    if setting is None:
+        session.add(Setting(key=key, value=value, description=description))
+    else:
+        setting.value = value
+
+
+def _merged(defaults: dict[str, Any], stored: Any, normalize: Normalize | None) -> dict[str, Any]:
+    merged = defaults.copy()
+    merged.update(stored)
+    if normalize is not None:
+        normalize(merged)
+    return merged
+
+
+def _replace(target: dict[str, Any], value: dict[str, Any], on_apply: Callable[[], None] | None) -> None:
+    target.clear()
+    target.update(value)
+    if on_apply is not None:
+        on_apply()
+
+
+async def load_setting(
+    session: AsyncSession,
+    key: str,
+    target: dict[str, Any],
+    defaults: dict[str, Any],
+    description: str,
+    normalize: Normalize | None = None,
+    on_apply: Callable[[], None] | None = None,
+) -> None:
+    """Дефолты поверх сохранённого; нет строки — создаёт её с дефолтами."""
+    setting = await get_setting(session, key)
+    merged = _merged(defaults, {} if setting is None else setting.value or {}, normalize)
+    put_setting(session, setting, key, merged, description)
+    _replace(target, merged, on_apply)
+    await session.flush()
+
+
+async def apply_setting(
+    key: str,
+    target: dict[str, Any],
+    value: dict[str, Any],
+    on_apply: Callable[[], None] | None = None,
+) -> None:
+    """Раздаёт новое значение: словарь процесса, settings_cache, остальные процессы."""
+    _replace(target, value, on_apply)
+    settings_cache.update(key, value)
+    await publish_runtime_config(key, value)
+
+
+async def update_setting(
+    session: AsyncSession,
+    key: str,
+    target: dict[str, Any],
+    new_values: dict[str, Any],
+    defaults: dict[str, Any],
+    description: str,
+    normalize: Normalize | None = None,
+    on_apply: Callable[[], None] | None = None,
+) -> None:
+    """В БД уходит new_values как есть, в память — они же поверх дефолтов."""
+    put_setting(session, await get_setting(session, key), key, new_values, description)
+    await session.commit()
+    await apply_setting(key, target, _merged(defaults, new_values, normalize), on_apply)

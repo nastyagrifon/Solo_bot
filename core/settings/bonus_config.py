@@ -1,19 +1,16 @@
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Setting
-from database.settings_cache import settings_cache
-
 from ..defaults import DEFAULT_BONUS_CONFIG
-from .runtime_sync import publish_runtime_config, register_runtime_config
+from .runtime_sync import load_setting, register_runtime_config, update_setting
 
 
 BONUS_CONFIG: dict[str, Any] = DEFAULT_BONUS_CONFIG.copy()
 BONUS_SETTING_KEY = "BONUS_CONFIG"
 register_runtime_config(BONUS_SETTING_KEY, BONUS_CONFIG)
+_DESCRIPTION = "Бонусы пользователям"
 
 BONUS_MODES: tuple[str, ...] = ("fixed", "range", "streak")
 
@@ -182,50 +179,8 @@ def is_daily_bonus_enabled() -> bool:
 
 
 async def load_bonus_config(session: AsyncSession) -> None:
-    stmt = select(Setting).where(Setting.key == BONUS_SETTING_KEY)
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        bonus_config = DEFAULT_BONUS_CONFIG.copy()
-        setting = Setting(
-            key=BONUS_SETTING_KEY,
-            value=bonus_config,
-            description="Бонусы пользователям",
-        )
-        session.add(setting)
-    else:
-        stored = setting.value or {}
-        bonus_config = DEFAULT_BONUS_CONFIG.copy()
-        bonus_config.update(stored)
-        setting.value = bonus_config
-
-    BONUS_CONFIG.clear()
-    BONUS_CONFIG.update(bonus_config)
-    await session.flush()
+    await load_setting(session, BONUS_SETTING_KEY, BONUS_CONFIG, DEFAULT_BONUS_CONFIG, _DESCRIPTION)
 
 
 async def update_bonus_config(session: AsyncSession, new_values: dict[str, Any]) -> None:
-    stmt = select(Setting).where(Setting.key == BONUS_SETTING_KEY)
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        setting = Setting(
-            key=BONUS_SETTING_KEY,
-            value=new_values,
-            description="Бонусы пользователям",
-        )
-        session.add(setting)
-    else:
-        setting.value = new_values
-
-    await session.commit()
-
-    bonus_config = DEFAULT_BONUS_CONFIG.copy()
-    bonus_config.update(new_values)
-
-    BONUS_CONFIG.clear()
-    BONUS_CONFIG.update(bonus_config)
-    settings_cache.update(BONUS_SETTING_KEY, bonus_config)
-    await publish_runtime_config(BONUS_SETTING_KEY, bonus_config)
+    await update_setting(session, BONUS_SETTING_KEY, BONUS_CONFIG, new_values, DEFAULT_BONUS_CONFIG, _DESCRIPTION)

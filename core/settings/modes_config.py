@@ -1,15 +1,12 @@
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Setting
-from database.settings_cache import settings_cache
-
 from ..defaults import DEFAULT_MODES_CONFIG
-from .runtime_sync import publish_runtime_config, register_runtime_config
+from .runtime_sync import load_setting, register_runtime_config, update_setting
 
 
 MODES_CONFIG: dict[str, bool] = DEFAULT_MODES_CONFIG.copy()
 register_runtime_config("MODES_CONFIG", MODES_CONFIG)
+_DESCRIPTION = "Конфигурация режимов работы бота"
 
 
 def resolve_protect_content() -> bool:
@@ -32,52 +29,23 @@ def apply_protect_content_to_bot() -> None:
 
 
 async def load_modes_config(session: AsyncSession) -> None:
-    stmt = select(Setting).where(Setting.key == "MODES_CONFIG")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        modes_config = DEFAULT_MODES_CONFIG.copy()
-        setting = Setting(
-            key="MODES_CONFIG",
-            value=modes_config,
-            description="Конфигурация режимов работы бота",
-        )
-        session.add(setting)
-    else:
-        stored = setting.value or {}
-        modes_config = DEFAULT_MODES_CONFIG.copy()
-        modes_config.update(stored)
-        setting.value = modes_config
-
-    MODES_CONFIG.clear()
-    MODES_CONFIG.update(modes_config)
-    apply_protect_content_to_bot()
-    await session.flush()
+    await load_setting(
+        session,
+        "MODES_CONFIG",
+        MODES_CONFIG,
+        DEFAULT_MODES_CONFIG,
+        _DESCRIPTION,
+        on_apply=apply_protect_content_to_bot,
+    )
 
 
 async def update_modes_config(session: AsyncSession, new_values: dict[str, bool]) -> None:
-    stmt = select(Setting).where(Setting.key == "MODES_CONFIG")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        setting = Setting(
-            key="MODES_CONFIG",
-            value=new_values,
-            description="Конфигурация режимов работы бота",
-        )
-        session.add(setting)
-    else:
-        setting.value = new_values
-
-    await session.commit()
-
-    modes_config = DEFAULT_MODES_CONFIG.copy()
-    modes_config.update(new_values)
-
-    MODES_CONFIG.clear()
-    MODES_CONFIG.update(modes_config)
-    apply_protect_content_to_bot()
-    settings_cache.update("MODES_CONFIG", modes_config)
-    await publish_runtime_config("MODES_CONFIG", modes_config)
+    await update_setting(
+        session,
+        "MODES_CONFIG",
+        MODES_CONFIG,
+        new_values,
+        DEFAULT_MODES_CONFIG,
+        _DESCRIPTION,
+        on_apply=apply_protect_content_to_bot,
+    )
