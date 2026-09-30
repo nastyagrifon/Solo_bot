@@ -8,6 +8,7 @@ from filters.admin import IsAdminFilter
 from ..panel.headers import menu_text, quote
 from ..panel.keyboard import AdminPanelCallback
 from .keyboard import BUTTON_TITLES, build_settings_buttons_kb
+from .toggle import toggle_setting
 
 
 router = Router(name="admin_settings_buttons")
@@ -37,21 +38,11 @@ async def toggle_button_setting(
     callback_data: AdminPanelCallback,
     session: AsyncSession,
 ) -> None:
-    keys = list(BUTTON_TITLES.keys())
-    idx = callback_data.page
-
-    if not 1 <= idx <= len(keys):
-        await callback.answer("Неизвестная настройка", show_alert=True)
+    config = await toggle_setting(
+        callback, session, callback_data.page, BUTTON_TITLES, BUTTONS_CONFIG, update_buttons_config
+    )
+    if config is None:
         return
-
-    key = keys[idx - 1]
-
-    config = dict(BUTTONS_CONFIG or {})
-    current = bool(config.get(key, False))
-    config[key] = not current
-
-    await update_buttons_config(session, config)
-
     buttons_state = {k: bool(config.get(k, False)) for k in BUTTON_TITLES.keys()}
     await callback.message.edit_reply_markup(reply_markup=build_settings_buttons_kb(buttons_state))
     await callback.answer(menu_text("Кнопки", "Настройка обновлена"))
