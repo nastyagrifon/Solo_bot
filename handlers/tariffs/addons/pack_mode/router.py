@@ -9,7 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import MODES_CONFIG
-from core.settings.tariffs_config import TARIFFS_CONFIG, normalize_tariff_config
+from core.settings.tariffs_config import TARIFFS_CONFIG
 from database import (
     get_balance,
     get_key_details,
@@ -38,10 +38,14 @@ from settings.texts import (
     INSUFFICIENT_FUNDS_RENEWAL_MSG,
 )
 
-from ....keys.utils import resolve_key
 from ..utils import (
     KeyAddonConfigState,
     calc_remaining_ratio_seconds,
+    current_limits_from_record,
+    int_options,
+    load_key_for_addons,
+    log_start_options,
+    sort_options,
 )
 from .screen import render_addons_screen
 
@@ -51,55 +55,13 @@ router = Router()
 
 @router.callback_query(F.data.startswith("key_addons|"), flags={"popup": True})
 async def start_key_addons(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    key_ref = callback.data.split("|", 1)[1]
-    key_obj = await resolve_key(session, callback.from_user.id, key_ref)
-    email = key_obj.email if key_obj else key_ref
-    logger.debug(f"[ADDONS] PACK_MODE start_key_addons: tg_id={callback.from_user.id} email={email}")
-
-    record = await get_key_details(session, email)
-    if not record:
-        logger.warning(f"[ADDONS] PACK_MODE: подписка {email} не найдена")
-        await callback.message.answer("❌ Подписка не найдена.")
+    loaded = await load_key_for_addons(callback, session, pack=True)
+    if loaded is None:
         return
-    if record.get("tg_id") != callback.from_user.id:
-        await callback.answer("Доступ запрещён.", show_alert=True)
-        return
+    email, record, tariff_id, tariff, cfg, raw_device_options, raw_traffic_options = loaded
 
-    tariff_id = record.get("tariff_id")
-    if not tariff_id:
-        logger.warning(f"[ADDONS] PACK_MODE: для подписки {email} не назначен тариф")
-        await callback.message.answer("❌ Для этой подписки тариф не назначен, расширение недоступно.")
-        return
-
-    tariff = await get_tariff_by_id(session, int(tariff_id))
-    if not tariff:
-        logger.error(f"[ADDONS] PACK_MODE: тариф {tariff_id} не найден для email={email}")
-        await callback.message.answer("❌ Тариф не найден.")
-        return
-
-    if not tariff.get("configurable"):
-        logger.info(f"[ADDONS] PACK_MODE: тариф {tariff_id} не конфигурируемый, расширение недоступно")
-        await callback.message.answer("❌ Для этого тарифа расширение через конфигуратор недоступно.")
-        return
-
-    cfg = normalize_tariff_config(tariff)
-
-    raw_device_options = cfg.get("device_options") or tariff.get("device_options") or []
-    raw_traffic_options = cfg.get("traffic_options_gb") or tariff.get("traffic_options_gb") or []
-
-    device_int_options: list[int] = []
-    for value in raw_device_options:
-        try:
-            device_int_options.append(int(value))
-        except (TypeError, ValueError):
-            continue
-
-    traffic_int_options: list[int] = []
-    for value in raw_traffic_options:
-        try:
-            traffic_int_options.append(int(value))
-        except (TypeError, ValueError):
-            continue
+    device_int_options = int_options(raw_device_options)
+    traffic_int_options = int_options(raw_traffic_options)
 
     base_device_limit = cfg.get("base_device_limit")
     if base_device_limit is None:
@@ -141,49 +103,11 @@ async def start_key_addons(callback: CallbackQuery, state: FSMContext, session: 
         raw_traffic_options.append(0)
         traffic_int_options.append(0)
 
-    try:
-        device_options = sorted(
-            raw_device_options,
-            key=lambda v: (int(v) == 0, int(v)),
-        )
-    except (TypeError, ValueError):
-        device_options = raw_device_options
+    device_options = sort_options(raw_device_options)
+    traffic_options = sort_options(raw_traffic_options)
+    log_start_options(True, email, tariff_id, device_options, traffic_options)
 
-    try:
-        traffic_options = sorted(
-            raw_traffic_options,
-            key=lambda v: (int(v) == 0, int(v)),
-        )
-    except (TypeError, ValueError):
-        traffic_options = raw_traffic_options
-
-    logger.info(
-        "[ADDONS] PACK_MODE start_key_addons options: "
-        f"email={email} tariff_id={tariff_id} "
-        f"device_options={device_options} traffic_options={traffic_options}"
-    )
-
-    selected_device_limit_db = record.get("selected_device_limit")
-    selected_traffic_limit_db = record.get("selected_traffic_limit")
-    current_device_limit_db = record.get("current_device_limit")
-    current_traffic_limit_db = record.get("current_traffic_limit")
-
-    base_devices = tariff.get("device_limit")
-    base_devices = int(base_devices) if base_devices is not None else None
-
-    base_traffic_bytes = tariff.get("traffic_limit")
-    base_traffic_gb_value = int(base_traffic_bytes / GB) if base_traffic_bytes else None
-
-    current_devices = (
-        int(current_device_limit_db)
-        if current_device_limit_db is not None
-        else (int(selected_device_limit_db) if selected_device_limit_db is not None else base_devices)
-    )
-    current_traffic_gb = (
-        int(current_traffic_limit_db)
-        if current_traffic_limit_db is not None
-        else (int(selected_traffic_limit_db) if selected_traffic_limit_db is not None else base_traffic_gb_value)
-    )
+    current_devices, current_traffic_gb = current_limits_from_record(record, tariff)
 
     pack_devices, pack_traffic, pack_mode = get_pack_flags()
 
