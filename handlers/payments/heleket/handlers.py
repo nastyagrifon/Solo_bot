@@ -10,6 +10,7 @@ from settings.texts import DEFAULT_PAYMENT_MESSAGE
 
 from .service import (
     HELEKET_METHODS,
+    _heleket_method_enabled,
     generate_heleket_payment_link,
     process_callback_pay_heleket,
     router as service_router,
@@ -36,7 +37,7 @@ def _prepare(method_name: str, amount: int):
             "text": "❌ Минимальная сумма для оплаты криптовалютой — 10₽ (≈0.1$).",
             "reply_markup": balance_fallback_kb(),
         }
-    enabled_methods = [m for m in HELEKET_METHODS.values() if m["enable"]]
+    enabled_methods = [m for m in HELEKET_METHODS.values() if _heleket_method_enabled(m)]
     if not enabled_methods:
         return None, {"text": "❌ Способ оплаты Heleket временно недоступен."}
     return enabled_methods[0], None

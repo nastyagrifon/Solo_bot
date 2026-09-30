@@ -10,6 +10,7 @@ from settings.texts import DEFAULT_PAYMENT_MESSAGE
 
 from .service import (
     PARITYPAY_METHODS,
+    _paritypay_method_enabled,
     generate_paritypay_payment_link,
     process_callback_pay_paritypay,
     router as service_router,
@@ -27,7 +28,7 @@ async def handle_pay_paritypay_sbp(callback_query: types.CallbackQuery, state: F
 
 def _prepare(method_name: str, amount: int):
     method = PARITYPAY_METHODS.get(method_name)
-    if not method or not method["enable"]:
+    if not method or not _paritypay_method_enabled(method):
         return None, {"text": "❌ Способ оплаты ParityPay временно недоступен."}
     if amount < method["min_amount"]:
         return None, {

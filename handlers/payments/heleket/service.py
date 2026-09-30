@@ -11,6 +11,7 @@ from aiogram import Router
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
@@ -23,7 +24,6 @@ from settings.config import (
     HELEKET_MERCHANT_ID,
     HELEKET_RETURN_URL,
     HELEKET_SUCCESS_URL,
-    PROVIDERS_ENABLED,
 )
 from settings.texts import (
     HELEKET_CRYPTO_DESCRIPTION,
@@ -43,13 +43,17 @@ class ReplenishBalanceHeleket(StatesGroup):
 
 HELEKET_METHODS = {
     "crypto": {
-        "enable": PROVIDERS_ENABLED.get("HELEKET", False),
+        "provider_key": "HELEKET",
         "currency": "USD",
         "to_currency": None,
         "button": HELEKET,
         "desc": HELEKET_CRYPTO_DESCRIPTION,
     },
 }
+
+
+def _heleket_method_enabled(method: dict) -> bool:
+    return bool(PAYMENTS_CONFIG.get(method["provider_key"], False))
 
 
 async def _payment_link(amount: int, tg_id: int, method: dict, session: AsyncSession) -> str | None:
@@ -64,7 +68,7 @@ process_callback_pay_heleket = register_topup_flow(
     prefix="heleket",
     methods=HELEKET_METHODS,
     states=ReplenishBalanceHeleket,
-    enabled=lambda method: method["enable"],
+    enabled=_heleket_method_enabled,
     payment_link=_payment_link,
     payment_message=HELEKET_PAYMENT_MESSAGE,
     min_amount=lambda name, method: 10,
@@ -185,7 +189,7 @@ async def create_link(
     metadata: dict | None,
 ) -> tuple[str, str | None]:
     method = HELEKET_METHODS.get("crypto")
-    if not method or not method.get("enable"):
+    if not method or not _heleket_method_enabled(method):
         raise ValueError("Heleket недоступен")
     amount_int = int(amount)
     order_id = f"{int(time.time())}_{tg_id}"

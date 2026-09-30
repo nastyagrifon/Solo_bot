@@ -9,6 +9,7 @@ from aiogram import Router
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
@@ -21,7 +22,6 @@ from settings.config import (
     PARITYPAY_FAIL_URL,
     PARITYPAY_SHOP_ID,
     PARITYPAY_SUCCESS_URL,
-    PROVIDERS_ENABLED,
 )
 from settings.texts import (
     PARITYPAY_PAYMENT_MESSAGE,
@@ -41,13 +41,17 @@ class ReplenishBalanceParityPay(StatesGroup):
 
 PARITYPAY_METHODS = {
     "sbp": {
-        "enable": PROVIDERS_ENABLED.get("PARITYPAY_SBP", False),
+        "provider_key": "PARITYPAY_SBP",
         "service": "sbp",
         "button": PARITYPAY_SBP,
         "desc": PARITYPAY_SBP_DESCRIPTION,
         "min_amount": 10,
     },
 }
+
+
+def _paritypay_method_enabled(method: dict) -> bool:
+    return bool(PAYMENTS_CONFIG.get(method["provider_key"], False))
 
 
 def _build_signature_string(payload: dict) -> str:
@@ -77,7 +81,7 @@ process_callback_pay_paritypay = register_topup_flow(
     prefix="paritypay",
     methods=PARITYPAY_METHODS,
     states=ReplenishBalanceParityPay,
-    enabled=lambda method: method["enable"],
+    enabled=_paritypay_method_enabled,
     payment_link=lambda amount, tg_id, method, session: generate_paritypay_payment_link(amount, tg_id, method, session),
     payment_message=PARITYPAY_PAYMENT_MESSAGE,
     min_amount=lambda name, method: method["min_amount"],
@@ -168,7 +172,7 @@ def _create_link_factory(method_name: str):
         if currency != "RUB":
             raise ValueError("ParityPay поддерживает только RUB")
         method = PARITYPAY_METHODS.get(method_name)
-        if not method or not method.get("enable"):
+        if not method or not _paritypay_method_enabled(method):
             raise ValueError("Способ оплаты ParityPay недоступен")
         amount_int = int(amount)
         if amount_int < method["min_amount"]:
