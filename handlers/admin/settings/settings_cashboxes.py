@@ -10,6 +10,7 @@ from services.payments.providers import PROVIDERS_BASE, _get_effective_order
 from ..panel.headers import menu_text, quote
 from ..panel.keyboard import AdminPanelCallback
 from .keyboard import PAYMENT_PROVIDER_TITLES, build_providers_order_kb, build_settings_cashboxes_kb
+from .toggle import toggle_setting
 
 
 router = Router(name="admin_settings_cashboxes")
@@ -48,28 +49,14 @@ async def toggle_cashbox_setting(
     callback_data: AdminPanelCallback,
     session: AsyncSession,
 ) -> None:
-    keys = list(PAYMENT_PROVIDER_TITLES.keys())
-    index = callback_data.page
-
-    if not 1 <= index <= len(keys):
-        await callback.answer("Неизвестная касса", show_alert=True)
+    config = await toggle_setting(
+        callback, session, callback_data.page, PAYMENT_PROVIDER_TITLES, PAYMENTS_CONFIG, update_payments_config,
+        "Неизвестная касса",
+    )
+    if config is None:
         return
-
-    provider_code = keys[index - 1]
-
-    config = dict(PAYMENTS_CONFIG or {})
-    current_value = bool(config.get(provider_code, False))
-    config[provider_code] = not current_value
-
-    await update_payments_config(
-        session,
-        config,
-    )
-
     updated_state = {k: bool(config.get(k, False)) for k in PAYMENT_PROVIDER_TITLES.keys()}
-    await callback.message.edit_reply_markup(
-        reply_markup=build_settings_cashboxes_kb(updated_state),
-    )
+    await callback.message.edit_reply_markup(reply_markup=build_settings_cashboxes_kb(updated_state))
     await callback.answer(menu_text("Кассы", "Настройка обновлена"))
 
 

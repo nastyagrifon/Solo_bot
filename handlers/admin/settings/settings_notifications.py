@@ -17,6 +17,7 @@ from .keyboard import (
     build_settings_notifications_intervals_kb,
     build_settings_notifications_kb,
 )
+from .toggle import toggle_setting
 
 
 router = Router(name="admin_settings_notifications")
@@ -85,22 +86,13 @@ async def toggle_admin_notification_setting(
     callback_data: AdminPanelCallback,
     session: AsyncSession,
 ) -> None:
-    keys = list(ADMIN_NOTIFICATION_TITLES.keys())
-    idx = callback_data.page
-
-    if not 1 <= idx <= len(keys):
-        await callback.answer("Неизвестная настройка", show_alert=True)
-        return
-
-    key = keys[idx - 1]
-    config = dict(NOTIFICATIONS_CONFIG or {})
-    config[key] = not bool(config.get(key, False))
-    await update_notifications_config(session, config)
-
-    notifications_state = await load_notification_settings()
-    await callback.message.edit_reply_markup(
-        reply_markup=build_settings_notifications_admin_kb(notifications_state),
+    config = await toggle_setting(
+        callback, session, callback_data.page, ADMIN_NOTIFICATION_TITLES, NOTIFICATIONS_CONFIG, update_notifications_config
     )
+    if config is None:
+        return
+    notifications_state = await load_notification_settings()
+    await callback.message.edit_reply_markup(reply_markup=build_settings_notifications_admin_kb(notifications_state))
     await callback.answer(menu_text("Уведомления админу", "Настройка обновлена"))
 
 
@@ -110,25 +102,13 @@ async def toggle_notification_setting(
     callback_data: AdminPanelCallback,
     session: AsyncSession,
 ) -> None:
-    keys = list(NOTIFICATION_TITLES.keys())
-    idx = callback_data.page
-
-    if not 1 <= idx <= len(keys):
-        await callback.answer("Неизвестная настройка", show_alert=True)
-        return
-
-    key = keys[idx - 1]
-
-    config = dict(NOTIFICATIONS_CONFIG or {})
-    current = bool(config.get(key, False))
-    config[key] = not current
-
-    await update_notifications_config(session, config)
-
-    notifications_state = await load_notification_settings()
-    await callback.message.edit_reply_markup(
-        reply_markup=build_settings_notifications_kb(notifications_state),
+    config = await toggle_setting(
+        callback, session, callback_data.page, NOTIFICATION_TITLES, NOTIFICATIONS_CONFIG, update_notifications_config
     )
+    if config is None:
+        return
+    notifications_state = await load_notification_settings()
+    await callback.message.edit_reply_markup(reply_markup=build_settings_notifications_kb(notifications_state))
     await callback.answer(menu_text("Уведомления", "Настройка обновлена"))
 
 
