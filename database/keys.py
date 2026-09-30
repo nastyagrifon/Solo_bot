@@ -535,49 +535,32 @@ async def update_key_expiry(
         pass
 
 
+async def _set_frozen(session: AsyncSession, legacy_user_ref: int, client_id: str, expiry: int, frozen: bool):
+    u = await resolve_user_optional(session, legacy_user_ref)
+    if u is None:
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE keys
+            SET expiry_time = :expiry,
+                is_frozen = :frozen
+            WHERE user_id = :user_id
+              AND client_id = :client_id
+            """
+        ),
+        {"expiry": expiry, "frozen": frozen, "user_id": u.id, "client_id": client_id},
+    )
+    await invalidate_keys_list(session, u.id)
+    await invalidate_key_details_by_client_id(session, client_id)
+
+
 async def mark_key_as_frozen(session: AsyncSession, legacy_user_ref: int, client_id: str, time_left: int):
-    u = await resolve_user_optional(session, legacy_user_ref)
-    if u is None:
-        return
-    await session.execute(
-        text(
-            """
-            UPDATE keys
-            SET expiry_time = :expiry,
-                is_frozen = TRUE
-            WHERE user_id = :user_id
-              AND client_id = :client_id
-            """
-        ),
-        {"expiry": time_left, "user_id": u.id, "client_id": client_id},
-    )
-    await invalidate_keys_list(session, u.id)
-    await invalidate_key_details_by_client_id(session, client_id)
+    await _set_frozen(session, legacy_user_ref, client_id, time_left, True)
 
 
-async def mark_key_as_unfrozen(
-    session: AsyncSession,
-    legacy_user_ref: int,
-    client_id: str,
-    new_expiry_time: int,
-):
-    u = await resolve_user_optional(session, legacy_user_ref)
-    if u is None:
-        return
-    await session.execute(
-        text(
-            """
-            UPDATE keys
-            SET expiry_time = :expiry,
-                is_frozen = FALSE
-            WHERE user_id = :user_id
-              AND client_id = :client_id
-            """
-        ),
-        {"expiry": new_expiry_time, "user_id": u.id, "client_id": client_id},
-    )
-    await invalidate_keys_list(session, u.id)
-    await invalidate_key_details_by_client_id(session, client_id)
+async def mark_key_as_unfrozen(session: AsyncSession, legacy_user_ref: int, client_id: str, new_expiry_time: int):
+    await _set_frozen(session, legacy_user_ref, client_id, new_expiry_time, False)
 
 
 async def update_key_tariff(session: AsyncSession, client_id: str, tariff_id: int):

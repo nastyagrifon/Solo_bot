@@ -26,6 +26,7 @@ from bot import bot
 from database.access.resolution import resolve_user_optional
 from database.models import Key, Notification
 from logger import logger
+from services.clusters import is_full_remnawave_cluster  # noqa: F401  (реэкспорт: им пользуются модули)
 from services.formatting import format_days, format_hours, format_minutes
 from settings.config import ADMIN_ID
 
@@ -445,40 +446,15 @@ def convert_to_bytes(value: float, unit: str) -> int:
     return int(value * units.get(unit.upper(), 1))
 
 
-async def is_full_remnawave_cluster(cluster_id: str, session: AsyncSession) -> bool:
-    from services.clusters import is_full_remnawave_cluster as _svc
-
-    return await _svc(cluster_id, session)
-
-
-RUSSIAN_MONTHS = {
-    "January": "января",
-    "February": "февраля",
-    "March": "марта",
-    "April": "апреля",
-    "May": "мая",
-    "June": "июня",
-    "July": "июля",
-    "August": "августа",
-    "September": "сентября",
-    "October": "октября",
-    "November": "ноября",
-    "December": "декабря",
-}
+RUSSIAN_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
 
 
 def get_russian_month(date: datetime) -> str:
-    """
-    Преобразует английское название месяца в русское.
-
-    Args:
-        date: Объект datetime, из которого извлекается месяц.
-
-    Returns:
-        Название месяца на русском языке.
-    """
-    english_month = date.strftime("%B")
-    return RUSSIAN_MONTHS.get(english_month, english_month)
+    """Месяц даты в родительном падеже: «января», «февраля»…"""
+    return RUSSIAN_MONTHS[date.month - 1]
 
 
 def get_username(user) -> str:
