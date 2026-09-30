@@ -1,5 +1,4 @@
 import os
-import urllib.parse
 
 from typing import Any
 
@@ -9,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.bootstrap import MODES_CONFIG
 from database import get_key_details, get_subscription_link
-from handlers.keys.utils import build_key_callback, key_owned_by_user, resolve_key
+from handlers.keys.utils import build_key_callback, happ_import_url, key_owned_by_user, resolve_key
 from handlers.utils import build_support_button, edit_or_send_message
 from hooks.processors import process_remnawave_webapp_override
 from services.clusters import is_full_remnawave_cluster
@@ -119,8 +118,16 @@ async def process_connect_pc(callback_query: CallbackQuery, session: Any):
     )
 
 
-@router.callback_query(F.data.startswith("windows_menu|"), flags={"popup": True})
-async def process_windows_menu(callback_query: CallbackQuery, session: Any):
+@router.callback_query(F.data.startswith(("windows_menu|", "macos_menu|")), flags={"popup": True})
+async def process_pc_menu(callback_query: CallbackQuery, session: Any):
+    if callback_query.data.startswith("windows_menu|"):
+        instruction, download_text, download_url, connect_text, connect_prefix = (
+            INSTRUCTION_PC, DOWNLOAD_PC_BUTTON, DOWNLOAD_PC, CONNECT_WINDOWS_BUTTON, CONNECT_WINDOWS,
+        )
+    else:
+        instruction, download_text, download_url, connect_text, connect_prefix = (
+            INSTRUCTION_MACOS, DOWNLOAD_MACOS_BUTTON, DOWNLOAD_MACOS, CONNECT_MACOS_BUTTON, CONNECT_MACOS,
+        )
     key_ref = callback_query.data.split("|", 1)[1]
     key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
     key_name = key_obj.email if key_obj else key_ref
@@ -133,20 +140,9 @@ async def process_windows_menu(callback_query: CallbackQuery, session: Any):
         await callback_query.message.answer("❌ Ошибка: ключ не найден.")
         return
 
-    key_message_text = KEY_MESSAGE.format(key_link)
-    instruction_message = f"{key_message_text}{INSTRUCTION_PC}"
-
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=DOWNLOAD_PC_BUTTON, url=DOWNLOAD_PC))
-
-    if "happ://crypt" in key_link:
-        processed_link = urllib.parse.quote(key_link, safe="")
-        windows_url = f"{WEBHOOK_HOST}/?url={processed_link}"
-    else:
-        processed_link = key_link
-        windows_url = f"{CONNECT_WINDOWS}{processed_link}"
-
-    builder.row(InlineKeyboardButton(text=CONNECT_WINDOWS_BUTTON, url=windows_url))
+    builder.row(InlineKeyboardButton(text=download_text, url=download_url))
+    builder.row(InlineKeyboardButton(text=connect_text, url=happ_import_url(key_link, connect_prefix, WEBHOOK_HOST)))
     support_btn = await build_support_button()
     if support_btn:
         builder.row(support_btn)
@@ -158,52 +154,7 @@ async def process_windows_menu(callback_query: CallbackQuery, session: Any):
 
     await edit_or_send_message(
         target_message=callback_query.message,
-        text=instruction_message,
-        reply_markup=builder.as_markup(),
-        media_path=None,
-    )
-
-
-@router.callback_query(F.data.startswith("macos_menu|"), flags={"popup": True})
-async def process_macos_menu(callback_query: CallbackQuery, session: Any):
-    key_ref = callback_query.data.split("|", 1)[1]
-    key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
-    key_name = key_obj.email if key_obj else key_ref
-    record = await get_key_details(session, key_name)
-    if not key_owned_by_user(record, callback_query.from_user.id):
-        await callback_query.answer("Доступ запрещён.", show_alert=True)
-        return
-    key_link = await get_subscription_link(session, key_name)
-    if not key_link:
-        await callback_query.message.answer("❌ Ошибка: ключ не найден.")
-        return
-
-    key_message_text = KEY_MESSAGE.format(key_link)
-    instruction_message = f"{key_message_text}{INSTRUCTION_MACOS}"
-
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=DOWNLOAD_MACOS_BUTTON, url=DOWNLOAD_MACOS))
-
-    if "happ://crypt" in key_link:
-        processed_link = urllib.parse.quote(key_link, safe="")
-        macos_url = f"{WEBHOOK_HOST}/?url={processed_link}"
-    else:
-        processed_link = key_link
-        macos_url = f"{CONNECT_MACOS}{processed_link}"
-
-    builder.row(InlineKeyboardButton(text=CONNECT_MACOS_BUTTON, url=macos_url))
-    support_btn = await build_support_button()
-    if support_btn:
-        builder.row(support_btn)
-    builder.row(
-        InlineKeyboardButton(
-            text=BACK, callback_data=build_key_callback("connect_pc", record.get("client_id"), key_name)
-        )
-    )
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=instruction_message,
+        text=f"{KEY_MESSAGE.format(key_link)}{instruction}",
         reply_markup=builder.as_markup(),
         media_path=None,
     )

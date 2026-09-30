@@ -1,4 +1,5 @@
 import hashlib
+import urllib.parse
 
 from typing import Any
 
@@ -17,6 +18,13 @@ from settings.texts import (
     TARIFF_DESCRIPTIONS_ROW,
     TARIFF_DESCRIPTIONS_TEXT,
 )
+
+
+def happ_import_url(key_link: str, connect_prefix: str, crypt_host: str) -> str:
+    """Ссылка «импортировать в приложение»: happ://crypt идёт через страницу-переходник, остальное — схемой клиента."""
+    if "happ://crypt" in key_link:
+        return f"{crypt_host}/?url={urllib.parse.quote(key_link, safe='')}"
+    return f"{connect_prefix}{key_link}"
 
 
 def key_owned_by_user(record: dict | None, user_id: int) -> bool:
