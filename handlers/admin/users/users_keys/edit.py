@@ -50,13 +50,9 @@ async def handle_key_edit(
     update: bool = False,
 ):
     key_ref = callback_data.data
-    key_obj = await resolve_callback_key(session, callback_data.user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, callback_data.user_id, key_ref)
 
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(callback_data.user_id),
-        )
         return
 
     email = key_obj.email
@@ -209,12 +205,8 @@ async def handle_change_expiry(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
@@ -235,12 +227,8 @@ async def handle_expiry_add(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
     days = callback_data.month
@@ -248,10 +236,7 @@ async def handle_expiry_add(
     key_details = await get_key_details(session, email)
 
     if not key_details:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
+        await reply_key_not_found(callback_query.message.edit_text, user_id)
         return
 
     if days:
@@ -280,12 +265,8 @@ async def handle_expiry_take(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
@@ -310,22 +291,15 @@ async def handle_expiry_set(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
     key_details = await get_key_details(session, email)
 
     if not key_details:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
+        await reply_key_not_found(callback_query.message.edit_text, user_id)
         return
 
     await state.update_data(user_id=user_id, email=email, key_ref=key_ref, op_type="set")
@@ -364,10 +338,7 @@ async def handle_expiry_time_input(message: Message, state: FSMContext, session:
     key_details = await get_key_details(session, email)
 
     if not key_details:
-        await message.answer(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
+        await reply_key_not_found(message.answer, user_id)
         return
 
     try:
