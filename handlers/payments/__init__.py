@@ -27,7 +27,7 @@ router = Router(name="payments_main_router")
 
 #: Кассы: модуль → флаги, при любом из которых она нужна. Импорт — только включённых;
 #: включённая в админке на ходу подключается при построении меню оплаты.
-provider_routers = LazyRouters(router, package=__name__, label="Payments")
+provider_routers = LazyRouters(router, package=__name__)
 provider_routers.add(".yookassa", "YOOKASSA")
 provider_routers.add(".yoomoney", "YOOMONEY")
 provider_routers.add(".robokassa", "ROBOKASSA")
@@ -43,7 +43,7 @@ provider_routers.add(".platega", "PLATEGA_SBP", "PLATEGA_CARDS", "PLATEGA_INT", 
 provider_routers.add(".tribute", "TRIBUTE")
 
 PROVIDERS = get_providers(PROVIDERS_ENABLED)
-provider_routers.boot(name for name, cfg in PROVIDERS.items() if cfg.get("enabled"))
+provider_routers.ensure(name for name, cfg in PROVIDERS.items() if cfg.get("enabled"))
 set_router_loader(provider_routers.ensure)
 
 router.include_router(gift_router)

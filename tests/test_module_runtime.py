@@ -6,6 +6,7 @@
 import asyncio
 import unittest
 
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from core import module_runtime as rt
@@ -22,10 +23,10 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 class WebTests(RuntimeTestCase):
     async def test_proxy_picks_up_new_handler_after_reregister(self):
         async def v1(request):
-            return {"v": 1}
+            return web.json_response({"v": 1})
 
         async def v2(request):
-            return {"v": 2}
+            return web.json_response({"v": 2})
 
         proxy = rt.web_proxy("/hot/webhook")
         rt.register_web("/hot/webhook", v1, module="hot")
@@ -42,8 +43,6 @@ class WebTests(RuntimeTestCase):
 
     async def test_module_prefix_dispatch(self):
         async def handler(request):
-            from aiohttp import web
-
             return web.Response(text="late")
 
         rt.register_web("/added-later", handler, module="late")
@@ -116,15 +115,10 @@ class TaskAndCleanupTests(RuntimeTestCase):
         self.assertEqual(await rt.unload("never"), {"web": 0, "middlewares": 0, "tasks": 0, "cleanups": 0})
 
 
-class CallerDetectionTests(RuntimeTestCase):
-    def test_module_name_from_caller(self):
-        code = "from core import module_runtime as rt\nrt.on_unload(lambda: None)\n"
-        exec(compile(code, "<zz>", "exec"), {"__name__": "modules.zz_caller.router"})
-        self.assertIn("zz_caller", rt.snapshot())
-
-    def test_unknown_caller_needs_explicit_module(self):
+class ModuleNameTests(RuntimeTestCase):
+    def test_empty_module_name_rejected(self):
         with self.assertRaises(ValueError):
-            rt.on_unload(lambda: None)
+            rt.on_unload(lambda: None, module="")
 
 
 if __name__ == "__main__":

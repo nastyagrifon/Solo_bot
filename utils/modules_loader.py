@@ -7,7 +7,7 @@ from aiogram import Router
 
 from logger import logger
 
-from .modules_manager import manager
+from .modules_manager import _register_legacy_webhook, manager
 
 
 modules_hub = Router(name="modules_hub")
@@ -61,16 +61,14 @@ def load_module_webhooks(folder: str = "modules") -> list[dict]:
         module_path = f"{folder}.{name}"
         try:
             router_module = importlib.import_module(f"{module_path}.router")
-            if hasattr(router_module, "get_webhook_data"):
-                webhook_data = router_module.get_webhook_data()
-                if isinstance(webhook_data, dict) and "path" in webhook_data and "handler" in webhook_data:
-                    # В aiohttp регистрируется постоянный посредник, сам обработчик живёт в
-                    # среде модулей: после перезагрузки модуля запрос уходит в новый код.
-                    from core import module_runtime
+            # В aiohttp регистрируется постоянный посредник, сам обработчик живёт в
+            # среде модулей: после перезагрузки модуля запрос уходит в новый код.
+            webhook_data = _register_legacy_webhook(name, router_module)
+            if webhook_data:
+                from core import module_runtime
 
-                    module_runtime.register_web(webhook_data["path"], webhook_data["handler"], module=name)
-                    webhooks.append({**webhook_data, "handler": module_runtime.web_proxy(webhook_data["path"])})
-                    logger.info(f"[Modules] Найден вебхук в модуле {name}: {webhook_data['path']}")
+                webhooks.append({**webhook_data, "handler": module_runtime.web_proxy(webhook_data["path"])})
+                logger.info(f"[Modules] Найден вебхук в модуле {name}: {webhook_data['path']}")
         except Exception as e:
             logger.error(f"[Modules] Ошибка при загрузке вебхуков из {module_path}: {e}")
     return webhooks

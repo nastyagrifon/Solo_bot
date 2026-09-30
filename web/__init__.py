@@ -19,17 +19,17 @@ OVERPAY_WEBHOOK_PATH = "/overpay/webhook"
 REMNAWAVE_WEBHOOK_PATH_DEFAULT = "/remnawave/webhook"
 
 
-#: Колбэки касс из закрытого ядра: путь (из вики вендора) → (флаги, модуль, обработчик).
+#: Колбэки касс из закрытого ядра: путь (из вики вендора) → (флаг, модуль, обработчик).
 #: Ядро регистрирует такой путь при старте только для кассы, включённой в конфиге.
 #: Для выключенной ставим посредника: включат кассу в админке на ходу — колбэки
 #: пойдут сразу; выключат — посредник остаётся и докатывает оплаты по уже
 #: выставленным счетам. Проверка подписи — в обработчике самой кассы.
 CORE_PROVIDER_WEBHOOKS = {
-    "/yookassa/webhook": (("YOOKASSA",), "services.payments.yookassa.webhook", "yookassa_webhook"),
-    "/yoomoney/webhook": (("YOOMONEY",), "services.payments.yoomoney.webhook", "yoomoney_webhook"),
-    "/robokassa/webhook": (("ROBOKASSA",), "services.payments.robokassa.webhook", "robokassa_webhook"),
-    "/cryptobot/webhook": (("CRYPTOBOT",), "services.payments.cryptobot.webhook", "cryptobot_webhook"),
-    "/tribute/webhook": (("TRIBUTE",), "services.payments.tribute.webhook", "tribute_webhook"),
+    "/yookassa/webhook": ("YOOKASSA", "services.payments.yookassa.webhook", "yookassa_webhook"),
+    "/yoomoney/webhook": ("YOOMONEY", "services.payments.yoomoney.webhook", "yoomoney_webhook"),
+    "/robokassa/webhook": ("ROBOKASSA", "services.payments.robokassa.webhook", "robokassa_webhook"),
+    "/cryptobot/webhook": ("CRYPTOBOT", "services.payments.cryptobot.webhook", "cryptobot_webhook"),
+    "/tribute/webhook": ("TRIBUTE", "services.payments.tribute.webhook", "tribute_webhook"),
 }
 
 
@@ -37,13 +37,8 @@ def _lazy_provider_webhook(module_path: str, attr: str):
     """Обработчик кассы, импортируемый при первом колбэке."""
     from importlib import import_module
 
-    handler = None
-
-    async def proxy(request):
-        nonlocal handler
-        if handler is None:
-            handler = getattr(import_module(module_path), attr)
-        return await handler(request)
+    async def proxy(request):  # import_module кэширует модуль в sys.modules
+        return await getattr(import_module(module_path), attr)(request)
 
     proxy.__name__ = f"lazy_{attr}"
     return proxy
@@ -52,8 +47,8 @@ def _lazy_provider_webhook(module_path: str, attr: str):
 def _register_core_provider_webhooks(router: UrlDispatcher) -> None:
     from settings.config import PROVIDERS_ENABLED
 
-    for path, (flags, module_path, attr) in CORE_PROVIDER_WEBHOOKS.items():
-        if any(PROVIDERS_ENABLED.get(flag) for flag in flags):
+    for path, (flag, module_path, attr) in CORE_PROVIDER_WEBHOOKS.items():
+        if PROVIDERS_ENABLED.get(flag):
             continue  # включена в конфиге — маршрут регистрирует ядро
         try:
             router.add_post(path, _lazy_provider_webhook(module_path, attr))

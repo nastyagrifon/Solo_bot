@@ -19,14 +19,12 @@ from logger import logger
 
 
 class LazyRouters:
-    def __init__(self, parent, *, package: str, label: str = "Payments") -> None:
+    def __init__(self, parent, *, package: str) -> None:
         self.parent = parent
         self.package = package
-        self.label = label
         self._entries: dict[str, tuple[str, ...]] = {}
         self._loaded: set[str] = set()
         self._failed: set[str] = set()
-        self._booted = False
 
     def add(self, module_path: str, *flags: str) -> None:
         """Роутер модуля ``module_path`` нужен, если включён любой из ``flags``."""
@@ -43,20 +41,10 @@ class LazyRouters:
                 router = import_module(module_path, self.package).router
             except ImportError as e:
                 self._failed.add(module_path)
-                logger.warning("[{}] {} включена, но не входит в сборку: {}", self.label, "/".join(flags), e)
+                logger.warning("[Payments] {} включена, но не входит в сборку: {}", "/".join(flags), e)
                 continue
             self.parent.include_router(router)
             self._loaded.add(module_path)
             added.append(module_path)
-            if self._booted:
-                logger.info("[{}] {} подключена на лету", self.label, "/".join(flags))
+            logger.info("[Payments] {} подключена", "/".join(flags))
         return added
-
-    def boot(self, enabled_flags: Iterable[str]) -> list[str]:
-        """Первая загрузка при старте; дальнейшие подключения логируются как «на лету»."""
-        added = self.ensure(enabled_flags)
-        self._booted = True
-        return added
-
-    def loaded(self) -> set[str]:
-        return set(self._loaded)
