@@ -271,6 +271,42 @@ async def _process_text(
     return processed, merged
 
 
+# метод -> (поле текста, поле сущностей, аргументы до текста, обрабатывать ли пустой текст)
+_TEXT_METHODS = {
+    "answer": ("text", "entities", (), True),
+    "edit_text": ("text", "entities", (), True),
+    "edit_caption": ("caption", "caption_entities", (), False),
+    "answer_photo": ("caption", "caption_entities", ("photo",), False),
+    "answer_video": ("caption", "caption_entities", ("video",), False),
+    "answer_animation": ("caption", "caption_entities", ("animation",), False),
+}
+
+
+def _patched_text_method(name: str, text_kw: str, entities_kw: str, lead: tuple[str, ...], empty_too: bool):
+    """Обёртка метода Message: маркеры эмодзи в тексте/подписи превращаются в сущности."""
+    names = (*lead, text_kw, entities_kw)
+
+    async def patched(self, *args, **kwargs):
+        if len(args) > len(names):
+            raise TypeError(f"{name}() takes at most {len(names)} positional arguments")
+        for key, value in zip(names, args):
+            if key in kwargs:
+                raise TypeError(f"{name}() got multiple values for argument '{key}'")
+            kwargs[key] = value
+        if text_kw not in kwargs:
+            if empty_too:
+                raise TypeError(f"{name}() missing required argument: '{text_kw}'")
+            kwargs[text_kw] = None
+        kwargs.setdefault(entities_kw, None)
+        if empty_too or kwargs[text_kw]:
+            kwargs[text_kw], kwargs[entities_kw] = await _process_text(kwargs[text_kw], kwargs[entities_kw])
+            if kwargs[entities_kw]:
+                _set_parse_mode_none(kwargs)
+        return await getattr(self, f"_original_{name}")(**kwargs)
+
+    return patched
+
+
 def patch_bot_methods() -> bool:
     """Patch Message methods to auto-handle custom emojis."""
     global _BOT
@@ -283,94 +319,8 @@ def patch_bot_methods() -> bool:
 
         if not hasattr(Message, "_custom_emojis_patched"):
             Message._custom_emojis_patched = True
-            Message._original_answer = Message.answer
-            Message._original_edit_text = Message.edit_text
-            Message._original_edit_caption = Message.edit_caption
-            Message._original_answer_photo = Message.answer_photo
-            Message._original_answer_video = Message.answer_video
-            Message._original_answer_animation = Message.answer_animation
-            Message._original_edit_media = Message.edit_media
-
-        async def patched_answer(self, text: str, entities: list[MessageEntity] | None = None, **kwargs):
-            processed, merged = await _process_text(text, entities)
-            if merged:
-                _set_parse_mode_none(kwargs)
-            return await self._original_answer(text=processed, entities=merged, **kwargs)
-
-        async def patched_edit_text(self, text: str, entities: list[MessageEntity] | None = None, **kwargs):
-            processed, merged = await _process_text(text, entities)
-            if merged:
-                _set_parse_mode_none(kwargs)
-            return await self._original_edit_text(text=processed, entities=merged, **kwargs)
-
-        async def patched_edit_caption(
-            self,
-            caption: str | None = None,
-            caption_entities: list[MessageEntity] | None = None,
-            **kwargs,
-        ):
-            if not caption:
-                return await self._original_edit_caption(caption=caption, caption_entities=caption_entities, **kwargs)
-            processed, merged = await _process_text(caption, caption_entities)
-            if merged:
-                _set_parse_mode_none(kwargs)
-            return await self._original_edit_caption(caption=processed, caption_entities=merged, **kwargs)
-
-        async def patched_answer_photo(
-            self,
-            photo: Any,
-            caption: str | None = None,
-            caption_entities: list[MessageEntity] | None = None,
-            **kwargs,
-        ):
-            if not caption:
-                return await self._original_answer_photo(
-                    photo=photo, caption=caption, caption_entities=caption_entities, **kwargs
-                )
-            processed, merged = await _process_text(caption, caption_entities)
-            if merged:
-                _set_parse_mode_none(kwargs)
-            return await self._original_answer_photo(photo=photo, caption=processed, caption_entities=merged, **kwargs)
-
-        async def patched_answer_video(
-            self,
-            video: Any,
-            caption: str | None = None,
-            caption_entities: list[MessageEntity] | None = None,
-            **kwargs,
-        ):
-            if not caption:
-                return await self._original_answer_video(
-                    video=video, caption=caption, caption_entities=caption_entities, **kwargs
-                )
-            processed, merged = await _process_text(caption, caption_entities)
-            if merged:
-                _set_parse_mode_none(kwargs)
-            return await self._original_answer_video(video=video, caption=processed, caption_entities=merged, **kwargs)
-
-        async def patched_answer_animation(
-            self,
-            animation: Any,
-            caption: str | None = None,
-            caption_entities: list[MessageEntity] | None = None,
-            **kwargs,
-        ):
-            if not caption:
-                return await self._original_answer_animation(
-                    animation=animation,
-                    caption=caption,
-                    caption_entities=caption_entities,
-                    **kwargs,
-                )
-            processed, merged = await _process_text(caption, caption_entities)
-            if merged:
-                _set_parse_mode_none(kwargs)
-            return await self._original_answer_animation(
-                animation=animation,
-                caption=processed,
-                caption_entities=merged,
-                **kwargs,
-            )
+            for name in (*_TEXT_METHODS, "edit_media"):
+                setattr(Message, f"_original_{name}", getattr(Message, name))
 
         async def patched_edit_media(self, media: Any, **kwargs):
             if hasattr(media, "caption") and media.caption:
@@ -383,12 +333,8 @@ def patch_bot_methods() -> bool:
                     media.caption_entities = merged
             return await self._original_edit_media(media=media, **kwargs)
 
-        Message.answer = patched_answer
-        Message.edit_text = patched_edit_text
-        Message.edit_caption = patched_edit_caption
-        Message.answer_photo = patched_answer_photo
-        Message.answer_video = patched_answer_video
-        Message.answer_animation = patched_answer_animation
+        for name, spec in _TEXT_METHODS.items():
+            setattr(Message, name, _patched_text_method(name, *spec))
         Message.edit_media = patched_edit_media
 
         return True
