@@ -20,6 +20,7 @@ MODULE_SRC = '''
 import asyncio
 
 from aiogram import Router
+from aiohttp import web
 
 from core import module_runtime as rt
 from hooks.hooks import register_hook
@@ -35,7 +36,7 @@ async def ping(**kwargs):
 
 
 async def webhook(request):
-    return {{"version": VERSION}}
+    return web.json_response({{"version": VERSION}})
 
 
 def get_webhook_data():
@@ -53,13 +54,13 @@ async def _mw(handler, event, data):
     return await handler(event, data)
 
 
-rt.add_middleware(_mw, observer="message")
-rt.on_unload(lambda: CLEANED.append(VERSION))
+rt.add_middleware(_mw, observer="message", module="zz_hot")
+rt.on_unload(lambda: CLEANED.append(VERSION), module="zz_hot")
 CLEANED = __import__("builtins").__dict__.setdefault("_zz_hot_cleaned", [])
 
 
 def start_background():
-    rt.spawn(_tick())
+    rt.spawn(_tick(), module="zz_hot")
 '''
 
 

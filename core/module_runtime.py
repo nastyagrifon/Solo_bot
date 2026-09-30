@@ -15,20 +15,18 @@
 
     from core import module_runtime as rt
 
-    rt.register_web("/example/webhook", handler)            # путь не меняется между перезагрузками
-    rt.add_middleware(MyMiddleware(), observer="callback_query")
-    rt.spawn(poll_forever())                                  # отменится при выгрузке
-    rt.on_unload(lambda: setattr(core_mod, "fn", original))   # откат подмены
+    rt.register_web("/example/webhook", handler, module="example")  # путь не меняется между перезагрузками
+    rt.add_middleware(MyMiddleware(), observer="callback_query", module="example")
+    rt.spawn(poll_forever(), module="example")                      # отменится при выгрузке
+    rt.on_unload(lambda: setattr(core_mod, "fn", original), module="example")  # откат подмены
 
-Имя модуля берётся из того, кто вызывает (``modules.<имя>....``), как у хуков;
-его можно передать явно параметром ``module``.
+Имя модуля передаётся явно параметром ``module``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-import sys
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -56,43 +54,26 @@ class _ModuleResources:
 _modules: dict[str, _ModuleResources] = {}
 
 
-def _caller_module(depth: int = 2) -> str | None:
-    """Имя модуля бота по коду, который нас вызвал: ``modules.<имя>...`` → ``<имя>``."""
-    frame = sys._getframe(depth)
-    while frame is not None:
-        name = frame.f_globals.get("__name__", "")
-        if name.startswith("modules."):
-            parts = name.split(".")
-            return parts[1] if len(parts) > 1 else None
-        if name != __name__:
-            return None
-        frame = frame.f_back
-    return None
-
-
-def _resources(module: str | None) -> tuple[str, _ModuleResources]:
-    name = module or _caller_module(3)
-    if not name:
-        raise ValueError("module_runtime: не удалось определить модуль, передайте module=...")
-    return name, _modules.setdefault(name, _ModuleResources())
+def _resources(module: str) -> _ModuleResources:
+    if not module:
+        raise ValueError("module_runtime: передайте module=<имя модуля>")
+    return _modules.setdefault(module, _ModuleResources())
 
 
 def _normalize_path(path: str) -> str:
-    path = "/" + (path or "").strip().strip("/")
-    return path
+    return "/" + (path or "").strip().strip("/")
 
 
 # ─────────────────────────── HTTP ───────────────────────────
 
 
-def register_web(path: str, handler, *, module: str | None = None) -> None:
+def register_web(path: str, handler, *, module: str) -> None:
     """Обработчик HTTP модуля. Ищется при каждом запросе — перезагрузка подхватывает новый код.
 
     Пути, известные на старте, ядро регистрирует в aiohttp как постоянные посредники;
     появившиеся позже доступны по ``/m/<модуль>/<путь>``.
     """
-    name, res = _resources(module)
-    res.web[_normalize_path(path)] = handler
+    _resources(module).web[_normalize_path(path)] = handler
 
 
 def resolve_web(path: str):
@@ -113,7 +94,7 @@ def web_proxy(path: str):
         handler = resolve_web(path)
         if handler is None:
             return web.Response(status=404, text="module is not loaded")
-        return await _call_web(handler, request)
+        return await handler(request)
 
     proxy.__name__ = f"module_web_proxy{path.replace('/', '_')}"
     return proxy
@@ -127,29 +108,17 @@ async def module_web_dispatch(request: web.Request) -> web.StreamResponse:
     handler = res.web.get(tail) if res else None
     if handler is None:
         return web.Response(status=404, text="not found")
-    return await _call_web(handler, request)
-
-
-async def _call_web(handler, request: web.Request) -> web.StreamResponse:
-    result = handler(request)
-    if inspect.isawaitable(result):
-        result = await result
-    if isinstance(result, web.StreamResponse):
-        return result
-    if isinstance(result, dict):
-        return web.json_response(result)
-    return web.Response(status=200, text="ok")
+    return await handler(request)
 
 
 # ───────────────────────── middleware ─────────────────────────
 
 
-def add_middleware(middleware: BaseMiddleware, *, observer: str = "update", module: str | None = None) -> None:
+def add_middleware(middleware: BaseMiddleware, *, observer: str = "update", module: str) -> None:
     """Middleware модуля. Работает через посредника ядра, снимается при выгрузке."""
     if observer not in OBSERVERS:
         raise ValueError(f"module_runtime: observer должен быть одним из {OBSERVERS}")
-    name, res = _resources(module)
-    res.middlewares[observer].append(middleware)
+    _resources(module).middlewares[observer].append(middleware)
 
 
 class ModuleMiddlewareProxy(BaseMiddleware):
@@ -185,29 +154,38 @@ def install_middleware_proxies(dispatcher) -> None:
 # ─────────────────────── задачи и откат ───────────────────────
 
 
-def spawn(coro, *, module: str | None = None) -> asyncio.Task:
+def spawn(coro, *, module: str) -> asyncio.Task:
     """Фоновая задача модуля. Отменяется при выгрузке модуля."""
-    name, res = _resources(module)
-    task = asyncio.get_running_loop().create_task(coro, name=f"module:{name}")
+    res = _resources(module)
+    task = asyncio.get_running_loop().create_task(coro, name=f"module:{module}")
     res.tasks.add(task)
     task.add_done_callback(res.tasks.discard)
     return task
 
 
-def on_unload(callback: Callable[[], Any], *, module: str | None = None) -> None:
+def on_unload(callback: Callable[[], Any], *, module: str) -> None:
     """Функция отката при выгрузке (например, вернуть подменённую функцию ядра)."""
-    name, res = _resources(module)
-    res.cleanups.append(callback)
+    _resources(module).cleanups.append(callback)
 
 
 # ─────────────────────────── выгрузка ───────────────────────────
+
+
+def _stats(res: _ModuleResources) -> dict[str, int]:
+    return {
+        "web": len(res.web),
+        "middlewares": sum(len(v) for v in res.middlewares.values()),
+        "tasks": len([t for t in res.tasks if not t.done()]),
+        "cleanups": len(res.cleanups),
+    }
 
 
 async def unload(module: str) -> dict[str, int]:
     """Снять всё, что заведено модулем. Ошибки отката не мешают выгрузке остального."""
     res = _modules.pop(module, None)
     if res is None:
-        return {"web": 0, "middlewares": 0, "tasks": 0, "cleanups": 0}
+        return _stats(_ModuleResources())
+    stats = _stats(res)
 
     tasks = [t for t in res.tasks if not t.done()]
     for t in tasks:
@@ -223,24 +201,10 @@ async def unload(module: str) -> dict[str, int]:
         except Exception as e:
             logger.error("[ModuleRuntime] {}: ошибка отката: {}", module, e)
 
-    stats = {
-        "web": len(res.web),
-        "middlewares": sum(len(v) for v in res.middlewares.values()),
-        "tasks": len(tasks),
-        "cleanups": len(res.cleanups),
-    }
     logger.info("[ModuleRuntime] {} выгружен: {}", module, stats)
     return stats
 
 
 def snapshot() -> dict[str, dict[str, int]]:
     """Что заведено каждым модулем — для админки и проверок."""
-    return {
-        name: {
-            "web": len(res.web),
-            "middlewares": sum(len(v) for v in res.middlewares.values()),
-            "tasks": len([t for t in res.tasks if not t.done()]),
-            "cleanups": len(res.cleanups),
-        }
-        for name, res in _modules.items()
-    }
+    return {name: _stats(res) for name, res in _modules.items()}

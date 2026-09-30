@@ -2,7 +2,10 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import sys
+
+from pathlib import Path
 
 from aiogram import Router
 
@@ -211,30 +214,30 @@ def _drop_bytecode(pkg: str) -> None:
     одну цифру) иначе загрузит старый .pyc — перезагрузка молча отдаст
     прежний код.
     """
-    import shutil
-
     spec = importlib.util.find_spec(pkg)
     if not spec or not spec.submodule_search_locations:
         return
     for location in spec.submodule_search_locations:
-        for cache_dir in __import__("pathlib").Path(location).rglob("__pycache__"):
+        for cache_dir in Path(location).rglob("__pycache__"):
             shutil.rmtree(cache_dir, ignore_errors=True)
 
 
-def _register_legacy_webhook(name: str, router_module) -> None:
+def _register_legacy_webhook(name: str, router_module) -> dict | None:
     """``get_webhook_data()`` модуля → обработчик в среде модулей (актуальный после перезагрузки)."""
     getter = getattr(router_module, "get_webhook_data", None)
     if not callable(getter):
-        return
+        return None
     try:
         data = getter()
     except Exception as e:
         logger.error(f"[Modules] {name}: get_webhook_data упал: {e}")
-        return
-    if isinstance(data, dict) and data.get("path") and data.get("handler"):
-        from core import module_runtime
+        return None
+    if not (isinstance(data, dict) and data.get("path") and data.get("handler")):
+        return None
+    from core import module_runtime
 
-        module_runtime.register_web(data["path"], data["handler"], module=name)
+    module_runtime.register_web(data["path"], data["handler"], module=name)
+    return data
 
 
 manager = ModulesManager()
