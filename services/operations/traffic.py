@@ -4,7 +4,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_servers
 from database.access.resolution import resolve_user_optional
 from database.keys import (
     get_key_client_id_by_email_and_server,
@@ -18,6 +17,8 @@ from panels.remnawave_runtime import (
     with_remnawave_api,
 )
 from settings.config import SUPERNODE
+
+from .utils import resolve_cluster
 
 
 async def get_user_traffic(session: AsyncSession, tg_id: int, email: str) -> dict[str, Any]:
@@ -102,19 +103,7 @@ async def get_user_traffic(session: AsyncSession, tg_id: int, email: str) -> dic
 
 async def reset_traffic_in_cluster(cluster_id: str, email: str, session: AsyncSession) -> None:
     try:
-        servers = await get_servers(session)
-        cluster = servers.get(cluster_id)
-
-        if not cluster:
-            found_servers = []
-            for _, server_list in servers.items():
-                for server_info in server_list:
-                    if server_info.get("server_name", "").lower() == cluster_id.lower():
-                        found_servers.append(server_info)
-            if found_servers:
-                cluster = found_servers
-            else:
-                raise ValueError(f"Кластер или сервер с ID/именем {cluster_id} не найден.")
+        cluster = await resolve_cluster(session, cluster_id)
 
         tasks = []
         remnawave_done = False

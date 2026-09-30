@@ -2,7 +2,6 @@ import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_servers
 from logger import (
     CLOGGER as logger,
     PANEL_REMNA,
@@ -11,24 +10,12 @@ from logger import (
 from panels._3xui import delete_client, get_xui_instance
 from settings.config import REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD, REMNAWAVE_TOKEN_LOGIN_ENABLED
 
-from .utils import unique_by_api_url
+from .utils import resolve_cluster, unique_by_api_url
 
 
 async def delete_key_from_cluster(cluster_id: str, email: str, client_id: str, session: AsyncSession):
     try:
-        servers = await get_servers(session)
-        cluster = servers.get(cluster_id)
-
-        if not cluster:
-            found_servers = []
-            for _, server_list in servers.items():
-                for server_info in server_list:
-                    if server_info.get("server_name", "").lower() == cluster_id.lower():
-                        found_servers.append(server_info)
-            if found_servers:
-                cluster = found_servers
-            else:
-                raise ValueError(f"Кластер или сервер с ID/именем {cluster_id} не найден.")
+        cluster = await resolve_cluster(session, cluster_id)
 
         remna_servers = [s for s in cluster if s.get("panel_type", "3x-ui").lower() == "remnawave"]
         xui_servers = [s for s in cluster if s.get("panel_type", "3x-ui").lower() == "3x-ui"]

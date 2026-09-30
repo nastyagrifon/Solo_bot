@@ -1,3 +1,8 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import get_servers
+
+
 def split_by_panel(servers: list) -> tuple[list, list]:
     xui = []
     remna = []
@@ -35,3 +40,19 @@ def unique_by_api_url(servers: list) -> list:
             seen.add(url)
             out.append(s)
     return out
+
+
+async def resolve_cluster(session: AsyncSession, cluster_id: str):
+    """Возвращает список серверов для кластера или конкретного сервера."""
+    servers = await get_servers(session)
+    cluster = servers.get(cluster_id)
+    if cluster:
+        return cluster
+    found = []
+    for _key, server_list in servers.items():
+        for s in server_list:
+            if s.get("server_name", "").lower() == cluster_id.lower():
+                found.append(s)
+    if found:
+        return found
+    raise ValueError(f"Кластер или сервер с ID/именем {cluster_id} не найден.")
