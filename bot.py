@@ -8,6 +8,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from core.slots import guard_webhook, mark_ready
 from core.settings.modes_config import resolve_protect_content
 from core.slow_log import SlowTelegramRequests, watch_redis
 from database import async_session_maker
@@ -25,6 +26,7 @@ bot = Bot(
     token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML, protect_content=resolve_protect_content())
 )
 bot.session.middleware(SlowTelegramRequests())
+guard_webhook()
 
 RedisStorage = import_module("aiogram.fsm.storage.redis").RedisStorage
 _redis_asyncio = import_module("redis.asyncio")
@@ -68,6 +70,7 @@ async def _on_dispatcher_startup(*_args, **_kwargs):
     from core.tasks import ensure_periodic_task_manager_started
 
     await ensure_periodic_task_manager_started(bot, async_session_maker)
+    mark_ready()
 
 
 async def _on_dispatcher_shutdown(*_args, **_kwargs):

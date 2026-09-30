@@ -1,5 +1,6 @@
 from aiohttp.web_urldispatcher import UrlDispatcher
 
+from core.slots import slot_ready
 from services.payments.heleket.webhook import heleket_webhook
 from services.payments.kassai.webhook import kassai_webhook
 from services.payments.overpay.webhook import overpay_webhook
@@ -57,6 +58,7 @@ def _register_core_provider_webhooks(router: UrlDispatcher) -> None:
 
 
 async def register_web_routes(router: UrlDispatcher) -> None:
+    router.add_get("/slot/ready", slot_ready)
     router.add_post(KASSAI_WEBHOOK_PATH, kassai_webhook)
     router.add_post(HELEKET_WEBHOOK_PATH, heleket_webhook)
     router.add_post(WATA_WEBHOOK_PATH, wata_webhook)

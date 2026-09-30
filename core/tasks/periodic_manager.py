@@ -92,6 +92,7 @@ class PeriodicTaskManager:
         self._lock = asyncio.Lock()
         self._process_lock_file = None
         self._cached_instance_key: str | None = None
+        self._leader_wait: asyncio.Task | None = None
         self._process_lock_path = os.path.join(tempfile.gettempdir(), "solo_bot_periodic_manager.lock")
 
     def _instance_key(self) -> str:
@@ -106,7 +107,7 @@ class PeriodicTaskManager:
             parts.append(str(API_TOKEN or ""))
         except Exception:
             pass
-        parts.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+        # Без пути к коду: слоты A/B одного бота живут в разных каталогах, а лидер периодики нужен один.
         raw = "|".join(part for part in parts if part) or "default"
         self._cached_instance_key = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
         return self._cached_instance_key
@@ -252,7 +253,9 @@ class PeriodicTaskManager:
             if self._started:
                 return
             if not self._acquire_process_lock():
-                logger.info("[PeriodicManager] Уже запущен в другом процессе, текущий запуск пропущен")
+                if self._leader_wait is None:
+                    logger.info("[PeriodicManager] Периодику ведёт другой процесс, ждём, пока он её отпустит")
+                    self._leader_wait = asyncio.create_task(self._wait_for_leadership(bot, sessionmaker))
                 return
             scheduler = self._build_scheduler()
             for cron_task in self._cron_tasks.values():
@@ -305,7 +308,18 @@ class PeriodicTaskManager:
                 len(self._cron_tasks),
             )
 
+    async def _wait_for_leadership(self, bot: Bot, sessionmaker: async_sessionmaker, interval: float = 5.0) -> None:
+        """Второй слот ждёт, пока первый отпустит блокировку (ядро снимает flock и при аварийной смерти)."""
+        while not self._acquire_process_lock():
+            await asyncio.sleep(interval)
+        self._leader_wait = None  # блокировку держим: start() увидит её и не отдаст в щель между вызовами
+        logger.info("[PeriodicManager] Блокировка свободна, принимаю периодику")
+        await self.start(bot, sessionmaker)
+
     async def stop(self) -> None:
+        if self._leader_wait is not None:
+            self._leader_wait.cancel()
+            self._leader_wait = None
         async with self._lock:
             if not self._started:
                 return
