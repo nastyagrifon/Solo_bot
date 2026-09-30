@@ -1,5 +1,4 @@
 import os
-import urllib.parse
 
 from aiogram import F, Router, types
 from aiogram.types import CallbackQuery, InlineKeyboardButton
@@ -8,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import BUTTONS_CONFIG
 from database import get_key_details, get_subscription_link
-from handlers.keys.utils import build_key_callback, key_owned_by_user, resolve_key
+from handlers.keys.utils import build_key_callback, happ_import_url, key_owned_by_user, resolve_key
 from handlers.utils import edit_or_send_message
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.processors import process_connect_device_menu
@@ -90,8 +89,8 @@ async def handle_connect_device(callback_query: CallbackQuery, session: AsyncSes
         logger.error(f"Ошибка в handle_connect_device: {e}")
 
 
-@router.callback_query(F.data.startswith("connect_phone|"), flags={"popup": True})
-async def process_callback_connect_phone(callback_query: CallbackQuery, session: AsyncSession):
+async def _owned_key_link(callback_query: CallbackQuery, session: AsyncSession, log_tag: str = ""):
+    """(record, email, key_link) ключа из callback, если он принадлежит пользователю; иначе ответ и None."""
     key_ref = callback_query.data.split("|", 1)[1]
     key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
     email = key_obj.email if key_obj else key_ref
@@ -100,85 +99,72 @@ async def process_callback_connect_phone(callback_query: CallbackQuery, session:
         record = await get_key_details(session, email)
         if not key_owned_by_user(record, callback_query.from_user.id):
             await callback_query.answer("Доступ запрещён.", show_alert=True)
-            return
+            return None
         key_link = await get_subscription_link(session, email)
         if not key_link:
             await callback_query.message.answer("❌ Ошибка: ключ не найден.")
-            return
+            return None
     except Exception as e:
-        logger.error(f"Ошибка при получении ссылки для {email}: {e}")
+        logger.error(f"Ошибка при получении ссылки для {email}{log_tag}: {e}")
         await callback_query.message.answer("❌ Произошла ошибка. Попробуйте позже.")
-        return
+        return None
+    return record, email, key_link
 
-    description = SUBSCRIPTION_DESCRIPTION.format(key_link=key_link)
+
+def _instructions_row(builder: InlineKeyboardBuilder) -> None:
+    if BUTTONS_CONFIG.get("INSTRUCTIONS_BUTTON_ENABLE", INSTRUCTIONS_BUTTON):
+        builder.row(InlineKeyboardButton(text=MANUAL_INSTRUCTIONS, callback_data="instructions"))
+
+
+@router.callback_query(F.data.startswith("connect_phone|"), flags={"popup": True})
+async def process_callback_connect_phone(callback_query: CallbackQuery, session: AsyncSession):
+    loaded = await _owned_key_link(callback_query, session)
+    if not loaded:
+        return
+    record, email, key_link = loaded
 
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text=DOWNLOAD_IOS_BUTTON, url=DOWNLOAD_IOS),
         InlineKeyboardButton(text=DOWNLOAD_ANDROID_BUTTON, url=DOWNLOAD_ANDROID),
     )
-    if key_link and "happ://crypt" in key_link:
-        processed_link = urllib.parse.quote(key_link, safe="")
-        crypto_url = f"{APP_URL}/?url={processed_link}"
-        builder.row(
-            InlineKeyboardButton(text=IMPORT_IOS, url=crypto_url),
-            InlineKeyboardButton(text=IMPORT_ANDROID, url=crypto_url),
-        )
-    else:
-        processed_link = key_link
-        builder.row(
-            InlineKeyboardButton(text=IMPORT_IOS, url=f"{CONNECT_IOS}{processed_link}"),
-            InlineKeyboardButton(text=IMPORT_ANDROID, url=f"{CONNECT_ANDROID}{processed_link}"),
-        )
-    if BUTTONS_CONFIG.get("INSTRUCTIONS_BUTTON_ENABLE", INSTRUCTIONS_BUTTON):
-        builder.row(InlineKeyboardButton(text=MANUAL_INSTRUCTIONS, callback_data="instructions"))
+    builder.row(
+        InlineKeyboardButton(text=IMPORT_IOS, url=happ_import_url(key_link, CONNECT_IOS, APP_URL)),
+        InlineKeyboardButton(text=IMPORT_ANDROID, url=happ_import_url(key_link, CONNECT_ANDROID, APP_URL)),
+    )
+    _instructions_row(builder)
     builder.row(
         InlineKeyboardButton(text=BACK, callback_data=build_key_callback("view_key", record.get("client_id"), email))
     )
 
     await edit_or_send_message(
         target_message=callback_query.message,
-        text=description,
+        text=SUBSCRIPTION_DESCRIPTION.format(key_link=key_link),
         reply_markup=builder.as_markup(),
         media_path=None,
     )
 
 
-@router.callback_query(F.data.startswith("connect_ios|"), flags={"popup": True})
-async def process_callback_connect_ios(callback_query: CallbackQuery, session: AsyncSession):
-    key_ref = callback_query.data.split("|", 1)[1]
-    key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
-    email = key_obj.email if key_obj else key_ref
-
-    try:
-        record = await get_key_details(session, email)
-        if not key_owned_by_user(record, callback_query.from_user.id):
-            await callback_query.answer("Доступ запрещён.", show_alert=True)
-            return
-        key_link = await get_subscription_link(session, email)
-        if not key_link:
-            await callback_query.message.answer("❌ Ошибка: ключ не найден.")
-            return
-    except Exception as e:
-        logger.error(f"Ошибка при получении ссылки для {email} (iOS): {e}")
-        await callback_query.message.answer("❌ Произошла ошибка. Попробуйте позже.")
+@router.callback_query(F.data.startswith(("connect_ios|", "connect_android|")), flags={"popup": True})
+async def process_callback_connect_mobile(callback_query: CallbackQuery, session: AsyncSession):
+    if callback_query.data.startswith("connect_ios|"):
+        tag, template, download_text, download_url, import_text, connect_prefix = (
+            " (iOS)", IOS_DESCRIPTION_TEMPLATE, DOWNLOAD_IOS_BUTTON, DOWNLOAD_IOS, IMPORT_IOS, CONNECT_IOS,
+        )
+    else:
+        tag, template, download_text, download_url, import_text, connect_prefix = (
+            " (Android)", ANDROID_DESCRIPTION_TEMPLATE, DOWNLOAD_ANDROID_BUTTON, DOWNLOAD_ANDROID, IMPORT_ANDROID,
+            CONNECT_ANDROID,
+        )
+    loaded = await _owned_key_link(callback_query, session, tag)
+    if not loaded:
         return
-
-    description = IOS_DESCRIPTION_TEMPLATE.format(key_link=key_link)
+    record, email, key_link = loaded
 
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=DOWNLOAD_IOS_BUTTON, url=DOWNLOAD_IOS))
-
-    if key_link and "happ://crypt" in key_link:
-        processed_link = urllib.parse.quote(key_link, safe="")
-        ios_url = f"{APP_URL}/?url={processed_link}"
-    else:
-        processed_link = key_link
-        ios_url = f"{CONNECT_IOS}{processed_link}"
-
-    builder.row(InlineKeyboardButton(text=IMPORT_IOS, url=ios_url))
-    if BUTTONS_CONFIG.get("INSTRUCTIONS_BUTTON_ENABLE", INSTRUCTIONS_BUTTON):
-        builder.row(InlineKeyboardButton(text=MANUAL_INSTRUCTIONS, callback_data="instructions"))
+    builder.row(InlineKeyboardButton(text=download_text, url=download_url))
+    builder.row(InlineKeyboardButton(text=import_text, url=happ_import_url(key_link, connect_prefix, APP_URL)))
+    _instructions_row(builder)
     builder.row(
         InlineKeyboardButton(
             text=BACK, callback_data=build_key_callback("connect_device", record.get("client_id"), email)
@@ -188,57 +174,7 @@ async def process_callback_connect_ios(callback_query: CallbackQuery, session: A
 
     await edit_or_send_message(
         target_message=callback_query.message,
-        text=description,
-        reply_markup=builder.as_markup(),
-        media_path=None,
-    )
-
-
-@router.callback_query(F.data.startswith("connect_android|"), flags={"popup": True})
-async def process_callback_connect_android(callback_query: CallbackQuery, session: AsyncSession):
-    key_ref = callback_query.data.split("|", 1)[1]
-    key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
-    email = key_obj.email if key_obj else key_ref
-
-    try:
-        record = await get_key_details(session, email)
-        if not key_owned_by_user(record, callback_query.from_user.id):
-            await callback_query.answer("Доступ запрещён.", show_alert=True)
-            return
-        key_link = await get_subscription_link(session, email)
-        if not key_link:
-            await callback_query.message.answer("❌ Ошибка: ключ не найден.")
-            return
-    except Exception as e:
-        logger.error(f"Ошибка при получении ссылки для {email} (Android): {e}")
-        await callback_query.message.answer("❌ Произошла ошибка. Попробуйте позже.")
-        return
-
-    description = ANDROID_DESCRIPTION_TEMPLATE.format(key_link=key_link)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=DOWNLOAD_ANDROID_BUTTON, url=DOWNLOAD_ANDROID))
-
-    if key_link and "happ://crypt" in key_link:
-        processed_link = urllib.parse.quote(key_link, safe="")
-        android_url = f"{APP_URL}/?url={processed_link}"
-    else:
-        processed_link = key_link
-        android_url = f"{CONNECT_ANDROID}{processed_link}"
-
-    builder.row(InlineKeyboardButton(text=IMPORT_ANDROID, url=android_url))
-    if BUTTONS_CONFIG.get("INSTRUCTIONS_BUTTON_ENABLE", INSTRUCTIONS_BUTTON):
-        builder.row(InlineKeyboardButton(text=MANUAL_INSTRUCTIONS, callback_data="instructions"))
-    builder.row(
-        InlineKeyboardButton(
-            text=BACK, callback_data=build_key_callback("connect_device", record.get("client_id"), email)
-        )
-    )
-    builder.row(InlineKeyboardButton(text=MAIN_MENU, callback_data="profile"))
-
-    await edit_or_send_message(
-        target_message=callback_query.message,
-        text=description,
+        text=template.format(key_link=key_link),
         reply_markup=builder.as_markup(),
         media_path=None,
     )
