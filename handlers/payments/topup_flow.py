@@ -31,7 +31,7 @@ from handlers.payments.keyboards import (
 from handlers.utils import edit_or_send_message
 from logger import logger
 from services.payments.currency_rates import format_for_user, pick_currency, to_rub
-from settings.buttons import BACK, PAY_2
+from settings.buttons import BACK, MAIN_MENU, PAY_2
 
 
 METHOD_UNAVAILABLE = "Ошибка: выбранный способ оплаты недоступен."
@@ -367,8 +367,8 @@ async def fast_amount_payment(
     event,
     session: AsyncSession,
     method_name: str,
-    pay_button_text: str,
-    main_menu_text: str,
+    pay_button_text: str = PAY_2,
+    main_menu_text: str = MAIN_MENU,
     *,
     prepare: FastPrepare,
     payment_link: PaymentLink,

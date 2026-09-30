@@ -97,7 +97,7 @@ async def _run_provider_flow(
                 await callback_query.message.delete()
             except Exception as error:
                 logger.warning(f"[FAST_FLOW] Не удалось удалить меню перед STARS: {error}")
-        await func(callback_query, session)
+        await func(callback_query, session, *([cfg["method"]] if cfg.get("method") else []))
         return True
     except Exception as error:
         logger.error(f"[FAST_FLOW] Ошибка при вызове {provider_upper}.{fast_handler_name}(): {error}")
