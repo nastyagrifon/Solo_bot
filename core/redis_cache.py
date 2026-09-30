@@ -6,6 +6,7 @@ import time
 from importlib import import_module
 from typing import Any
 
+from core.slow_log import watch_redis
 from logger import logger
 from settings.config import REDIS_URL
 
@@ -77,7 +78,7 @@ async def _get_redis() -> Any | None:
             socket_timeout=5,
             retry_on_timeout=True,
         )
-        client = redis_asyncio.Redis(connection_pool=pool)
+        client = watch_redis(redis_asyncio.Redis(connection_pool=pool), "cache")
         await client.ping()
         _REDIS_CLIENTS[client_key] = client
         return client

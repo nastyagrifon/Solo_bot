@@ -9,6 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from core.settings.modes_config import resolve_protect_content
+from core.slow_log import SlowTelegramRequests, watch_redis
 from database import async_session_maker
 from filters.private import IsPrivateFilter
 from settings.config import API_TOKEN, REDIS_URL
@@ -23,6 +24,7 @@ apply_button_icons_patch()
 bot = Bot(
     token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML, protect_content=resolve_protect_content())
 )
+bot.session.middleware(SlowTelegramRequests())
 
 RedisStorage = import_module("aiogram.fsm.storage.redis").RedisStorage
 _redis_asyncio = import_module("redis.asyncio")
@@ -39,7 +41,7 @@ _redis_pool = _BlockingConnectionPool.from_url(
     socket_timeout=5,
     retry_on_timeout=True,
 )
-redis = _redis_asyncio.Redis(connection_pool=_redis_pool)
+redis = watch_redis(_redis_asyncio.Redis(connection_pool=_redis_pool), "fsm")
 storage = RedisStorage(redis=redis)
 
 dp = Dispatcher(bot=bot, storage=storage)
