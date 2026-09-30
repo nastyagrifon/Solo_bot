@@ -14,26 +14,20 @@ from .delete_commands import DeleteCommandMiddleware
 from .direct_start_blocker import DirectStartBlockerMiddleware
 from .loggings import LoggingMiddleware
 from .maintenance import MaintenanceModeMiddleware
-from .probe import MiddlewareProbe, StreamProbeMiddleware, TailHandlerProbe
 from .runtime_config_sync import RuntimeConfigSyncMiddleware
 from .session import SessionMiddleware
 from .throttling import ThrottlingMiddleware
 from .user import UserMiddleware
 
 
-PROBE_LOGGING = False
-
 
 def register_middleware(
     dispatcher: Dispatcher,
     middlewares: Iterable[BaseMiddleware | type[BaseMiddleware]] | None = None,
     exclude: Iterable[str] | None = None,
-    pool=None,
+    pool=None,  # передаёт закрытое ядро, здесь не используется
     sessionmaker=None,
 ) -> None:
-    def wrap(mw, name: str):
-        return MiddlewareProbe(mw, name) if PROBE_LOGGING else mw
-
     exclude_set = set(exclude or [])
 
     flag_by_name = {
@@ -61,27 +55,24 @@ def register_middleware(
             return True
         return bool(MODES_CONFIG.get(flag_name, True))
 
-    if PROBE_LOGGING:
-        dispatcher.update.outer_middleware(StreamProbeMiddleware("global"))
-
     dispatcher.update.outer_middleware(EarlyCallbackAnswerMiddleware())
 
     if middleware_enabled("runtime_config_sync"):
-        dispatcher.update.outer_middleware(wrap(RuntimeConfigSyncMiddleware(), "runtime_config_sync"))
+        dispatcher.update.outer_middleware(RuntimeConfigSyncMiddleware())
     if sessionmaker and middleware_enabled("concurrency"):
-        dispatcher.update.outer_middleware(wrap(ConcurrencyLimiterMiddleware(), "concurrency"))
+        dispatcher.update.outer_middleware(ConcurrencyLimiterMiddleware())
     if sessionmaker and middleware_enabled("session"):
-        dispatcher.update.outer_middleware(wrap(SessionMiddleware(sessionmaker), "session"))
+        dispatcher.update.outer_middleware(SessionMiddleware(sessionmaker))
     if middleware_enabled("ban_checker"):
-        dispatcher.update.outer_middleware(wrap(BanCheckerMiddleware(), "ban_checker"))
+        dispatcher.update.outer_middleware(BanCheckerMiddleware())
     if middleware_enabled("direct_start_blocker"):
-        dispatcher.update.outer_middleware(wrap(DirectStartBlockerMiddleware(), "direct_start_blocker"))
+        dispatcher.update.outer_middleware(DirectStartBlockerMiddleware())
     if middleware_enabled("admin"):
-        dispatcher.update.outer_middleware(wrap(AdminMiddleware(), "admin"))
+        dispatcher.update.outer_middleware(AdminMiddleware())
     if middleware_enabled("maintenance"):
-        dispatcher.update.outer_middleware(wrap(MaintenanceModeMiddleware(), "maintenance"))
+        dispatcher.update.outer_middleware(MaintenanceModeMiddleware())
     if middleware_enabled("subscription"):
-        dispatcher.update.outer_middleware(wrap(SubscriptionMiddleware(), "subscription"))
+        dispatcher.update.outer_middleware(SubscriptionMiddleware())
 
     if middlewares is None:
         available_middlewares = {
@@ -90,13 +81,9 @@ def register_middleware(
             "user": UserMiddleware(),
             "actor": ActorMiddleware(),
         }
-        middlewares = [wrap(mw, name) for name, mw in available_middlewares.items() if middleware_enabled(name)]
+        middlewares = [mw for name, mw in available_middlewares.items() if middleware_enabled(name)]
     else:
-        wrapped = []
-        for mw in middlewares:
-            inst = mw() if isinstance(mw, type) else mw
-            wrapped.append(wrap(inst, getattr(inst, "name", inst.__class__.__name__)))
-        middlewares = wrapped
+        middlewares = [mw() if isinstance(mw, type) else mw for mw in middlewares]
 
     handlers = [dispatcher.message, dispatcher.callback_query, dispatcher.inline_query]
     for middleware in middlewares:
@@ -104,11 +91,7 @@ def register_middleware(
             h.outer_middleware(middleware)
 
     if middleware_enabled("answer"):
-        dispatcher.callback_query.middleware(wrap(CallbackAnswerMiddleware(), "answer"))
+        dispatcher.callback_query.middleware(CallbackAnswerMiddleware())
 
     if middleware_enabled("delete_commands"):
-        dispatcher.message.outer_middleware(wrap(DeleteCommandMiddleware(), "delete_commands"))
-
-    if PROBE_LOGGING:
-        for h in handlers:
-            h.outer_middleware(TailHandlerProbe("handler"))
+        dispatcher.message.outer_middleware(DeleteCommandMiddleware())
