@@ -1,6 +1,6 @@
 from aiohttp.web_urldispatcher import UrlDispatcher
 
-from core.readiness import slot_ready
+from core.slots import slot_ready
 from services.payments.heleket.webhook import heleket_webhook
 from services.payments.kassai.webhook import kassai_webhook
 from services.payments.overpay.webhook import overpay_webhook
