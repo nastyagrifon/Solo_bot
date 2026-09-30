@@ -9,7 +9,6 @@ import subprocess
 import sys
 import time as time_mod
 
-from contextlib import contextmanager
 from datetime import datetime
 from time import sleep
 from urllib.error import HTTPError, URLError
@@ -21,8 +20,8 @@ def _ensure_cli_deps() -> None:
     """Бутстрап: ставит rich+requests системным pip, если их нет.
 
     CLI запускают одним файлом на голом сервере, где venv проекта ещё нет.
-    Happy-path должен идти на настоящем rich, а не на заглушках. Если pip
-    недоступен (нет сети / залочен) — молча уходим на минимальный фолбэк.
+    Если pip недоступен (нет сети / залочен), импорт rich ниже завершит CLI
+    с подсказкой, как поставить его руками.
     """
     try:
         import requests  # noqa: F401
@@ -154,143 +153,8 @@ try:
     from rich.rule import Rule
     from rich.table import Table
     from rich.theme import Theme
-
-    _HAS_RICH = True
 except ImportError:
-    _HAS_RICH = False
-
-    def _strip_markup(value):
-        if not isinstance(value, str):
-            return str(value)
-        return re.sub(r"\[[^\]]+\]", "", value)
-
-    class Group:
-        def __init__(self, *items) -> None:
-            self.items = items
-
-        def __str__(self) -> str:
-            return "\n".join(_strip_markup(item) for item in self.items)
-
-    class Panel:
-        def __init__(self, renderable, **kwargs) -> None:
-            self.renderable = renderable
-
-        def __str__(self) -> str:
-            return _strip_markup(self.renderable)
-
-    class Table:
-        def __init__(self, title=None, **kwargs) -> None:
-            self.title = title
-            self.rows = []
-
-        def add_column(self, *args, **kwargs):
-            return None
-
-        def add_row(self, *row):
-            self.rows.append(row)
-
-        def __str__(self) -> str:
-            lines = []
-            if self.title:
-                lines.append(_strip_markup(self.title))
-            lines.extend(" | ".join(_strip_markup(cell) for cell in row) for row in self.rows)
-            return "\n".join(lines)
-
-    class Live:
-        def __init__(self, **kwargs) -> None:
-            self.last_renderable = None
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def update(self, renderable):
-            self.last_renderable = renderable
-            print(_strip_markup(str(renderable)))
-
-    class SpinnerColumn:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-    class BarColumn:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-    class TextColumn:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-    class box:
-        ROUNDED = SIMPLE = MINIMAL = HEAVY = SQUARE = HORIZONTALS = None
-
-    class Theme:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-    class Rule:
-        def __init__(self, title="", **kwargs) -> None:
-            self.title = title
-
-        def __str__(self) -> str:
-            return _strip_markup(self.title)
-
-    class Progress:
-        def __init__(self, *args, **kwargs) -> None:
-            self.last_description = None
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def add_task(self, description, total=None):
-            self.last_description = description
-            print(_strip_markup(description))
-            return 1
-
-        def update(self, task_id, description=None):
-            if description and description != self.last_description:
-                self.last_description = description
-                print(_strip_markup(description))
-
-    class Prompt:
-        @staticmethod
-        def ask(message, choices=None, default=None, show_choices=True, **kwargs):
-            suffix = ""
-            if choices and show_choices:
-                suffix = f" ({'/'.join(choices)})"
-            if default is not None:
-                suffix = f"{suffix} [{default}]"
-            value = input(f"{_strip_markup(message)}{suffix}: ").strip()
-            if not value and default is not None:
-                value = str(default)
-            if choices and value not in choices:
-                raise ValueError(f"Ожидается одно из значений: {', '.join(choices)}")
-            return value
-
-    class Confirm:
-        @staticmethod
-        def ask(message, default=False, **kwargs):
-            prompt = "Y/n" if default else "y/N"
-            value = input(f"{_strip_markup(message)} [{prompt}]: ").strip().lower()
-            if not value:
-                return default
-            return value in {"y", "yes", "1", "true"}
-
-    class Console:
-        def print(self, *args, **kwargs):
-            print(*(_strip_markup(str(arg)) for arg in args))
-
-        def log(self, *args, **kwargs):
-            self.print(*args)
-
-        @contextmanager
-        def status(self, message, **kwargs):
-            self.print(message)
-            yield
+    sys.exit(f"Не найден пакет rich и поставить его не удалось. Установите вручную: {sys.executable} -m pip install rich")
 
 
 def ensure_utf8_locale():
@@ -325,28 +189,25 @@ try:
 except Exception:
     pass
 
-if _HAS_RICH:
-    SOLO_THEME = Theme({
-        "brand": "bold #ff8c42",
-        "accent": "#ff8c42",
-        "accent.dim": "#8a4a1f",
-        "title": "bold #f2f5f9",
-        "text": "#d7dde5",
-        "muted": "#8b949e",
-        "faint": "#666f7b",
-        "line": "#333a44",
-        "key": "bold #ff8c42",
-        "ok": "#4ade80",
-        "ok.bold": "bold #4ade80",
-        "warn": "#fbbf24",
-        "warn.bold": "bold #fbbf24",
-        "err": "#f87171",
-        "err.bold": "bold #f87171",
-        "step": "bold #ff8c42",
-    })
-    console = Console(theme=SOLO_THEME, highlight=False)
-else:
-    console = Console()
+SOLO_THEME = Theme({
+    "brand": "bold #ff8c42",
+    "accent": "#ff8c42",
+    "accent.dim": "#8a4a1f",
+    "title": "bold #f2f5f9",
+    "text": "#d7dde5",
+    "muted": "#8b949e",
+    "faint": "#666f7b",
+    "line": "#333a44",
+    "key": "bold #ff8c42",
+    "ok": "#4ade80",
+    "ok.bold": "bold #4ade80",
+    "warn": "#fbbf24",
+    "warn.bold": "bold #fbbf24",
+    "err": "#f87171",
+    "err.bold": "bold #f87171",
+    "step": "bold #ff8c42",
+})
+console = Console(theme=SOLO_THEME, highlight=False)
 
 
 _G_STEP = "›"
@@ -552,11 +413,6 @@ def refresh_service_name() -> str:
 SERVICE_NAME = refresh_service_name()
 
 
-def is_ascii_only(value: str) -> bool:
-    """Проверка, что строка содержит только ASCII."""
-    return all(ord(ch) < 128 for ch in value)
-
-
 def _parse_tag_version(tag_name: str) -> tuple[int, ...]:
     """Извлекает кортеж (major, minor, patch, ...) из тега для сортировки. v.5.1 -> (5, 1), v4 -> (4, 0)."""
     s = tag_name.strip().lstrip("v.")
@@ -659,7 +515,7 @@ def safe_prompt(message: str, **kwargs) -> str:
         except ValueError as e:
             step_fail(f"{e}")
             continue
-        if isinstance(value, str) and not is_ascii_only(value):
+        if isinstance(value, str) and not value.isascii():
             cleaned = "".join(ch for ch in value if ord(ch) < 128)
             if not cleaned.strip():
                 warn_english_only()
