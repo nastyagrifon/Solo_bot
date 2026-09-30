@@ -23,7 +23,6 @@ from handlers.utils import (
     edit_or_send_message,
     fill_text,
     get_russian_month,
-    is_full_remnawave_cluster,
     render_screen,
     safe_answer_callback,
 )
@@ -37,6 +36,7 @@ from panels.remnawave_runtime import (
     get_remnawave_profile,
     with_remnawave_api,
 )
+from services.clusters import is_full_remnawave_cluster
 from services.formatting import format_days, format_hours, format_minutes
 from services.tariffs.tariff_display import GB, get_key_tariff_addons_state, get_key_tariff_display
 from settings.buttons import (

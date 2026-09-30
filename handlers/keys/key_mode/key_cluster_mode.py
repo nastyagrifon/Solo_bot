@@ -31,7 +31,6 @@ from handlers.utils import (
     edit_or_send_message,
     generate_random_email,
     get_least_loaded_cluster,
-    is_full_remnawave_cluster,
 )
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.processors import (
@@ -41,6 +40,7 @@ from hooks.processors import (
     process_remnawave_webapp_override,
 )
 from logger import logger
+from services.clusters import is_full_remnawave_cluster
 from services.errors import InsufficientFundsError
 from services.operations import create_key_on_cluster
 from services.tariffs.tariff_display import (
