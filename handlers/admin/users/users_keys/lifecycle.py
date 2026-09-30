@@ -16,12 +16,8 @@ async def handle_reissue_menu(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
 
     text = menu_text(
@@ -51,12 +47,8 @@ async def handle_update_key(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
@@ -75,12 +67,8 @@ async def handle_update_key(
 async def confirm_admin_key_reissue(callback_query: CallbackQuery, session: AsyncSession, state: FSMContext):
     _, user_id, key_ref, cluster_id = callback_query.data.split("|")
     user_id = int(user_id)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
@@ -171,12 +159,8 @@ async def confirm_admin_key_reissue(callback_query: CallbackQuery, session: Asyn
 async def admin_reissue_country(callback_query: CallbackQuery, session: AsyncSession, state: FSMContext):
     _, user_id, key_ref, country = callback_query.data.split("|")
     user_id = int(user_id)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
     if not key_obj:
-        await callback_query.message.edit_text(
-            menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
@@ -248,13 +232,9 @@ async def handle_recreate_key_start(
 ):
     user_id = callback_data.user_id
     key_ref = str(callback_data.data)
-    key_obj = await resolve_callback_key(session, user_id, key_ref)
+    key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
 
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
 
     tariff_name = "—"
@@ -296,13 +276,9 @@ async def handle_recreate_key_confirm(
     user_id = int(user_id)
 
     try:
-        key_obj = await resolve_callback_key(session, user_id, key_ref)
+        key_obj = await key_or_not_found(callback_query, session, user_id, key_ref)
 
         if not key_obj:
-            await callback_query.message.edit_text(
-                text=menu_text("Подписка", "❌ Подписка не найдена."),
-                reply_markup=build_editor_kb(user_id),
-            )
             return
 
         old_email = key_obj.email
@@ -491,22 +467,15 @@ async def handle_delete_key(
     state: FSMContext,
     session: AsyncSession,
 ):
-    key_obj = await resolve_callback_key(session, callback_data.user_id, callback_data.data)
+    key_obj = await key_or_not_found(callback_query, session, callback_data.user_id, callback_data.data)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(callback_data.user_id),
-        )
         return
 
     email = key_obj.email
     client_id = key_obj.client_id
 
     if client_id is None:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(callback_data.user_id),
-        )
+        await reply_key_not_found(callback_query.message.edit_text, callback_data.user_id)
         return
 
     await state.set_state(UserEditorState.confirm_delete_key)

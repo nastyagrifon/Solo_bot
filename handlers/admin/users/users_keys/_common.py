@@ -54,6 +54,7 @@ from services.users_utils import resolve_admin_key
 from settings.buttons import BACK
 from settings.config import REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD, REMNAWAVE_TOKEN_LOGIN_ENABLED, USE_COUNTRY_SELECTION
 
+from ...panel.headers import menu_text
 from ...panel.keyboard import AdminPanelCallback, build_admin_back_btn, build_admin_back_kb
 from ..keyboard import (
     AdminUserEditorCallback,
@@ -81,3 +82,17 @@ async def resolve_callback_key(
     key_ref: str | int | None,
 ) -> Key | None:
     return await resolve_admin_key(session, user_id, key_ref)
+
+
+async def reply_key_not_found(reply, user_id: int) -> None:
+    await reply(menu_text("Подписка", "❌ Подписка не найдена."), reply_markup=build_editor_kb(user_id))
+
+
+async def key_or_not_found(
+    callback_query: CallbackQuery, session: AsyncSession, user_id: int, key_ref: str | int | None
+) -> Key | None:
+    """Ключ пользователя по ссылке из кнопки; нет ключа — экран «Подписка не найдена» и None."""
+    key_obj = await resolve_admin_key(session, user_id, key_ref)
+    if not key_obj:
+        await reply_key_not_found(callback_query.message.edit_text, user_id)
+    return key_obj

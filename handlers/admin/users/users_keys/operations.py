@@ -103,22 +103,15 @@ async def handle_admin_freeze_subscription(
     session: AsyncSession,
 ):
     user_id = callback_data.user_id
-    key_obj = await resolve_callback_key(session, user_id, callback_data.data)
+    key_obj = await key_or_not_found(callback_query, session, user_id, callback_data.data)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
     try:
         record = await get_key_details(session, email)
         if not record:
-            await callback_query.message.edit_text(
-                text=menu_text("Подписка", "❌ Подписка не найдена."),
-                reply_markup=build_editor_kb(user_id),
-            )
+            await reply_key_not_found(callback_query.message.edit_text, user_id)
             return
 
         client_id = record["client_id"]
@@ -167,22 +160,15 @@ async def handle_admin_unfreeze_subscription(
     session: AsyncSession,
 ):
     user_id = callback_data.user_id
-    key_obj = await resolve_callback_key(session, user_id, callback_data.data)
+    key_obj = await key_or_not_found(callback_query, session, user_id, callback_data.data)
     if not key_obj:
-        await callback_query.message.edit_text(
-            text=menu_text("Подписка", "❌ Подписка не найдена."),
-            reply_markup=build_editor_kb(user_id),
-        )
         return
     email = key_obj.email
 
     try:
         record = await get_key_details(session, email)
         if not record:
-            await callback_query.message.edit_text(
-                text=menu_text("Подписка", "❌ Подписка не найдена."),
-                reply_markup=build_editor_kb(user_id),
-            )
+            await reply_key_not_found(callback_query.message.edit_text, user_id)
             return
 
         client_id = record["client_id"]
