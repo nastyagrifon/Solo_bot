@@ -259,6 +259,10 @@ def get_media_type(media_path: str) -> str:
     return "photo"
 
 
+class _NotBotMessage(Exception):
+    """Сообщение написал клиент: Telegram его править не даст, сразу отправляем новое."""
+
+
 async def edit_or_send_message(
     target_message: Message,
     text: str,
@@ -276,6 +280,9 @@ async def edit_or_send_message(
         edit_or_send_message.cache = OrderedDict()
         edit_or_send_message.lock = asyncio.Lock()
         edit_or_send_message.max = 256
+
+    author = target_message.from_user
+    not_ours = author is not None and not author.is_bot
 
     def find_media_file(original_path: str) -> str | None:
         if not original_path:
@@ -308,6 +315,8 @@ async def edit_or_send_message(
 
             if cached_id:
                 try:
+                    if not_ours:
+                        raise _NotBotMessage
                     if media_type == "photo":
                         await target_message.edit_media(
                             InputMediaPhoto(media=cached_id, caption=text), reply_markup=reply_markup
@@ -355,6 +364,8 @@ async def edit_or_send_message(
             upload = BufferedInputFile(data, filename=os.path.basename(actual_media_path))
 
             try:
+                if not_ours:
+                    raise _NotBotMessage
                 if media_type == "photo":
                     msg = await target_message.edit_media(
                         InputMediaPhoto(media=upload, caption=text), reply_markup=reply_markup
@@ -409,7 +420,7 @@ async def edit_or_send_message(
             return
 
     caption = getattr(target_message, "caption", None)
-    if not force_text and caption is not None:
+    if not force_text and caption is not None and not not_ours:
         try:
             await target_message.edit_caption(caption=text, reply_markup=reply_markup)
             return
@@ -417,6 +428,8 @@ async def edit_or_send_message(
             if _is_message_not_modified(e):
                 return
     try:
+        if not_ours:
+            raise _NotBotMessage
         await target_message.edit_text(
             text=text,
             reply_markup=reply_markup,
