@@ -6,7 +6,6 @@ import pytz
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import bot
@@ -16,7 +15,6 @@ from database import (
     get_tariff_by_id,
 )
 from database.access.resolution import notify_telegram_chat_id
-from database.models import Server
 from handlers.notifications.webapp_only import webapp_only_markup
 from handlers.payments.fast_payment_flow import try_fast_payment_flow
 from handlers.utils import edit_or_send_message, get_russian_month
@@ -133,18 +131,6 @@ async def _finalize_renewal(
         selected_price_rub=int(full_price),
         credited_to_balance_rub=max(0, int(round(-cost))),
     )
-
-
-async def resolve_cluster_name(session: AsyncSession, server_or_cluster: str) -> str | None:
-    """Определяет имя кластера по server_id или cluster_name."""
-    result = await session.execute(select(Server).where(Server.cluster_name == server_or_cluster).limit(1))
-    server = result.scalars().first()
-    if server:
-        return server_or_cluster
-
-    result = await session.execute(select(Server.cluster_name).where(Server.server_name == server_or_cluster).limit(1))
-    row = result.scalar()
-    return row
 
 
 async def complete_key_renewal(

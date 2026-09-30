@@ -2,7 +2,6 @@ from collections.abc import Iterable
 
 from aiogram import BaseMiddleware, Dispatcher
 
-from core.bootstrap import MODES_CONFIG
 from middlewares.ban_checker import BanCheckerMiddleware
 from middlewares.subscription import SubscriptionMiddleware
 
@@ -30,30 +29,8 @@ def register_middleware(
 ) -> None:
     exclude_set = set(exclude or [])
 
-    flag_by_name = {
-        "runtime_config_sync": "RUNTIME_CONFIG_SYNC_MIDDLEWARE_ENABLED",
-        "concurrency": "CONCURRENCY_MIDDLEWARE_ENABLED",
-        "subscription": "SUBSCRIPTION_MIDDLEWARE_ENABLED",
-        "session": "SESSION_MIDDLEWARE_ENABLED",
-        "direct_start_blocker": "DIRECT_START_BLOCKER_MIDDLEWARE_ENABLED",
-        "ban_checker": "BAN_CHECKER_MIDDLEWARE_ENABLED",
-        "admin": "ADMIN_MIDDLEWARE_ENABLED",
-        "maintenance": "MAINTENANCE_MIDDLEWARE_ENABLED",
-        "logging": "LOGGING_MIDDLEWARE_ENABLED",
-        "throttling": "THROTTLING_MIDDLEWARE_ENABLED",
-        "user": "USER_MIDDLEWARE_ENABLED",
-        "actor": "ACTOR_MIDDLEWARE_ENABLED",
-        "answer": "ANSWER_MIDDLEWARE_ENABLED",
-        "delete_commands": "DELETE_COMMANDS_MIDDLEWARE_ENABLED",
-    }
-
     def middleware_enabled(name: str) -> bool:
-        if name in exclude_set:
-            return False
-        flag_name = flag_by_name.get(name)
-        if not flag_name:
-            return True
-        return bool(MODES_CONFIG.get(flag_name, True))
+        return name not in exclude_set
 
     dispatcher.update.outer_middleware(EarlyCallbackAnswerMiddleware())
 

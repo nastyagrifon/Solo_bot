@@ -224,7 +224,6 @@ async def handle_key_creation(
                 tariffs = await filter_visible_tariffs(
                     session, tg_id, [t for t in tariffs_data["tariffs"] if t.get("is_active")]
                 )
-                tariffs_data["subgroup_weights"]
 
                 if not tariffs and discount_info and discount_info.get("available"):
                     logger.warning(f"[PURCHASE] Нет тарифов со скидкой {group_code}, fallback на {original_group_code}")
@@ -237,7 +236,6 @@ async def handle_key_creation(
                     tariffs = await filter_visible_tariffs(
                         session, tg_id, [t for t in tariffs_data["tariffs"] if t.get("is_active")]
                     )
-                    tariffs_data["subgroup_weights"]
                     discount_info = None
                     await state.update_data(discount_info=None)
 
