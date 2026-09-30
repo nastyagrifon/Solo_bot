@@ -23,7 +23,21 @@ from .keyboard import (
     build_tariff_group_selection_for_servers_kb,
     build_tariff_group_selection_kb,
     build_tariff_selection_kb,
+    cluster_server_names,
 )
+
+
+async def _show_server_pick(callback: CallbackQuery, cluster_name: str, cluster_servers: list, selected: set, build_kb):
+    await callback.message.edit_text(
+        menu_text("Тарифы кластера", f"Отметьте серверы кластера <b>{cluster_name}</b>."),
+        reply_markup=build_kb(cluster_name, cluster_servers, selected),
+    )
+
+
+_SERVER_PICK = {
+    "toggle_server_subgroup": ("subgrp_sel", build_select_subgroup_servers_kb),
+    "toggle_server_group": ("grp_sel", build_select_group_servers_kb),
+}
 
 
 @router.callback_query(AdminClusterCallback.filter(F.action == "set_tariff"), IsAdminFilter())
@@ -102,46 +116,31 @@ async def show_servers_for_tariffs(
 
     data = await state.get_data()
     selected = set(data.get(f"subgrp_sel:{cluster_name}", []))
-    await callback.message.edit_text(
-        menu_text("Тарифы кластера", f"Отметьте серверы кластера <b>{cluster_name}</b>."),
-        reply_markup=build_select_subgroup_servers_kb(cluster_name, cluster_servers, selected),
-    )
+    await _show_server_pick(callback, cluster_name, cluster_servers, selected, build_select_subgroup_servers_kb)
 
 
 @router.callback_query(
-    AdminClusterCallback.filter(F.action == "toggle_server_subgroup"), IsAdminFilter(), flags={"popup": True}
+    AdminClusterCallback.filter(F.action.in_(["toggle_server_subgroup", "toggle_server_group"])),
+    IsAdminFilter(),
+    flags={"popup": True},
 )
-async def toggle_server_for_tariffs(
+async def toggle_cluster_server(
     callback: CallbackQuery, callback_data: AdminClusterCallback, session: AsyncSession, state: FSMContext
 ):
+    key_prefix, build_kb = _SERVER_PICK[callback_data.action]
     cluster_name, idx_str = callback_data.data.split("|", 1)
     i = int(idx_str)
     servers = await get_servers(session=session, include_enabled=True)
     cluster_servers = servers.get(cluster_name, [])
-    names = []
-    for s in cluster_servers:
-        if isinstance(s, str):
-            names.append(s)
-        elif isinstance(s, dict):
-            names.append(s.get("server_name") or s.get("name") or str(s))
-        else:
-            names.append(getattr(s, "server_name", None) or getattr(s, "name", None) or str(s))
+    names = cluster_server_names(cluster_servers)
     if i < 0 or i >= len(names):
         await callback.answer("Сервер не найден", show_alert=True)
         return
-    server_name = names[i]
-    key = f"subgrp_sel:{cluster_name}"
+    key = f"{key_prefix}:{cluster_name}"
     data = await state.get_data()
-    selected = set(data.get(key, []))
-    if server_name in selected:
-        selected.remove(server_name)
-    else:
-        selected.add(server_name)
+    selected = set(data.get(key, [])) ^ {names[i]}
     await state.update_data({key: list(selected)})
-    await callback.message.edit_text(
-        menu_text("Тарифы кластера", f"Отметьте серверы кластера <b>{cluster_name}</b>."),
-        reply_markup=build_select_subgroup_servers_kb(cluster_name, cluster_servers, selected),
-    )
+    await _show_server_pick(callback, cluster_name, cluster_servers, selected, build_kb)
 
 
 @router.callback_query(AdminClusterCallback.filter(F.action == "reset_subgroup_selection"), IsAdminFilter())
@@ -155,10 +154,7 @@ async def reset_tariff_selection(
         f"subgrp_sel:{cluster_name}": [],
         f"tariff_sel:{cluster_name}": [],
     })
-    await callback.message.edit_text(
-        menu_text("Тарифы кластера", f"Отметьте серверы кластера <b>{cluster_name}</b>."),
-        reply_markup=build_select_subgroup_servers_kb(cluster_name, cluster_servers, set()),
-    )
+    await _show_server_pick(callback, cluster_name, cluster_servers, set(), build_select_subgroup_servers_kb)
 
 
 @router.callback_query(
@@ -477,46 +473,7 @@ async def show_servers_for_group(
     cluster_servers = servers.get(cluster_name, [])
     data = await state.get_data()
     selected = set(data.get(f"grp_sel:{cluster_name}", []))
-    await callback.message.edit_text(
-        menu_text("Тарифы кластера", f"Отметьте серверы кластера <b>{cluster_name}</b>."),
-        reply_markup=build_select_group_servers_kb(cluster_name, cluster_servers, selected),
-    )
-
-
-@router.callback_query(
-    AdminClusterCallback.filter(F.action == "toggle_server_group"), IsAdminFilter(), flags={"popup": True}
-)
-async def toggle_server_for_group(
-    callback: CallbackQuery, callback_data: AdminClusterCallback, session: AsyncSession, state: FSMContext
-):
-    cluster_name, idx_str = callback_data.data.split("|", 1)
-    i = int(idx_str)
-    servers = await get_servers(session=session, include_enabled=True)
-    cluster_servers = servers.get(cluster_name, [])
-    names = []
-    for s in cluster_servers:
-        if isinstance(s, str):
-            names.append(s)
-        elif isinstance(s, dict):
-            names.append(s.get("server_name") or s.get("name") or str(s))
-        else:
-            names.append(getattr(s, "server_name", None) or getattr(s, "name", None) or str(s))
-    if i < 0 or i >= len(names):
-        await callback.answer("Сервер не найден", show_alert=True)
-        return
-    server_name = names[i]
-    key = f"grp_sel:{cluster_name}"
-    data = await state.get_data()
-    selected = set(data.get(key, []))
-    if server_name in selected:
-        selected.remove(server_name)
-    else:
-        selected.add(server_name)
-    await state.update_data({key: list(selected)})
-    await callback.message.edit_text(
-        menu_text("Тарифы кластера", f"Отметьте серверы кластера <b>{cluster_name}</b>."),
-        reply_markup=build_select_group_servers_kb(cluster_name, cluster_servers, selected),
-    )
+    await _show_server_pick(callback, cluster_name, cluster_servers, selected, build_select_group_servers_kb)
 
 
 @router.callback_query(AdminClusterCallback.filter(F.action == "reset_group_selection"), IsAdminFilter())
@@ -527,13 +484,7 @@ async def reset_group_selection(
     servers = await get_servers(session=session, include_enabled=True)
     cluster_servers = servers.get(cluster_name, [])
     await state.update_data({f"grp_sel:{cluster_name}": []})
-    await callback.message.edit_text(
-        menu_text(
-            "Тарифы кластера",
-            f"Отметьте серверы кластера <b>{cluster_name}</b>.",
-        ),
-        reply_markup=build_select_group_servers_kb(cluster_name, cluster_servers, set()),
-    )
+    await _show_server_pick(callback, cluster_name, cluster_servers, set(), build_select_group_servers_kb)
 
 
 @router.callback_query(AdminClusterCallback.filter(F.action == "choose_group"), IsAdminFilter(), flags={"popup": True})

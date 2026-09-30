@@ -123,10 +123,7 @@ def build_legacy_reset_kb(cluster_name: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_select_subgroup_servers_kb(
-    cluster_name: str, cluster_servers: list, selected: set[str]
-) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+def cluster_server_names(cluster_servers: list) -> list[str]:
     names = []
     for s in cluster_servers:
         if isinstance(s, str):
@@ -135,36 +132,36 @@ def build_select_subgroup_servers_kb(
             names.append(s.get("server_name") or s.get("name") or str(s))
         else:
             names.append(getattr(s, "server_name", None) or getattr(s, "name", None) or str(s))
+    return names
 
-    for i, name in enumerate(names):
+
+def _select_servers_kb(
+    cluster_name: str, cluster_servers: list, selected: set[str], toggle: str, choose_text: str, choose: str,
+    reset: str, back: str,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for i, name in enumerate(cluster_server_names(cluster_servers)):
         mark = "✅" if name in selected else "⬜️"
         builder.row(
             InlineKeyboardButton(
                 text=f"{mark} {name}",
-                callback_data=AdminClusterCallback(action="toggle_server_subgroup", data=f"{cluster_name}|{i}").pack(),
+                callback_data=AdminClusterCallback(action=toggle, data=f"{cluster_name}|{i}").pack(),
             )
         )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="📋 Выбрать тарифы",
-            callback_data=AdminClusterCallback(action="choose_subgroup", data=cluster_name).pack(),
+    for text, action in ((choose_text, choose), ("♻️ Сбросить выбор", reset), (BACK, back)):
+        builder.row(
+            InlineKeyboardButton(text=text, callback_data=AdminClusterCallback(action=action, data=cluster_name).pack())
         )
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text="♻️ Сбросить выбор",
-            callback_data=AdminClusterCallback(action="reset_subgroup_selection", data=cluster_name).pack(),
-        )
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text=BACK,
-            callback_data=AdminClusterCallback(action="attach_tariff_menu", data=cluster_name).pack(),
-        )
-    )
-
     return builder.as_markup()
+
+
+def build_select_subgroup_servers_kb(
+    cluster_name: str, cluster_servers: list, selected: set[str]
+) -> InlineKeyboardMarkup:
+    return _select_servers_kb(
+        cluster_name, cluster_servers, selected, "toggle_server_subgroup", "📋 Выбрать тарифы", "choose_subgroup",
+        "reset_subgroup_selection", "attach_tariff_menu",
+    )
 
 
 def build_tariff_selection_kb(cluster_name: str, tariffs: list, selected: set[int]) -> InlineKeyboardMarkup:
@@ -299,44 +296,10 @@ def build_tariff_group_selection_kb(cluster_name: str, groups: list[tuple[int, s
 
 
 def build_select_group_servers_kb(cluster_name: str, cluster_servers: list, selected: set[str]) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    names = []
-    for s in cluster_servers:
-        if isinstance(s, str):
-            names.append(s)
-        elif isinstance(s, dict):
-            names.append(s.get("server_name") or s.get("name") or str(s))
-        else:
-            names.append(getattr(s, "server_name", None) or getattr(s, "name", None) or str(s))
-
-    for i, name in enumerate(names):
-        mark = "✅" if name in selected else "⬜️"
-        builder.row(
-            InlineKeyboardButton(
-                text=f"{mark} {name}",
-                callback_data=AdminClusterCallback(action="toggle_server_group", data=f"{cluster_name}|{i}").pack(),
-            )
-        )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="📚 Выбрать спецгруппу",
-            callback_data=AdminClusterCallback(action="choose_group", data=cluster_name).pack(),
-        )
+    return _select_servers_kb(
+        cluster_name, cluster_servers, selected, "toggle_server_group", "📚 Выбрать спецгруппу", "choose_group",
+        "reset_group_selection", "manage",
     )
-    builder.row(
-        InlineKeyboardButton(
-            text="♻️ Сбросить выбор",
-            callback_data=AdminClusterCallback(action="reset_group_selection", data=cluster_name).pack(),
-        )
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text=BACK,
-            callback_data=AdminClusterCallback(action="manage", data=cluster_name).pack(),
-        )
-    )
-    return builder.as_markup()
 
 
 def build_tariff_group_selection_for_servers_kb(
