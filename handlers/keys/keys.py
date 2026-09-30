@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import delete_key, get_key_details
-from handlers.keys.utils import build_key_callback, key_owned_by_user, resolve_key
+from handlers.keys.utils import build_key_callback, key_owned_by_user, owned_key_record, resolve_key
 from handlers.keys.view.router import process_callback_view_key
 from handlers.utils import edit_or_send_message, handle_error
 from logger import logger
@@ -77,14 +77,11 @@ async def process_callback_delete_key(callback_query: CallbackQuery, session: As
 
 @router.callback_query(F.data.startswith("confirm_delete|"), flags={"popup": True})
 async def process_callback_confirm_delete(callback_query: CallbackQuery, session: AsyncSession):
-    key_ref = callback_query.data.split("|", 1)[1]
     try:
-        key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
-        email = key_obj.email if key_obj else key_ref
-        record = await get_key_details(session, email)
-        if not key_owned_by_user(record, callback_query.from_user.id):
-            await callback_query.answer("Доступ запрещён.", show_alert=True)
+        owned = await owned_key_record(callback_query, session)
+        if not owned:
             return
+        email, record = owned
         if record:
             client_id = record["client_id"]
             server_id = record["server_id"]
