@@ -1,19 +1,12 @@
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_temporary_data
-from database.models import User
 from handlers.payments.keyboards import balance_fallback_kb
-from handlers.utils import edit_or_send_message
-from logger import logger
-from services.payments.currency_rates import format_for_user
+from handlers.payments.topup_flow import fast_amount_payment
 from settings.buttons import MAIN_MENU, PAY_2
 from settings.texts import DEFAULT_PAYMENT_MESSAGE
 
-from ..constants import ALLOWED_TEMP_PAYMENT_STATES
 from .service import (
     HELEKET_METHODS,
     generate_heleket_payment_link,
@@ -36,6 +29,18 @@ async def handle_pay_heleket_crypto(
     await process_callback_pay_heleket(callback_query, state, session, method_name="crypto")
 
 
+def _prepare(method_name: str, amount: int):
+    if amount < 10:
+        return None, {
+            "text": "❌ Минимальная сумма для оплаты криптовалютой — 10₽ (≈0.1$).",
+            "reply_markup": balance_fallback_kb(),
+        }
+    enabled_methods = [m for m in HELEKET_METHODS.values() if m["enable"]]
+    if not enabled_methods:
+        return None, {"text": "❌ Способ оплаты Heleket временно недоступен."}
+    return enabled_methods[0], None
+
+
 async def handle_custom_amount_input_heleket(
     event,
     session: AsyncSession,
@@ -48,76 +53,16 @@ async def handle_custom_amount_input_heleket(
     Работает с временными данными из fast_payment_flow для
     создания/продления/подарка.
     """
-    message = event.message
-    from_user = event.from_user
-    tg_id = from_user.id
-
-    temp_data = await get_temporary_data(session, tg_id)
-    if not temp_data or temp_data["state"] not in ALLOWED_TEMP_PAYMENT_STATES:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Не удалось получить данные для оплаты.",
-        )
-        return
-
-    amount = int(temp_data["data"].get("required_amount", 0))
-    if amount <= 0:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Не удалось определить сумму оплаты.",
-        )
-        return
-
-    if amount < 10:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Минимальная сумма для оплаты криптовалютой — 10₽ (≈0.1$).",
-            reply_markup=balance_fallback_kb(),
-        )
-        return
-
-    enabled_methods = [m for m in HELEKET_METHODS.values() if m["enable"]]
-    if not enabled_methods:
-        await edit_or_send_message(
-            target_message=message,
-            text="❌ Способ оплаты Heleket временно недоступен.",
-        )
-        return
-    method = enabled_methods[0]
-
-    try:
-        payment_url = await generate_heleket_payment_link(amount, tg_id, method, session)
-
-        if not payment_url or payment_url == "https://heleket.com/":
-            await edit_or_send_message(
-                target_message=message,
-                text=("❌ Произошла ошибка при создании платежа. Попробуйте позже или выберите другой способ оплаты."),
-            )
-            return
-
-        markup = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=pay_button_text, url=payment_url)],
-                [InlineKeyboardButton(text=main_menu_text, callback_data="profile")],
-            ]
-        )
-
-        result = await session.execute(select(User.language_code).where(User.tg_id == tg_id))
-        language_code = result.scalar_one_or_none()
-        amount_text = await format_for_user(
-            session,
-            tg_id,
-            float(amount),
-            language_code,
-            force_currency="USD",
-        )
-        text_out = DEFAULT_PAYMENT_MESSAGE.format(amount=amount_text)
-
-        await edit_or_send_message(target_message=message, text=text_out, reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Ошибка при создании платежа Heleket для пользователя {tg_id}: {e}")
-        await edit_or_send_message(
-            target_message=message,
-            text="Произошла ошибка при создании платежа. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
+    await fast_amount_payment(
+        event,
+        session,
+        "crypto",
+        pay_button_text,
+        main_menu_text,
+        prepare=_prepare,
+        payment_link=generate_heleket_payment_link,
+        payment_message=DEFAULT_PAYMENT_MESSAGE,
+        log_prefix=lambda m: "Ошибка при создании платежа Heleket",
+        currency="USD",
+        bad_url="https://heleket.com/",
+    )
