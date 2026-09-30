@@ -78,7 +78,7 @@ async def _render_balance_page(
 
     text = menu_text(
         "Баланс",
-        f"Клиент <code>{user_id}</code>",
+        f"Клиент <code>{tg_ref or user_id}</code>",
         quote(f"Баланс: {balance} ₽\nОпераций: {total}\nСтраница: {page + 1}/{total_pages}"),
         history or quote("Операций пока нет"),
     )

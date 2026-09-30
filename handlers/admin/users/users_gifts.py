@@ -34,12 +34,16 @@ async def get_user_gifts(session: AsyncSession, user_id: int) -> list:
 
 
 async def show_gifts_list(message: types.Message, session: AsyncSession, user_id: int, page: int = 0):
+    from database.access.resolution import resolve_user_optional
+
     gifts = await get_user_gifts(session, user_id)
+    u = await resolve_user_optional(session, user_id)
+    shown_id = (u.tg_id or u.id) if u else user_id
 
     if not gifts:
         text = menu_text(
             "Подарки клиента",
-            f"<code>{user_id}</code>",
+            f"<code>{shown_id}</code>",
             quote("Клиент ещё не создавал подарков."),
         )
         await message.edit_text(
@@ -108,7 +112,7 @@ async def show_gifts_list(message: types.Message, session: AsyncSession, user_id
         )
 
     await message.edit_text(
-        text=menu_text("Подарки клиента", f"Клиент <code>{user_id}</code>", card(*blocks)),
+        text=menu_text("Подарки клиента", f"Клиент <code>{shown_id}</code>", card(*blocks)),
         reply_markup=build_user_gifts_kb(user_id, gifts, page),
     )
 

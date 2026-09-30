@@ -1,3 +1,5 @@
+from database.access.resolution import resolve_user_optional
+
 from ...panel.headers import card, menu_text, quote, section
 from ._common import *  # noqa: F401,F403
 from .edit import handle_key_edit
@@ -577,10 +579,13 @@ async def handle_delete_key_confirm(
 async def handle_delete_user(
     callback_query: CallbackQuery,
     callback_data: AdminUserEditorCallback,
+    session: AsyncSession,
 ):
     user_id = callback_data.user_id
+    u = await resolve_user_optional(session, user_id)
+    shown_id = (u.tg_id or u.id) if u else user_id
     await callback_query.message.edit_text(
-        text=menu_text("Подписка", f"⚠️ Удалить клиента {user_id}?"),
+        text=menu_text("Подписка", f"⚠️ Удалить клиента {shown_id}?"),
         reply_markup=build_user_delete_kb(user_id),
     )
 
@@ -595,6 +600,8 @@ async def handle_delete_user_confirm(
     session: AsyncSession,
 ):
     user_id = callback_data.user_id
+    u = await resolve_user_optional(session, user_id)
+    shown_id = (u.tg_id or u.id) if u else user_id
 
     key_records = [(row.email, row.client_id) for row in await get_keys(session, user_id)]
     await release_session_early(session)
@@ -615,13 +622,13 @@ async def handle_delete_user_confirm(
     try:
         await delete_user_data(session, user_id)
         await callback_query.message.edit_text(
-            text=menu_text("Подписка", f"🗑️ Клиент {user_id} был удален."),
+            text=menu_text("Подписка", f"🗑️ Клиент {shown_id} был удален."),
             reply_markup=build_admin_back_kb(),
         )
     except Exception as e:
         logger.error(f"Ошибка при удалении данных из базы данных для пользователя {user_id}: {e}")
         await callback_query.message.edit_text(
-            text=menu_text("Подписка", f"❌ Не удалось удалить клиента {user_id}. Попробуйте ещё раз."),
+            text=menu_text("Подписка", f"❌ Не удалось удалить клиента {shown_id}. Попробуйте ещё раз."),
             reply_markup=build_admin_back_kb(),
         )
 
