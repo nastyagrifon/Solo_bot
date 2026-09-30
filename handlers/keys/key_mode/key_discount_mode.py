@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
@@ -42,24 +43,35 @@ from settings.texts import (
 router = Router()
 
 
-@router.callback_query(F.data == "hot_lead_discount")
-async def handle_discount_entry(callback: CallbackQuery, session: AsyncSession):
+@dataclass(frozen=True)
+class DiscountOffer:
+    notification_type: str
+    group_code: str
+    log_tag: str
+    unavailable: str
+    expired: str
+    offer_text: str
+    tariff_text: str
+    tariffs_unavailable: str
+
+
+async def _handle_discount(callback: CallbackQuery, session: AsyncSession, offer: DiscountOffer):
     tg_id = callback.from_user.id
     u = await resolve_user_optional(session, tg_id)
     if u is None:
-        await callback.message.edit_text(DISCOUNT_UNAVAILABLE)
+        await callback.message.edit_text(offer.unavailable)
         return
 
     result = await session.execute(
         select(Notification.last_notification_time).where(
             Notification.user_id == u.id,
-            Notification.notification_type == "hot_lead_step_2",
+            Notification.notification_type == offer.notification_type,
         )
     )
     last_time = result.scalar_one_or_none()
 
     if not last_time:
-        await callback.message.edit_text(DISCOUNT_UNAVAILABLE)
+        await callback.message.edit_text(offer.unavailable)
         return
 
     discount_active_hours = int(NOTIFICATIONS_CONFIG.get("DISCOUNT_ACTIVE_HOURS", DISCOUNT_ACTIVE_HOURS))
@@ -68,7 +80,7 @@ async def handle_discount_entry(callback: CallbackQuery, session: AsyncSession):
     if last_time.tzinfo is None:
         last_time = last_time.replace(tzinfo=timezone.utc)
     if now - last_time > timedelta(hours=discount_active_hours):
-        await callback.message.edit_text(DISCOUNT_EXPIRED)
+        await callback.message.edit_text(offer.expired)
         return
 
     keys = await get_keys(session, tg_id)
@@ -85,11 +97,11 @@ async def handle_discount_entry(callback: CallbackQuery, session: AsyncSession):
 
         expires_at = last_time + timedelta(hours=discount_active_hours)
         await callback.message.edit_text(
-            DISCOUNT_OFFER_PERSONAL_TEXT.format(time_left=format_discount_time_left(expires_at, discount_active_hours)),
+            offer.offer_text.format(time_left=format_discount_time_left(expires_at, discount_active_hours)),
             reply_markup=builder.as_markup(),
         )
     else:
-        tariffs = await get_tariffs(session=session, group_code="discounts")
+        tariffs = await get_tariffs(session=session, group_code=offer.group_code)
         if not tariffs:
             try:
                 cluster_name = await get_least_loaded_cluster(session)
@@ -97,19 +109,37 @@ async def handle_discount_entry(callback: CallbackQuery, session: AsyncSession):
                 if cluster_tariffs:
                     group_code = cluster_tariffs[0].get("group_code")
                     if group_code:
-                        logger.warning(f"[DISCOUNT] Нет тарифов discounts, fallback на {group_code}")
+                        logger.warning(f"[{offer.log_tag}] Нет тарифов {offer.group_code}, fallback на {group_code}")
                         tariffs = await get_tariffs(session=session, group_code=group_code)
             except Exception as e:
-                logger.error(f"[DISCOUNT] Не удалось получить обычные тарифы: {e}")
+                logger.error(f"[{offer.log_tag}] Не удалось получить обычные тарифы: {e}")
 
             if not tariffs:
-                await callback.message.edit_text(DISCOUNT_TARIFFS_UNAVAILABLE)
+                await callback.message.edit_text(offer.tariffs_unavailable)
                 return
 
         await callback.message.edit_text(
-            DISCOUNT_TARIFF,
+            offer.tariff_text,
             reply_markup=build_tariffs_keyboard(tariffs, prefix="discount_tariff"),
         )
+
+
+def _register(callback_data: str, offer: DiscountOffer):
+    @router.callback_query(F.data == callback_data)
+    async def handler(callback: CallbackQuery, session: AsyncSession):
+        await _handle_discount(callback, session, offer)
+
+    return handler
+
+
+handle_discount_entry = _register(
+    "hot_lead_discount",
+    DiscountOffer(
+        "hot_lead_step_2", "discounts", "DISCOUNT",
+        DISCOUNT_UNAVAILABLE, DISCOUNT_EXPIRED, DISCOUNT_OFFER_PERSONAL_TEXT,
+        DISCOUNT_TARIFF, DISCOUNT_TARIFFS_UNAVAILABLE,
+    ),
+)
 
 
 @router.callback_query(F.data.startswith("discount_tariff|"))
@@ -127,215 +157,27 @@ async def handle_discount_tariff_selection(callback: CallbackQuery, session: Asy
         await callback.message.answer(DISCOUNT_TARIFF_SELECT_ERROR)
 
 
-@router.callback_query(F.data == "hot_lead_final_discount")
-async def handle_ultra_discount(callback: CallbackQuery, session: AsyncSession):
-    tg_id = callback.from_user.id
-    u = await resolve_user_optional(session, tg_id)
-    if u is None:
-        await callback.message.edit_text(DISCOUNT_UNAVAILABLE)
-        return
-
-    result = await session.execute(
-        select(Notification.last_notification_time).where(
-            Notification.user_id == u.id,
-            Notification.notification_type == "hot_lead_step_3",
-        )
-    )
-    last_time = result.scalar_one_or_none()
-
-    if not last_time:
-        await callback.message.edit_text(DISCOUNT_UNAVAILABLE)
-        return
-
-    discount_active_hours = int(NOTIFICATIONS_CONFIG.get("DISCOUNT_ACTIVE_HOURS", DISCOUNT_ACTIVE_HOURS))
-
-    now = datetime.now(timezone.utc)
-    if last_time.tzinfo is None:
-        last_time = last_time.replace(tzinfo=timezone.utc)
-    if now - last_time > timedelta(hours=discount_active_hours):
-        await callback.message.edit_text(DISCOUNT_FINAL_EXPIRED)
-        return
-
-    keys = await get_keys(session, tg_id)
-
-    if keys and len(keys) > 0:
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(
-                text=RENEW_KEY_NOTIFICATION,
-                callback_data=build_key_callback("renew_key", keys[0].client_id, keys[0].email),
-            )
-        )
-        builder.row(InlineKeyboardButton(text=MAIN_MENU, callback_data="profile"))
-
-        expires_at = last_time + timedelta(hours=discount_active_hours)
-        await callback.message.edit_text(
-            DISCOUNT_OFFER_FINAL_TEXT.format(time_left=format_discount_time_left(expires_at, discount_active_hours)),
-            reply_markup=builder.as_markup(),
-        )
-    else:
-        tariffs = await get_tariffs(session=session, group_code="discounts_max")
-        if not tariffs:
-            try:
-                cluster_name = await get_least_loaded_cluster(session)
-                cluster_tariffs = await get_tariffs_for_cluster(session, cluster_name)
-                if cluster_tariffs:
-                    group_code = cluster_tariffs[0].get("group_code")
-                    if group_code:
-                        logger.warning(f"[DISCOUNT_MAX] Нет тарифов discounts_max, fallback на {group_code}")
-                        tariffs = await get_tariffs(session=session, group_code=group_code)
-            except Exception as e:
-                logger.error(f"[DISCOUNT_MAX] Не удалось получить обычные тарифы: {e}")
-
-            if not tariffs:
-                await callback.message.edit_text(DISCOUNT_TARIFFS_UNAVAILABLE)
-                return
-
-        await callback.message.edit_text(
-            DISCOUNT_TARIFF_MAX,
-            reply_markup=build_tariffs_keyboard(tariffs, prefix="discount_tariff"),
-        )
-
-
-@router.callback_query(F.data == "cold_lead_discount")
-async def handle_cold_discount_entry(callback: CallbackQuery, session: AsyncSession):
-    tg_id = callback.from_user.id
-    u = await resolve_user_optional(session, tg_id)
-    if u is None:
-        await callback.message.edit_text(COLD_DISCOUNT_UNAVAILABLE)
-        return
-
-    result = await session.execute(
-        select(Notification.last_notification_time).where(
-            Notification.user_id == u.id,
-            Notification.notification_type == "cold_lead_step_2",
-        )
-    )
-    last_time = result.scalar_one_or_none()
-
-    if not last_time:
-        await callback.message.edit_text(COLD_DISCOUNT_UNAVAILABLE)
-        return
-
-    discount_active_hours = int(NOTIFICATIONS_CONFIG.get("DISCOUNT_ACTIVE_HOURS", DISCOUNT_ACTIVE_HOURS))
-
-    now = datetime.now(timezone.utc)
-    if last_time.tzinfo is None:
-        last_time = last_time.replace(tzinfo=timezone.utc)
-    if now - last_time > timedelta(hours=discount_active_hours):
-        await callback.message.edit_text(COLD_DISCOUNT_EXPIRED)
-        return
-
-    keys = await get_keys(session, tg_id)
-
-    if keys and len(keys) > 0:
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(
-                text=RENEW_KEY_NOTIFICATION,
-                callback_data=build_key_callback("renew_key", keys[0].client_id, keys[0].email),
-            )
-        )
-        builder.row(InlineKeyboardButton(text=MAIN_MENU, callback_data="profile"))
-
-        expires_at = last_time + timedelta(hours=discount_active_hours)
-        await callback.message.edit_text(
-            COLD_DISCOUNT_OFFER_PERSONAL_TEXT.format(
-                time_left=format_discount_time_left(expires_at, discount_active_hours)
-            ),
-            reply_markup=builder.as_markup(),
-        )
-    else:
-        tariffs = await get_tariffs(session=session, group_code="cold_discounts")
-        if not tariffs:
-            try:
-                cluster_name = await get_least_loaded_cluster(session)
-                cluster_tariffs = await get_tariffs_for_cluster(session, cluster_name)
-                if cluster_tariffs:
-                    group_code = cluster_tariffs[0].get("group_code")
-                    if group_code:
-                        logger.warning(f"[COLD_DISCOUNT] Нет тарифов cold_discounts, fallback на {group_code}")
-                        tariffs = await get_tariffs(session=session, group_code=group_code)
-            except Exception as e:
-                logger.error(f"[COLD_DISCOUNT] Не удалось получить обычные тарифы: {e}")
-
-            if not tariffs:
-                await callback.message.edit_text(COLD_DISCOUNT_TARIFFS_UNAVAILABLE)
-                return
-
-        await callback.message.edit_text(
-            COLD_DISCOUNT_TARIFF,
-            reply_markup=build_tariffs_keyboard(tariffs, prefix="discount_tariff"),
-        )
-
-
-@router.callback_query(F.data == "cold_lead_final_discount")
-async def handle_cold_ultra_discount(callback: CallbackQuery, session: AsyncSession):
-    tg_id = callback.from_user.id
-    u = await resolve_user_optional(session, tg_id)
-    if u is None:
-        await callback.message.edit_text(COLD_DISCOUNT_UNAVAILABLE)
-        return
-
-    result = await session.execute(
-        select(Notification.last_notification_time).where(
-            Notification.user_id == u.id,
-            Notification.notification_type == "cold_lead_step_3",
-        )
-    )
-    last_time = result.scalar_one_or_none()
-
-    if not last_time:
-        await callback.message.edit_text(COLD_DISCOUNT_UNAVAILABLE)
-        return
-
-    discount_active_hours = int(NOTIFICATIONS_CONFIG.get("DISCOUNT_ACTIVE_HOURS", DISCOUNT_ACTIVE_HOURS))
-
-    now = datetime.now(timezone.utc)
-    if last_time.tzinfo is None:
-        last_time = last_time.replace(tzinfo=timezone.utc)
-    if now - last_time > timedelta(hours=discount_active_hours):
-        await callback.message.edit_text(COLD_DISCOUNT_FINAL_EXPIRED)
-        return
-
-    keys = await get_keys(session, tg_id)
-
-    if keys and len(keys) > 0:
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(
-                text=RENEW_KEY_NOTIFICATION,
-                callback_data=build_key_callback("renew_key", keys[0].client_id, keys[0].email),
-            )
-        )
-        builder.row(InlineKeyboardButton(text=MAIN_MENU, callback_data="profile"))
-
-        expires_at = last_time + timedelta(hours=discount_active_hours)
-        await callback.message.edit_text(
-            COLD_DISCOUNT_OFFER_FINAL_TEXT.format(
-                time_left=format_discount_time_left(expires_at, discount_active_hours)
-            ),
-            reply_markup=builder.as_markup(),
-        )
-    else:
-        tariffs = await get_tariffs(session=session, group_code="cold_discounts_max")
-        if not tariffs:
-            try:
-                cluster_name = await get_least_loaded_cluster(session)
-                cluster_tariffs = await get_tariffs_for_cluster(session, cluster_name)
-                if cluster_tariffs:
-                    group_code = cluster_tariffs[0].get("group_code")
-                    if group_code:
-                        logger.warning(f"[COLD_DISCOUNT_MAX] Нет тарифов cold_discounts_max, fallback на {group_code}")
-                        tariffs = await get_tariffs(session=session, group_code=group_code)
-            except Exception as e:
-                logger.error(f"[COLD_DISCOUNT_MAX] Не удалось получить обычные тарифы: {e}")
-
-            if not tariffs:
-                await callback.message.edit_text(COLD_DISCOUNT_TARIFFS_UNAVAILABLE)
-                return
-
-        await callback.message.edit_text(
-            COLD_DISCOUNT_TARIFF_MAX,
-            reply_markup=build_tariffs_keyboard(tariffs, prefix="discount_tariff"),
-        )
+handle_ultra_discount = _register(
+    "hot_lead_final_discount",
+    DiscountOffer(
+        "hot_lead_step_3", "discounts_max", "DISCOUNT_MAX",
+        DISCOUNT_UNAVAILABLE, DISCOUNT_FINAL_EXPIRED, DISCOUNT_OFFER_FINAL_TEXT,
+        DISCOUNT_TARIFF_MAX, DISCOUNT_TARIFFS_UNAVAILABLE,
+    ),
+)
+handle_cold_discount_entry = _register(
+    "cold_lead_discount",
+    DiscountOffer(
+        "cold_lead_step_2", "cold_discounts", "COLD_DISCOUNT",
+        COLD_DISCOUNT_UNAVAILABLE, COLD_DISCOUNT_EXPIRED, COLD_DISCOUNT_OFFER_PERSONAL_TEXT,
+        COLD_DISCOUNT_TARIFF, COLD_DISCOUNT_TARIFFS_UNAVAILABLE,
+    ),
+)
+handle_cold_ultra_discount = _register(
+    "cold_lead_final_discount",
+    DiscountOffer(
+        "cold_lead_step_3", "cold_discounts_max", "COLD_DISCOUNT_MAX",
+        COLD_DISCOUNT_UNAVAILABLE, COLD_DISCOUNT_FINAL_EXPIRED, COLD_DISCOUNT_OFFER_FINAL_TEXT,
+        COLD_DISCOUNT_TARIFF_MAX, COLD_DISCOUNT_TARIFFS_UNAVAILABLE,
+    ),
+)
