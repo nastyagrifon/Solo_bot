@@ -1,6 +1,12 @@
+import os
 import sys
 
 from settings import cache_config, config
+
+
+# Слоты A/B: второй процесс ядра поднимается рядом на своём порту, конфиг общий.
+if os.environ.get("SLOT_PORT"):
+    config.WEBAPP_PORT = int(os.environ["SLOT_PORT"])
 
 
 sys.modules.setdefault("config", config)
