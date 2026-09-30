@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_key_by_client_id, get_key_by_email, get_keys
+from database import get_key_by_client_id, get_key_by_email, get_key_details, get_keys
 from database.models import Key
 from handlers.utils import render_text
 from services.payments.currency_rates import format_for_user
@@ -30,6 +30,18 @@ def happ_import_url(key_link: str, connect_prefix: str, crypt_host: str) -> str:
 def key_owned_by_user(record: dict | None, user_id: int) -> bool:
     """Проверка, что ключ принадлежит пользователю (защита от пересылки callback)."""
     return record is not None and record.get("tg_id") == user_id
+
+
+async def owned_key_record(callback_query, session: AsyncSession) -> tuple[str, dict] | None:
+    """(email, record) ключа из callback_data «префикс|ref», если он принадлежит нажавшему; иначе алерт и None."""
+    key_ref = callback_query.data.split("|", 1)[1]
+    key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
+    email = key_obj.email if key_obj else key_ref
+    record = await get_key_details(session, email)
+    if not key_owned_by_user(record, callback_query.from_user.id):
+        await callback_query.answer("Доступ запрещён.", show_alert=True)
+        return None
+    return email, record
 
 
 def build_key_ref(client_id: str | None, email: str | None = None) -> str:
