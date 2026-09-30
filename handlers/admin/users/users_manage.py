@@ -39,6 +39,7 @@ from ..panel.keyboard import (
     AdminPanelCallback,
     build_admin_back_btn,
     build_admin_back_kb,
+    nav_row,
 )
 from .keyboard import (
     SITE_TAB_LABELS,
@@ -231,21 +232,7 @@ async def _render_search_results(target: types.Message, results: list[dict], que
                 callback_data=AdminUserEditorCallback(action="users_editor", user_id=int(c["ref"]), edit=True).pack(),
             )
         )
-    nav: list[InlineKeyboardButton] = []
-    if page > 1:
-        nav.append(
-            InlineKeyboardButton(text="◀️", callback_data=AdminPanelCallback(action="search_page", page=page - 1).pack())
-        )
-    if pages > 1:
-        nav.append(
-            InlineKeyboardButton(
-                text=f"{page}/{pages}", callback_data=AdminPanelCallback(action="search_page", page=page).pack()
-            )
-        )
-    if page < pages:
-        nav.append(
-            InlineKeyboardButton(text="▶️", callback_data=AdminPanelCallback(action="search_page", page=page + 1).pack())
-        )
+    nav = nav_row(page, pages, lambda p: AdminPanelCallback(action="search_page", page=p).pack())
     if nav:
         builder.row(*nav)
     builder.row(build_admin_back_btn())
