@@ -15,10 +15,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from apscheduler.executors.asyncio import AsyncIOExecutor
-from apscheduler.executors.pool import (
-    ProcessPoolExecutor as APSchedulerProcessPoolExecutor,
-    ThreadPoolExecutor as APSchedulerThreadPoolExecutor,
-)
+from apscheduler.executors.pool import ProcessPoolExecutor as APSchedulerProcessPoolExecutor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.base import BaseTrigger
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -29,25 +26,7 @@ from logger import logger
 LoopRunner = Callable[[Bot, async_sessionmaker], Awaitable[None]]
 ThreadLoopRunner = Callable[[threading.Event, Bot, async_sessionmaker], None]
 CronRunner = Callable[[], Awaitable[None]] | Callable[[], None]
-CronExecutionMode = Literal["async", "thread", "process"]
-
-
-@dataclass
-class ManagedLoopTask:
-    task_id: str
-    runner: LoopRunner
-
-
-@dataclass
-class ManagedThreadLoopTask:
-    task_id: str
-    runner: ThreadLoopRunner
-
-
-@dataclass
-class ManagedProcessLoopTask:
-    task_id: str
-    runner: LoopRunner
+CronExecutionMode = Literal["async", "process"]
 
 
 @dataclass
@@ -63,11 +42,6 @@ class ManagedCronTask:
 class RunningThreadLoopTask:
     thread: threading.Thread
     stop_event: threading.Event
-
-
-@dataclass
-class RunningProcessLoopTask:
-    process: multiprocessing.Process
 
 
 def _run_process_loop_task(task_id: str, runner: LoopRunner) -> None:
@@ -105,13 +79,13 @@ async def _run_process_loop_task_async(task_id: str, runner: LoopRunner) -> None
 class PeriodicTaskManager:
     def __init__(self, timezone_name: str = "Europe/Moscow") -> None:
         self.timezone_name = timezone_name
-        self._loop_tasks: dict[str, ManagedLoopTask] = {}
-        self._thread_loop_tasks: dict[str, ManagedThreadLoopTask] = {}
-        self._process_loop_tasks: dict[str, ManagedProcessLoopTask] = {}
+        self._loop_tasks: dict[str, LoopRunner] = {}
+        self._thread_loop_tasks: dict[str, ThreadLoopRunner] = {}
+        self._process_loop_tasks: dict[str, LoopRunner] = {}
         self._cron_tasks: dict[str, ManagedCronTask] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._running_thread_tasks: dict[str, RunningThreadLoopTask] = {}
-        self._running_process_tasks: dict[str, RunningProcessLoopTask] = {}
+        self._running_process_tasks: dict[str, multiprocessing.Process] = {}
         self._scheduler: AsyncIOScheduler | None = None
         self._scheduler_process_workers: int | None = None
         self._started = False
@@ -151,13 +125,13 @@ class PeriodicTaskManager:
         return unique_candidates
 
     def register_loop_task(self, task_id: str, runner: LoopRunner) -> None:
-        self._loop_tasks[task_id] = ManagedLoopTask(task_id=task_id, runner=runner)
+        self._loop_tasks[task_id] = runner
 
     def register_thread_loop_task(self, task_id: str, runner: ThreadLoopRunner) -> None:
-        self._thread_loop_tasks[task_id] = ManagedThreadLoopTask(task_id=task_id, runner=runner)
+        self._thread_loop_tasks[task_id] = runner
 
     def register_process_loop_task(self, task_id: str, runner: LoopRunner) -> None:
-        self._process_loop_tasks[task_id] = ManagedProcessLoopTask(task_id=task_id, runner=runner)
+        self._process_loop_tasks[task_id] = runner
 
     def set_scheduler_process_workers(self, workers: int | None) -> None:
         self._scheduler_process_workers = None if workers is None else max(0, int(workers))
@@ -170,7 +144,7 @@ class PeriodicTaskManager:
         execution_mode: CronExecutionMode = "async",
         args: tuple = (),
     ) -> None:
-        if execution_mode not in {"async", "thread", "process"}:
+        if execution_mode not in {"async", "process"}:
             raise ValueError(f"Unsupported execution_mode: {execution_mode}")
         if execution_mode != "async" and inspect.iscoroutinefunction(runner):
             raise ValueError(f"Cron task {task_id} with execution_mode={execution_mode} must be a sync function")
@@ -231,28 +205,16 @@ class PeriodicTaskManager:
             logger.warning("[PeriodicManager] Цикл {} завершился сам и больше не работает", task_id)
 
     def _build_scheduler(self) -> AsyncIOScheduler:
-        from settings.config import EXECUTOR_POOL_SIZE, PROCESS_POOL_SIZE
+        from settings.config import PROCESS_POOL_SIZE
 
-        thread_workers = max(1, int(EXECUTOR_POOL_SIZE))
         configured_process_workers = self._scheduler_process_workers
         if configured_process_workers is None:
             configured_process_workers = int(PROCESS_POOL_SIZE)
         process_workers = max(0, min(configured_process_workers, multiprocessing.cpu_count() or 1))
-        executors = {
-            "default": AsyncIOExecutor(),
-            "threadpool": APSchedulerThreadPoolExecutor(max_workers=thread_workers),
-        }
+        executors = {"default": AsyncIOExecutor()}
         if process_workers > 0:
             executors["processpool"] = APSchedulerProcessPoolExecutor(max_workers=process_workers)
         return AsyncIOScheduler(timezone=self.timezone_name, executors=executors)
-
-    @staticmethod
-    def _cron_executor_name(execution_mode: CronExecutionMode) -> str:
-        if execution_mode == "thread":
-            return "threadpool"
-        if execution_mode == "process":
-            return "processpool"
-        return "default"
 
     @staticmethod
     def _thread_loop_entry(
@@ -273,8 +235,7 @@ class PeriodicTaskManager:
         if running_task.thread.is_alive():
             logger.warning("[PeriodicManager] Thread-loop задача {} не завершилась вовремя", task_id)
 
-    async def _stop_process_task(self, task_id: str, running_task: RunningProcessLoopTask) -> None:
-        process = running_task.process
+    async def _stop_process_task(self, task_id: str, process: multiprocessing.Process) -> None:
         if not process.is_alive():
             await asyncio.to_thread(process.join, 1)
             return
@@ -301,40 +262,40 @@ class PeriodicTaskManager:
                     args=cron_task.args,
                     name=cron_task.task_id if cron_task.args else None,  # иначе все процессные — "run_in_own_loop"
                     id=cron_task.task_id,
-                    executor=self._cron_executor_name(cron_task.execution_mode),
+                    executor="processpool" if cron_task.execution_mode == "process" else "default",
                     replace_existing=True,
                     max_instances=1,
                     coalesce=True,
                 )
             scheduler.start()
             self._scheduler = scheduler
-            for loop_task in self._loop_tasks.values():
-                task = asyncio.create_task(loop_task.runner(bot, sessionmaker))
-                task.add_done_callback(partial(self._report_loop_exit, loop_task.task_id))
-                self._running_tasks[loop_task.task_id] = task
-            for loop_task in self._thread_loop_tasks.values():
+            for task_id, runner in self._loop_tasks.items():
+                task = asyncio.create_task(runner(bot, sessionmaker))
+                task.add_done_callback(partial(self._report_loop_exit, task_id))
+                self._running_tasks[task_id] = task
+            for task_id, runner in self._thread_loop_tasks.items():
                 stop_event = threading.Event()
                 thread = threading.Thread(
                     target=self._thread_loop_entry,
-                    args=(loop_task.task_id, loop_task.runner, stop_event, bot, sessionmaker),
-                    name=f"periodic-{loop_task.task_id}",
+                    args=(task_id, runner, stop_event, bot, sessionmaker),
+                    name=f"periodic-{task_id}",
                     daemon=True,
                 )
                 thread.start()
-                self._running_thread_tasks[loop_task.task_id] = RunningThreadLoopTask(
+                self._running_thread_tasks[task_id] = RunningThreadLoopTask(
                     thread=thread,
                     stop_event=stop_event,
                 )
-            for loop_task in self._process_loop_tasks.values():
+            for task_id, runner in self._process_loop_tasks.items():
                 ctx = multiprocessing.get_context("spawn")
                 process = ctx.Process(
                     target=_run_process_loop_task,
-                    args=(loop_task.task_id, loop_task.runner),
-                    name=f"periodic-{loop_task.task_id}",
+                    args=(task_id, runner),
+                    name=f"periodic-{task_id}",
                     daemon=True,
                 )
                 process.start()
-                self._running_process_tasks[loop_task.task_id] = RunningProcessLoopTask(process=process)
+                self._running_process_tasks[task_id] = process
             self._started = True
             logger.info(
                 "[PeriodicManager] Запущен: async-loop=%s thread-loop=%s process-loop=%s cron=%s",
