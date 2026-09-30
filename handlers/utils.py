@@ -26,7 +26,6 @@ from bot import bot
 from database.access.resolution import resolve_user_optional
 from database.models import Key, Notification
 from logger import logger
-from services.clusters import is_full_remnawave_cluster  # noqa: F401  (реэкспорт: им пользуются модули)
 from services.formatting import format_days, format_hours, format_minutes
 from settings.config import ADMIN_ID
 

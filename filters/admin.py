@@ -75,14 +75,6 @@ class IsAdminFilter(BaseFilter):
         return is_admin
 
 
-class IsSuperAdminFilter(BaseFilter):
-    async def __call__(self, event: Message | CallbackQuery) -> bool:
-        if not event.from_user:
-            return False
-        _, is_super, _ = await _resolve_admin(event.from_user.id)
-        return is_super
-
-
 class HasPermission(BaseFilter):
     def __init__(self, *permissions: str, require_all: bool = False) -> None:
         if not permissions:

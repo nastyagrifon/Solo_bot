@@ -37,7 +37,6 @@ from handlers.utils import (
     edit_or_send_message,
     generate_random_email,
     get_least_loaded_cluster,
-    is_full_remnawave_cluster,
 )
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.processors import (
@@ -49,6 +48,7 @@ from hooks.processors import (
 from logger import logger
 from panels import remnawave as remnawave_panel
 from panels._3xui import delete_client, get_xui_instance
+from services.clusters import is_full_remnawave_cluster
 from services.errors import InsufficientFundsError
 from services.operations import create_client_on_server
 from services.operations.aggregated_links import make_aggregated_link

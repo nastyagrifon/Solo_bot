@@ -15,11 +15,12 @@ from database.models import Key
 from database.tariffs import get_tariffs
 from handlers.keys.utils import build_key_callback
 from handlers.notifications.sender import send_messages_with_limit
-from handlers.utils import build_support_button, is_full_remnawave_cluster
+from handlers.utils import build_support_button
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.hooks import run_hooks
 from logger import logger
 from panels.remnawave_runtime import fetch_all_remnawave_traffic
+from services.clusters import is_full_remnawave_cluster
 from settings.buttons import CONNECT_DEVICE, MAIN_MENU
 from settings.config import NOTIFY_INACTIVE_TRAFFIC, REMNAWAVE_WEBAPP, REMNAWAVE_WEBAPP_OPEN_IN_BROWSER
 from settings.texts import ZERO_TRAFFIC_MSG

@@ -10,8 +10,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from core.bootstrap import MODES_CONFIG
 from database import get_key_details, get_subscription_link
 from handlers.keys.utils import build_key_callback, key_owned_by_user, resolve_key
-from handlers.utils import build_support_button, edit_or_send_message, is_full_remnawave_cluster
+from handlers.utils import build_support_button, edit_or_send_message
 from hooks.processors import process_remnawave_webapp_override
+from services.clusters import is_full_remnawave_cluster
 from settings.buttons import (
     BACK,
     CONNECT_MACOS_BUTTON,

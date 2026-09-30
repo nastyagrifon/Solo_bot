@@ -66,12 +66,13 @@ from database.servers import cluster_name_exists, get_cluster_name_for_server_na
 from database.temporary_data import create_temporary_data
 from handlers.keys.view.payload import build_key_view_payload
 from handlers.tariffs.addons.utils import calc_remaining_ratio_seconds, is_not_downgrade
-from handlers.utils import ALLOWED_GROUP_CODES, is_full_remnawave_cluster
+from handlers.utils import ALLOWED_GROUP_CODES
 from logger import logger
 from panels._3xui import delete_client, get_xui_instance
 from panels.remnawave import RemnawaveAPI, get_vless_link_for_remnawave_by_username
 from panels.remnawave_runtime import get_remnawave_profile, invalidate_remnawave_profile, with_remnawave_api
 from services.addons import calc_pack_full_price_rub, get_pack_flags
+from services.clusters import is_full_remnawave_cluster
 from services.coupons import resolve_percent_coupon_soft
 from services.keys import normalize_expiry_ms
 from services.operations import (
