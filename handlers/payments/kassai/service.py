@@ -8,6 +8,7 @@ from aiogram import Router
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
@@ -20,7 +21,6 @@ from settings.config import (
     KASSAI_IP,
     KASSAI_SHOP_ID,
     KASSAI_SUCCESS_URL,
-    PROVIDERS_ENABLED,
 )
 from settings.texts import (
     KASSAI_CARDS_DESCRIPTION,
@@ -43,18 +43,22 @@ class ReplenishBalanceKassaiState(StatesGroup):
 
 KASSAI_METHODS = {
     "cards": {
-        "enable": PROVIDERS_ENABLED.get("KASSAI_CARDS", False),
+        "provider_key": "KASSAI_CARDS",
         "method": 36,
         "button": KASSAI_CARDS,
         "desc": KASSAI_CARDS_DESCRIPTION,
     },
     "sbp": {
-        "enable": PROVIDERS_ENABLED.get("KASSAI_SBP", False),
+        "provider_key": "KASSAI_SBP",
         "method": 44,
         "button": KASSAI_SBP,
         "desc": KASSAI_SBP_DESCRIPTION,
     },
 }
+
+
+def _kassai_method_enabled(method: dict) -> bool:
+    return bool(PAYMENTS_CONFIG.get(method["provider_key"], False))
 
 
 KASSAI_MIN_AMOUNTS = {"cards": 50, "sbp": 10}
@@ -73,7 +77,7 @@ process_callback_pay_kassai = register_topup_flow(
     prefix="kassai",
     methods=KASSAI_METHODS,
     states=ReplenishBalanceKassaiState,
-    enabled=lambda method: method["enable"],
+    enabled=_kassai_method_enabled,
     payment_link=_payment_link,
     payment_message=KASSAI_PAYMENT_MESSAGE,
     min_amount=lambda name, method: KASSAI_MIN_AMOUNTS[name],
@@ -187,7 +191,7 @@ def create_link_factory(method_name: str):
         if currency != "RUB":
             raise ValueError("KassaI поддерживает только RUB")
         method = KASSAI_METHODS.get(method_name)
-        if not method or not method.get("enable"):
+        if not method or not _kassai_method_enabled(method):
             raise ValueError("Способ оплаты KassaI недоступен")
         amount_int = int(amount)
         payment_id = f"{int(time.time())}_{tg_id}"

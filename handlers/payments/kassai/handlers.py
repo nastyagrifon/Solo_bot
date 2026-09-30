@@ -12,6 +12,7 @@ from .service import (
     KASSAI_METHODS,
     KASSAI_MIN_AMOUNTS,
     KASSAI_MIN_TEXTS,
+    _kassai_method_enabled,
     generate_kassai_payment_link,
     process_callback_pay_kassai,
     router as service_router,
@@ -49,7 +50,7 @@ def _prepare(method_name: str, amount: int):
         return None, {"text": text, "reply_markup": balance_fallback_kb()}
 
     method = KASSAI_METHODS.get(method_name)
-    if not method or not method["enable"]:
+    if not method or not _kassai_method_enabled(method):
         method_label = "картами" if method_name == "cards" else "через СБП"
         return None, {"text": f"❌ Оплата {method_label} KassaAI временно недоступна."}
     return method, None
