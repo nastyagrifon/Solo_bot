@@ -101,7 +101,7 @@ async def handle_ban_forever_reason_input(message: Message, state: FSMContext, s
         text=(
             menu_text(
                 "Блокировка",
-                f"✅ Клиент <code>{user_id}</code> забанен навсегда.{(f'\n📄 Причина: {reason}' if reason else '')}",
+                f"✅ Клиент <code>{u.tg_id or u.id}</code> забанен навсегда.{(f'\n📄 Причина: {reason}' if reason else '')}",
             )
         ),
         reply_markup=build_editor_kb(user_id, edit=True),
@@ -193,7 +193,7 @@ async def handle_ban_duration_input(message: Message, state: FSMContext, session
 
         text = menu_text(
             "Клиент забанен",
-            f"<code>{user_id}</code>",
+            f"<code>{u.tg_id or u.id}</code>",
             quote(f"До: <b>{until:%Y-%m-%d %H:%M}</b> UTC" + (f"\nПричина: {reason}" if reason else "")),
         )
 
@@ -241,7 +241,7 @@ async def handle_ban_shadow(callback: CallbackQuery, callback_data: AdminUserEdi
         await invalidate_ban_cache(u.tg_id)
 
     await callback.message.edit_text(
-        text=menu_text("Блокировка", f"👻 Клиент <code>{callback_data.user_id}</code> получил теневой бан."),
+        text=menu_text("Блокировка", f"👻 Клиент <code>{u.tg_id or u.id}</code> получил теневой бан."),
         reply_markup=build_editor_kb(callback_data.user_id, edit=True),
     )
 
@@ -267,7 +267,7 @@ async def handle_user_unban(
 
     text = menu_text(
         "Блокировка снята",
-        f"Клиент <code>{callback_data.user_id}</code> снова может пользоваться ботом.",
+        f"Клиент <code>{u.tg_id or u.id}</code> снова может пользоваться ботом.",
     )
 
     await callback.message.edit_text(text=text, reply_markup=build_editor_kb(callback_data.user_id, edit=True))

@@ -590,7 +590,7 @@ async def _render_user_audit(
             blocks.extend(_render_events_as_flow(rev))
 
     await message.edit_text(
-        text=menu_text("Аудит", f"Клиент <code>{user_id}</code>", card(*blocks)),
+        text=menu_text("Аудит", f"Клиент <code>{owner_tg_id or user_id}</code>", card(*blocks)),
         reply_markup=build_user_audit_kb(
             user_id=user_id,
             channel_filter=channel_filter,
