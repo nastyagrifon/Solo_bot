@@ -1,10 +1,11 @@
+from functools import partial
+
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from handlers.payments.keyboards import balance_fallback_kb
 from handlers.payments.topup_flow import fast_amount_payment
-from settings.buttons import MAIN_MENU, PAY_2
 from settings.texts import DEFAULT_PAYMENT_MESSAGE
 
 from .service import (
@@ -41,28 +42,12 @@ def _prepare(method_name: str, amount: int):
     return enabled_methods[0], None
 
 
-async def handle_custom_amount_input_heleket(
-    event,
-    session: AsyncSession,
-    pay_button_text: str = PAY_2,
-    main_menu_text: str = MAIN_MENU,
-):
-    """Функция быстрого потока для Heleket.
-
-    Принимает недостающую сумму и формирует платеж.
-    Работает с временными данными из fast_payment_flow для
-    создания/продления/подарка.
-    """
-    await fast_amount_payment(
-        event,
-        session,
-        "crypto",
-        pay_button_text,
-        main_menu_text,
-        prepare=_prepare,
-        payment_link=generate_heleket_payment_link,
-        payment_message=DEFAULT_PAYMENT_MESSAGE,
-        log_prefix=lambda m: "Ошибка при создании платежа Heleket",
-        currency="USD",
-        bad_url="https://heleket.com/",
-    )
+fast_payment = partial(
+    fast_amount_payment,
+    prepare=_prepare,
+    payment_link=generate_heleket_payment_link,
+    payment_message=DEFAULT_PAYMENT_MESSAGE,
+    log_prefix=lambda m: "Ошибка при создании платежа Heleket",
+    currency="USD",
+    bad_url="https://heleket.com/",
+)
