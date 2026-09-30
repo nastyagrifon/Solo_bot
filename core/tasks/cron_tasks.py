@@ -52,18 +52,6 @@ def run_in_own_loop(job: Callable[[], Coroutine[object, object, object]]) -> Non
     asyncio.run(job())
 
 
-def scheduled_audit_drain_process_runner() -> None:
-    run_in_own_loop(scheduled_audit_drain)
-
-
-def scheduled_stats_report_process_runner() -> None:
-    run_in_own_loop(scheduled_stats_report)
-
-
-def sweep_stale_payments_process_runner() -> None:
-    run_in_own_loop(sweep_stale_payments_job)
-
-
 async def cleanup_expired_gifts_job() -> None:
     from datetime import datetime
 
@@ -84,10 +72,6 @@ async def cleanup_expired_gifts_job() -> None:
             logger.error("[GiftCleanup] Ошибка очистки подарков: {}", error)
 
 
-def cleanup_expired_gifts_process_runner() -> None:
-    run_in_own_loop(cleanup_expired_gifts_job)
-
-
 async def autoclose_stale_tickets_job() -> None:
     from services.tickets import delete_stale
 
@@ -99,10 +83,6 @@ async def autoclose_stale_tickets_job() -> None:
                 logger.info("[TicketsCleanup] Удалено протухших обращений (с темами): {}", count)
         except Exception as error:
             logger.error("[TicketsCleanup] Ошибка очистки обращений: {}", error)
-
-
-def autoclose_stale_tickets_process_runner() -> None:
-    run_in_own_loop(autoclose_stale_tickets_job)
 
 
 WEB_ANALYTICS_RETENTION_DAYS = 90
@@ -166,10 +146,6 @@ async def cleanup_web_analytics_job() -> None:
             logger.error("[WebAnalyticsCleanup] ошибка очистки: {}", error)
 
 
-def cleanup_web_analytics_process_runner() -> None:
-    run_in_own_loop(cleanup_web_analytics_job)
-
-
 async def abandoned_checkout_reminder_job() -> None:
     """Напоминает пользователям о незавершённой оплате (брошенный checkout)."""
     from services.abandoned_checkout import send_abandoned_checkout_reminders
@@ -182,10 +158,6 @@ async def abandoned_checkout_reminder_job() -> None:
                 logger.info("[AbandonedCheckout] Напоминаний отправлено: {}", count)
         except Exception as error:
             logger.error("[AbandonedCheckout] Ошибка отправки напоминаний: {}", error)
-
-
-def abandoned_checkout_reminder_process_runner() -> None:
-    run_in_own_loop(abandoned_checkout_reminder_job)
 
 
 async def snapshot_key_traffic_job() -> None:
@@ -202,10 +174,6 @@ async def snapshot_key_traffic_job() -> None:
             logger.error("[TrafficHistory] Ошибка снапшота трафика: {}", error)
 
 
-def snapshot_key_traffic_process_runner() -> None:
-    run_in_own_loop(snapshot_key_traffic_job)
-
-
 async def snapshot_key_traffic_hourly_job() -> None:
     """Почасовой снапшот использованного трафика (для графика использования за сутки)."""
     from services.traffic_history import snapshot_all_key_traffic_hourly
@@ -218,10 +186,6 @@ async def snapshot_key_traffic_hourly_job() -> None:
                 logger.info("[TrafficHistory] Почасовых снапшотов записано: {}", count)
         except Exception as error:
             logger.error("[TrafficHistory] Ошибка почасового снапшота: {}", error)
-
-
-def snapshot_key_traffic_hourly_process_runner() -> None:
-    run_in_own_loop(snapshot_key_traffic_hourly_job)
 
 
 async def snapshot_subscription_metrics_job() -> None:
@@ -237,10 +201,6 @@ async def snapshot_subscription_metrics_job() -> None:
                 logger.info("[SubMetrics] backfill из платежей: записано {} событий", seeded)
         except Exception as error:
             logger.error("[SubMetrics] Ошибка снапшота подписок: {}", error)
-
-
-def snapshot_subscription_metrics_process_runner() -> None:
-    run_in_own_loop(snapshot_subscription_metrics_job)
 
 
 async def anomaly_check_job() -> None:
@@ -308,10 +268,6 @@ async def anomaly_check_job() -> None:
             await send_admin_alert("📊 Аналитика — внимание:\n" + "\n".join(alerts))
         except Exception as error:
             logger.error("[Anomaly] не удалось отправить алерт: {}", error)
-
-
-def anomaly_check_process_runner() -> None:
-    run_in_own_loop(anomaly_check_job)
 
 
 async def log_db_pool_status() -> None:

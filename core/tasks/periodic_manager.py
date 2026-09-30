@@ -56,6 +56,7 @@ class ManagedCronTask:
     runner: CronRunner
     trigger: BaseTrigger
     execution_mode: CronExecutionMode
+    args: tuple = ()
 
 
 @dataclass
@@ -167,6 +168,7 @@ class PeriodicTaskManager:
         runner: CronRunner,
         trigger: BaseTrigger,
         execution_mode: CronExecutionMode = "async",
+        args: tuple = (),
     ) -> None:
         if execution_mode not in {"async", "thread", "process"}:
             raise ValueError(f"Unsupported execution_mode: {execution_mode}")
@@ -177,6 +179,7 @@ class PeriodicTaskManager:
             runner=runner,
             trigger=trigger,
             execution_mode=execution_mode,
+            args=args,
         )
 
     def _acquire_process_lock(self) -> bool:
@@ -295,6 +298,8 @@ class PeriodicTaskManager:
                 scheduler.add_job(
                     cron_task.runner,
                     cron_task.trigger,
+                    args=cron_task.args,
+                    name=cron_task.task_id if cron_task.args else None,  # иначе все процессные — "run_in_own_loop"
                     id=cron_task.task_id,
                     executor=self._cron_executor_name(cron_task.execution_mode),
                     replace_existing=True,
