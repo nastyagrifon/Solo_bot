@@ -3,6 +3,7 @@
 Экраны: меню способов → выбор суммы → своя сумма → ссылка на оплату. Всё, чем кассы
 различаются (тексты, минималки, коллбэки, валюта ввода), передаётся параметрами
 register_topup_flow — поведение каждой кассы остаётся прежним байт в байт.
+Быстрая оплата недостающей суммы тех же касс — fast_amount_payment.
 """
 
 from collections.abc import Awaitable, Callable
@@ -17,7 +18,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from database import get_temporary_data
 from database.models import User
+from handlers.payments.constants import ALLOWED_TEMP_PAYMENT_STATES
 from handlers.payments.keyboards import (
     balance_fallback_kb,
     build_amounts_keyboard,
@@ -36,6 +39,8 @@ PAYMENT_CREATE_FAILED = "❌ Произошла ошибка при создан
 INVALID_AMOUNT = "❌ Некорректная сумма. Введите целое число больше 0."
 
 PaymentLink = Callable[[int, int, dict, AsyncSession], Awaitable[str | None]]
+#: prepare(метод, сумма) -> (method, None) либо (None, kwargs экрана отказа для edit_or_send_message).
+FastPrepare = Callable[[str, int], tuple[dict | None, dict | None]]
 
 
 async def _get_user_language(session: AsyncSession, tg_id: int) -> str | None:
@@ -356,3 +361,69 @@ def register_topup_flow(
     router.callback_query(amount_filter)(process_amount_selection)
 
     return entry
+
+
+async def fast_amount_payment(
+    event,
+    session: AsyncSession,
+    method_name: str,
+    pay_button_text: str,
+    main_menu_text: str,
+    *,
+    prepare: FastPrepare,
+    payment_link: PaymentLink,
+    payment_message: str,
+    log_prefix: Callable[[str], str],
+    currency: str | None = None,
+    bad_url: str | None = None,
+):
+    """Быстрый поток: ссылка на недостающую сумму из temporary_data (создание/продление/подарок).
+
+    prepare — проверки кассы (способ, реквизиты, минималка) в её собственном порядке.
+    currency — валюта показа суммы; None — method["currency"].
+    bad_url — заглушка, которую касса отдаёт вместо ссылки при сбое.
+    """
+    message = event.message
+    tg_id = event.from_user.id
+
+    temp_data = await get_temporary_data(session, tg_id)
+    if not temp_data or temp_data["state"] not in ALLOWED_TEMP_PAYMENT_STATES:
+        await edit_or_send_message(target_message=message, text="❌ Не удалось получить данные для оплаты.")
+        return
+
+    amount = int(temp_data["data"].get("required_amount", 0))
+    if amount <= 0:
+        await edit_or_send_message(target_message=message, text="❌ Не удалось определить сумму оплаты.")
+        return
+
+    method, refusal = prepare(method_name, amount)
+    if refusal:
+        await edit_or_send_message(target_message=message, **refusal)
+        return
+
+    try:
+        payment_url = await payment_link(amount, tg_id, method, session)
+        if not payment_url or payment_url == bad_url:
+            await edit_or_send_message(target_message=message, text=PAYMENT_CREATE_FAILED)
+            return
+
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=pay_button_text, url=payment_url)],
+                [InlineKeyboardButton(text=main_menu_text, callback_data="profile")],
+            ]
+        )
+        language_code = await _get_user_language(session, tg_id)
+        amount_text = await format_for_user(
+            session, tg_id, float(amount), language_code, force_currency=currency or method["currency"]
+        )
+        await edit_or_send_message(
+            target_message=message, text=payment_message.format(amount=amount_text), reply_markup=markup
+        )
+    except Exception as e:
+        logger.error(f"{log_prefix(method_name)} для пользователя {tg_id}: {e}")
+        await edit_or_send_message(
+            target_message=message,
+            text="Произошла ошибка при создании платежа. Попробуйте позже.",
+            reply_markup=_empty_kb(),
+        )
