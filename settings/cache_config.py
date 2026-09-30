@@ -3,6 +3,10 @@ UPDATE_STALE_AGE_SEC = 60
 CONCURRENCY_MAX_WAIT_SEC = 300
 CONCURRENCY_LIMIT = 200
 
+# Потолок темпа любой рассылки/уведомлений, сообщений в секунду. Лимит бота в Telegram ~30/с
+# на токен, и ответы на клики идут тем же токеном: рассылка на 25–35/с забирает их очередь.
+BROADCAST_MAX_MESSAGES_PER_SECOND = 12
+
 SUBSCRIPTION_CACHE_SUBSCRIBED_MAXSIZE = 200_000
 SUBSCRIPTION_CACHE_SUBSCRIBED_TTL_SEC = 600
 SUBSCRIPTION_CACHE_UNSUBSCRIBED_MAXSIZE = 100_000

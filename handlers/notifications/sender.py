@@ -21,6 +21,7 @@ from handlers.admin.sender.sender_utils import is_telegram_chat_id
 from handlers.notifications.webapp_only import webapp_only_markup
 from logger import logger
 from services.formatting import format_hours, format_minutes
+from settings.cache_config import BROADCAST_MAX_MESSAGES_PER_SECOND
 from services.tariffs.tariff_display import get_key_tariff_display
 from utils.custom_emojis import _process_text
 
@@ -63,7 +64,7 @@ def _find_photo_file(photo_path: str) -> str | None:
 
 class NotificationRateLimiter:
     def __init__(self, max_rate: int = 25, window: float = 1.0) -> None:
-        self.max_rate = max_rate
+        self.max_rate = min(max_rate, BROADCAST_MAX_MESSAGES_PER_SECOND)
         self.window = window
         self.send_times: deque = deque()
         self.lock = asyncio.Lock()

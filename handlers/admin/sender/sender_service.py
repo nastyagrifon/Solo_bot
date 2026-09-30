@@ -18,6 +18,7 @@ from database import async_session_maker, save_blocked_user_ids
 from database.db import isolated_sessionmaker
 from handlers.admin.sender.sender_utils import get_recipient_emails, is_telegram_chat_id, parse_channels
 from logger import logger
+from settings.cache_config import BROADCAST_MAX_MESSAGES_PER_SECOND
 
 
 DEFAULT_MESSAGES_PER_SECOND = 25
@@ -107,7 +108,7 @@ class BroadcastMessage:
 
 class RateLimiter:
     def __init__(self, max_rate: int = DEFAULT_MESSAGES_PER_SECOND, window: float = 1.0) -> None:
-        self.max_rate = max_rate
+        self.max_rate = min(max_rate, BROADCAST_MAX_MESSAGES_PER_SECOND)
         self.window = window
         self.send_times = deque()
         self.lock = asyncio.Lock()
