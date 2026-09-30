@@ -1,12 +1,8 @@
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Setting
-from database.settings_cache import settings_cache
-
-from .runtime_sync import publish_runtime_config, register_runtime_config
+from .runtime_sync import load_setting, register_runtime_config, update_setting
 
 
 TARIFFS_CONFIG: dict[str, Any] = {
@@ -17,58 +13,17 @@ TARIFFS_CONFIG: dict[str, Any] = {
     "KEY_ADDONS_CARRY_ON_RENEWAL": False,
 }
 register_runtime_config("TARIFFS_CONFIG", TARIFFS_CONFIG)
+_DESCRIPTION = "Конфигурация тарифов"
 
 
 async def load_tariffs_config(session: AsyncSession) -> None:
     """Загружает конфиг тарифов из БД."""
-    stmt = select(Setting).where(Setting.key == "TARIFFS_CONFIG")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        tariffs_config = TARIFFS_CONFIG.copy()
-        setting = Setting(
-            key="TARIFFS_CONFIG",
-            value=tariffs_config,
-            description="Конфигурация тарифов",
-        )
-        session.add(setting)
-    else:
-        stored = setting.value or {}
-        tariffs_config = TARIFFS_CONFIG.copy()
-        tariffs_config.update(stored)
-        setting.value = tariffs_config
-
-    TARIFFS_CONFIG.clear()
-    TARIFFS_CONFIG.update(tariffs_config)
-    await session.flush()
+    await load_setting(session, "TARIFFS_CONFIG", TARIFFS_CONFIG, TARIFFS_CONFIG, _DESCRIPTION)
 
 
 async def update_tariffs_config(session: AsyncSession, new_values: dict[str, Any]) -> None:
     """Обновляет конфиг тарифов."""
-    stmt = select(Setting).where(Setting.key == "TARIFFS_CONFIG")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        setting = Setting(
-            key="TARIFFS_CONFIG",
-            value=new_values,
-            description="Конфигурация тарифов",
-        )
-        session.add(setting)
-    else:
-        setting.value = new_values
-
-    await session.commit()
-
-    tariffs_config = TARIFFS_CONFIG.copy()
-    tariffs_config.update(new_values)
-
-    TARIFFS_CONFIG.clear()
-    TARIFFS_CONFIG.update(tariffs_config)
-    settings_cache.update("TARIFFS_CONFIG", tariffs_config)
-    await publish_runtime_config("TARIFFS_CONFIG", tariffs_config)
+    await update_setting(session, "TARIFFS_CONFIG", TARIFFS_CONFIG, new_values, TARIFFS_CONFIG, _DESCRIPTION)
 
 
 def get_override_value(overrides: Any, key: int | str | None) -> Any:

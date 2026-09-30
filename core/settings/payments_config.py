@@ -1,62 +1,17 @@
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Setting
-from database.settings_cache import settings_cache
-
 from ..defaults import DEFAULT_PAYMENTS_CONFIG
-from .runtime_sync import publish_runtime_config, register_runtime_config
+from .runtime_sync import load_setting, register_runtime_config, update_setting
 
 
 PAYMENTS_CONFIG: dict[str, bool] = DEFAULT_PAYMENTS_CONFIG.copy()
 register_runtime_config("PAYMENTS_CONFIG", PAYMENTS_CONFIG)
+_DESCRIPTION = "Конфигурация платёжных провайдеров"
 
 
 async def load_payments_config(session: AsyncSession) -> None:
-    stmt = select(Setting).where(Setting.key == "PAYMENTS_CONFIG")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        payments_config = DEFAULT_PAYMENTS_CONFIG.copy()
-        setting = Setting(
-            key="PAYMENTS_CONFIG",
-            value=payments_config,
-            description="Конфигурация платёжных провайдеров",
-        )
-        session.add(setting)
-    else:
-        stored = setting.value or {}
-        payments_config = DEFAULT_PAYMENTS_CONFIG.copy()
-        payments_config.update(stored)
-        setting.value = payments_config
-
-    PAYMENTS_CONFIG.clear()
-    PAYMENTS_CONFIG.update(payments_config)
-    await session.flush()
+    await load_setting(session, "PAYMENTS_CONFIG", PAYMENTS_CONFIG, DEFAULT_PAYMENTS_CONFIG, _DESCRIPTION)
 
 
 async def update_payments_config(session: AsyncSession, new_values: dict[str, bool]) -> None:
-    stmt = select(Setting).where(Setting.key == "PAYMENTS_CONFIG")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        setting = Setting(
-            key="PAYMENTS_CONFIG",
-            value=new_values,
-            description="Конфигурация платёжных провайдеров",
-        )
-        session.add(setting)
-    else:
-        setting.value = new_values
-
-    await session.commit()
-
-    payments_config = DEFAULT_PAYMENTS_CONFIG.copy()
-    payments_config.update(new_values)
-
-    PAYMENTS_CONFIG.clear()
-    PAYMENTS_CONFIG.update(payments_config)
-    settings_cache.update("PAYMENTS_CONFIG", payments_config)
-    await publish_runtime_config("PAYMENTS_CONFIG", payments_config)
+    await update_setting(session, "PAYMENTS_CONFIG", PAYMENTS_CONFIG, new_values, DEFAULT_PAYMENTS_CONFIG, _DESCRIPTION)

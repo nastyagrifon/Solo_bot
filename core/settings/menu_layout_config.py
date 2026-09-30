@@ -1,15 +1,12 @@
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Setting
-from database.settings_cache import settings_cache
-
 from ..defaults import DEFAULT_MENU_LAYOUT
-from .runtime_sync import publish_runtime_config, register_runtime_config
+from .runtime_sync import apply_setting, get_setting, put_setting, register_runtime_config
 
 
 MENU_LAYOUT: dict[str, list[list[str]]] = {menu: [row.copy() for row in rows] for menu, rows in DEFAULT_MENU_LAYOUT.items()}
 register_runtime_config("MENU_LAYOUT", MENU_LAYOUT)
+_DESCRIPTION = "Порядок кнопок в меню бота"
 
 
 def _normalize(stored: object) -> dict[str, list[list[str]]]:
@@ -31,17 +28,10 @@ def _normalize(stored: object) -> dict[str, list[list[str]]]:
 
 
 async def load_menu_layout(session: AsyncSession) -> None:
-    stmt = select(Setting).where(Setting.key == "MENU_LAYOUT")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
+    # Новую строку создаём с сырыми дефолтами, существующую не переписываем.
+    setting = await get_setting(session, "MENU_LAYOUT")
     if setting is None:
-        setting = Setting(
-            key="MENU_LAYOUT",
-            value=DEFAULT_MENU_LAYOUT,
-            description="Порядок кнопок в меню бота",
-        )
-        session.add(setting)
+        put_setting(session, None, "MENU_LAYOUT", DEFAULT_MENU_LAYOUT, _DESCRIPTION)
         layout = _normalize(DEFAULT_MENU_LAYOUT)
     else:
         layout = _normalize(setting.value)
@@ -53,24 +43,6 @@ async def load_menu_layout(session: AsyncSession) -> None:
 
 async def update_menu_layout(session: AsyncSession, new_layout: dict[str, list[list[str]]]) -> None:
     layout = _normalize(new_layout)
-
-    stmt = select(Setting).where(Setting.key == "MENU_LAYOUT")
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        setting = Setting(
-            key="MENU_LAYOUT",
-            value=layout,
-            description="Порядок кнопок в меню бота",
-        )
-        session.add(setting)
-    else:
-        setting.value = layout
-
+    put_setting(session, await get_setting(session, "MENU_LAYOUT"), "MENU_LAYOUT", layout, _DESCRIPTION)
     await session.commit()
-
-    MENU_LAYOUT.clear()
-    MENU_LAYOUT.update(layout)
-    settings_cache.update("MENU_LAYOUT", layout)
-    await publish_runtime_config("MENU_LAYOUT", layout)
+    await apply_setting("MENU_LAYOUT", MENU_LAYOUT, layout)

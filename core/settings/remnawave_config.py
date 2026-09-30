@@ -1,68 +1,29 @@
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Setting
-from database.settings_cache import settings_cache
-
 from ..defaults import DEFAULT_REMNAWAVE_CONFIG
-from .runtime_sync import publish_runtime_config, register_runtime_config
+from .runtime_sync import apply_setting, get_setting, load_setting, put_setting, register_runtime_config
 
 
 REMNAWAVE_CONFIG: dict[str, Any] = DEFAULT_REMNAWAVE_CONFIG.copy()
 REMNAWAVE_SETTING_KEY = "REMNAWAVE_CONFIG"
 register_runtime_config(REMNAWAVE_SETTING_KEY, REMNAWAVE_CONFIG)
+_DESCRIPTION = "Конфигурация интеграции с Remnawave (мониторинг + ротация хостов)"
 
 
 async def load_remnawave_config(session: AsyncSession) -> None:
-    stmt = select(Setting).where(Setting.key == REMNAWAVE_SETTING_KEY)
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
-    if setting is None:
-        merged = DEFAULT_REMNAWAVE_CONFIG.copy()
-        setting = Setting(
-            key=REMNAWAVE_SETTING_KEY,
-            value=merged,
-            description="Конфигурация интеграции с Remnawave (мониторинг + ротация хостов)",
-        )
-        session.add(setting)
-    else:
-        stored = setting.value or {}
-        merged = DEFAULT_REMNAWAVE_CONFIG.copy()
-        merged.update(stored)
-        setting.value = merged
-
-    REMNAWAVE_CONFIG.clear()
-    REMNAWAVE_CONFIG.update(merged)
-    await session.flush()
+    await load_setting(session, REMNAWAVE_SETTING_KEY, REMNAWAVE_CONFIG, DEFAULT_REMNAWAVE_CONFIG, _DESCRIPTION)
 
 
 async def update_remnawave_config(session: AsyncSession, new_values: dict[str, Any]) -> None:
-    stmt = select(Setting).where(Setting.key == REMNAWAVE_SETTING_KEY)
-    result = await session.execute(stmt)
-    setting = result.scalar_one_or_none()
-
+    # Здесь, в отличие от соседей, в БД пишется уже слитый с дефолтами конфиг.
+    setting = await get_setting(session, REMNAWAVE_SETTING_KEY)
     merged = DEFAULT_REMNAWAVE_CONFIG.copy()
     merged.update(new_values)
-
-    if setting is None:
-        setting = Setting(
-            key=REMNAWAVE_SETTING_KEY,
-            value=merged,
-            description="Конфигурация интеграции с Remnawave (мониторинг + ротация хостов)",
-        )
-        session.add(setting)
-    else:
-        setting.value = merged
-
+    put_setting(session, setting, REMNAWAVE_SETTING_KEY, merged, _DESCRIPTION)
     await session.commit()
-
-    REMNAWAVE_CONFIG.clear()
-    REMNAWAVE_CONFIG.update(merged)
-    settings_cache.update(REMNAWAVE_SETTING_KEY, merged)
-    await publish_runtime_config(REMNAWAVE_SETTING_KEY, merged)
+    await apply_setting(REMNAWAVE_SETTING_KEY, REMNAWAVE_CONFIG, merged)
 
 
 def is_node_health_enabled() -> bool:
