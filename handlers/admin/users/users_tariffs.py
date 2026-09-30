@@ -1,4 +1,5 @@
 from datetime import datetime
+from itertools import zip_longest
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -30,6 +31,66 @@ from .users_states import RenewTariffState
 
 
 router = Router()
+
+
+def _int_options(raw) -> list[int]:
+    """Варианты тарифа (устройства/ГБ) по возрастанию, безлимит (0) в конце; нечисловые пропускаются."""
+    values = raw if isinstance(raw, list) else []
+    try:
+        values = sorted(values, key=lambda v: (int(v) == 0, int(v)))
+    except (TypeError, ValueError):
+        pass
+    result = []
+    for v in values:
+        try:
+            result.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _limit_label(value, unlimited: str, unit: str) -> str:
+    if value is None:
+        return "—"
+    return unlimited if int(value) <= 0 else f"{int(value)} {unit}"
+
+
+def _cfg_renew_screen(tariff: dict, tariff_id: int, selected_devices, selected_traffic_gb):
+    """Экран «Конфигурация тарифа» при продлении из админки: текст и клавиатура."""
+    columns = []
+    for raw, selected, prefix, unlimited, unit in (
+        (tariff.get("device_options"), selected_devices, "cfg_renew_devices", "Безлимит устройств", "устройств"),
+        (tariff.get("traffic_options_gb"), selected_traffic_gb, "cfg_renew_traffic", "Безлимит трафика", "ГБ"),
+    ):
+        options = _int_options(raw)
+        if len(options) <= 1:
+            continue
+        sel = int(selected or 0)
+        columns.append([
+            InlineKeyboardButton(
+                text=f"{unlimited if v == 0 else f'{v} {unit}'}{' ✅' if v == sel else ''}",
+                callback_data=f"{prefix}|{tariff_id}|{v}",
+            )
+            for v in options
+        ])
+
+    builder = InlineKeyboardBuilder()
+    for row in zip_longest(*columns):
+        builder.row(*[b for b in row if b is not None])
+    builder.row(InlineKeyboardButton(text="✅ Применить", callback_data=f"cfg_renew_apply|{tariff_id}"))
+    builder.row(InlineKeyboardButton(text=BACK, callback_data="back:group"))
+
+    text = menu_text(
+        "Конфигурация тарифа",
+        "Выберите параметры и нажмите «Применить».",
+        section(
+            "📦 Тариф",
+            f"Название: {tariff.get('name', '—')}",
+            f"Устройства: {_limit_label(selected_devices, 'Безлимит устройств', 'устройств')}",
+            f"Трафик: {_limit_label(selected_traffic_gb, 'Безлимит трафика', 'ГБ')}",
+        ),
+    )
+    return text, builder.as_markup()
 
 
 @router.callback_query(F.data == "back:renew", IsAdminFilter())
@@ -151,35 +212,8 @@ async def handle_user_renew_confirm(
         return
 
     if tariff.get("configurable"):
-        raw_device_options = tariff.get("device_options")
-        raw_traffic_options = tariff.get("traffic_options_gb")
-
-        raw_device_options = raw_device_options if isinstance(raw_device_options, list) else []
-        raw_traffic_options = raw_traffic_options if isinstance(raw_traffic_options, list) else []
-
-        try:
-            device_options = sorted(raw_device_options, key=lambda v: (int(v) == 0, int(v)))
-        except (TypeError, ValueError):
-            device_options = raw_device_options
-
-        try:
-            traffic_options = sorted(raw_traffic_options, key=lambda v: (int(v) == 0, int(v)))
-        except (TypeError, ValueError):
-            traffic_options = raw_traffic_options
-
-        device_int_options: list[int] = []
-        for value in device_options:
-            try:
-                device_int_options.append(int(value))
-            except (TypeError, ValueError):
-                continue
-
-        traffic_int_options: list[int] = []
-        for value in traffic_options:
-            try:
-                traffic_int_options.append(int(value))
-            except (TypeError, ValueError):
-                continue
+        device_int_options = _int_options(tariff.get("device_options"))
+        traffic_int_options = _int_options(tariff.get("traffic_options_gb"))
 
         if not device_int_options and not traffic_int_options:
             await callback_query.message.edit_text(
@@ -236,80 +270,8 @@ async def handle_user_renew_confirm(
             renew_mode="renew",
         )
 
-        builder = InlineKeyboardBuilder()
-
-        device_buttons: list[InlineKeyboardButton] = []
-        traffic_buttons: list[InlineKeyboardButton] = []
-
-        if device_int_options and len(device_int_options) > 1:
-            sel = int(selected_devices or 0)
-            for value in device_int_options:
-                mark = " ✅" if value == sel else ""
-                caption = "Безлимит устройств" if value == 0 else f"{value} устройств"
-                device_buttons.append(
-                    InlineKeyboardButton(
-                        text=f"{caption}{mark}",
-                        callback_data=f"cfg_renew_devices|{tariff_id}|{value}",
-                    )
-                )
-
-        if traffic_int_options and len(traffic_int_options) > 1:
-            sel = int(selected_traffic_gb or 0)
-            for value in traffic_int_options:
-                mark = " ✅" if value == sel else ""
-                caption = "Безлимит трафика" if value == 0 else f"{value} ГБ"
-                traffic_buttons.append(
-                    InlineKeyboardButton(
-                        text=f"{caption}{mark}",
-                        callback_data=f"cfg_renew_traffic|{tariff_id}|{value}",
-                    )
-                )
-
-        if device_buttons and traffic_buttons:
-            max_len = max(len(device_buttons), len(traffic_buttons))
-            for i in range(max_len):
-                row = []
-                if i < len(device_buttons):
-                    row.append(device_buttons[i])
-                if i < len(traffic_buttons):
-                    row.append(traffic_buttons[i])
-                builder.row(*row)
-        elif device_buttons:
-            for b in device_buttons:
-                builder.row(b)
-        elif traffic_buttons:
-            for b in traffic_buttons:
-                builder.row(b)
-
-        builder.row(InlineKeyboardButton(text="✅ Применить", callback_data=f"cfg_renew_apply|{tariff_id}"))
-        builder.row(InlineKeyboardButton(text=BACK, callback_data="back:group"))
-
-        devices_label = (
-            "Безлимит устройств"
-            if (selected_devices is not None and int(selected_devices) <= 0)
-            else (f"{int(selected_devices)} устройств" if selected_devices is not None else "—")
-        )
-        traffic_label = (
-            "Безлимит трафика"
-            if (selected_traffic_gb is not None and int(selected_traffic_gb) <= 0)
-            else (f"{int(selected_traffic_gb)} ГБ" if selected_traffic_gb is not None else "—")
-        )
-
-        await callback_query.message.edit_text(
-            text=(
-                menu_text(
-                    "Конфигурация тарифа",
-                    "Выберите параметры и нажмите «Применить».",
-                    section(
-                        "📦 Тариф",
-                        f"Название: {tariff.get('name', '—')}",
-                        f"Устройства: {devices_label}",
-                        f"Трафик: {traffic_label}",
-                    ),
-                )
-            ),
-            reply_markup=builder.as_markup(),
-        )
+        text, markup = _cfg_renew_screen(tariff, tariff_id, selected_devices, selected_traffic_gb)
+        await callback_query.message.edit_text(text=text, reply_markup=markup)
         return
 
     device_limit = int(tariff.get("device_limit") or 0)
@@ -370,9 +332,11 @@ async def handle_user_renew_confirm(
     )
 
 
-@router.callback_query(F.data.startswith("cfg_renew_devices|"), IsAdminFilter(), flags={"popup": True})
-async def handle_cfg_renew_devices(callback_query: CallbackQuery, state: FSMContext, session: AsyncSession):
-    _, tariff_id_str, value_str = callback_query.data.split("|", 2)
+@router.callback_query(
+    F.data.startswith(("cfg_renew_devices|", "cfg_renew_traffic|")), IsAdminFilter(), flags={"popup": True}
+)
+async def handle_cfg_renew_option(callback_query: CallbackQuery, state: FSMContext, session: AsyncSession):
+    kind, tariff_id_str, value_str = callback_query.data.split("|", 2)
     tariff_id = int(tariff_id_str)
     value = int(value_str)
 
@@ -381,228 +345,21 @@ async def handle_cfg_renew_devices(callback_query: CallbackQuery, state: FSMCont
         await callback_query.answer("Сессия устарела", show_alert=True)
         return
 
-    await state.update_data(renew_selected_device_limit=value)
+    field = "renew_selected_device_limit" if kind == "cfg_renew_devices" else "renew_selected_traffic_gb"
+    await state.update_data(**{field: value})
 
     tariff = await get_tariff_by_id(session, tariff_id)
     if not tariff:
         await callback_query.message.edit_text(menu_text("Тариф клиента", "❌ Тариф не найден."))
         await state.clear()
         return
-
-    selected_devices = int((await state.get_data()).get("renew_selected_device_limit") or 0)
-    selected_traffic_gb = (await state.get_data()).get("renew_selected_traffic_gb")
-
-    raw_device_options = tariff.get("device_options")
-    raw_traffic_options = tariff.get("traffic_options_gb")
-
-    raw_device_options = raw_device_options if isinstance(raw_device_options, list) else []
-    raw_traffic_options = raw_traffic_options if isinstance(raw_traffic_options, list) else []
-
-    try:
-        device_options = sorted(raw_device_options, key=lambda v: (int(v) == 0, int(v)))
-    except (TypeError, ValueError):
-        device_options = raw_device_options
-
-    try:
-        traffic_options = sorted(raw_traffic_options, key=lambda v: (int(v) == 0, int(v)))
-    except (TypeError, ValueError):
-        traffic_options = raw_traffic_options
-
-    device_int_options: list[int] = []
-    for v in device_options:
-        try:
-            device_int_options.append(int(v))
-        except (TypeError, ValueError):
-            continue
-
-    traffic_int_options: list[int] = []
-    for v in traffic_options:
-        try:
-            traffic_int_options.append(int(v))
-        except (TypeError, ValueError):
-            continue
-
-    builder = InlineKeyboardBuilder()
-
-    device_buttons: list[InlineKeyboardButton] = []
-    traffic_buttons: list[InlineKeyboardButton] = []
-
-    if device_int_options and len(device_int_options) > 1:
-        for v in device_int_options:
-            mark = " ✅" if v == selected_devices else ""
-            caption = "Безлимит устройств" if v == 0 else f"{v} устройств"
-            device_buttons.append(
-                InlineKeyboardButton(text=f"{caption}{mark}", callback_data=f"cfg_renew_devices|{tariff_id}|{v}")
-            )
-
-    if traffic_int_options and len(traffic_int_options) > 1:
-        sel_tr = int(selected_traffic_gb or 0)
-        for v in traffic_int_options:
-            mark = " ✅" if v == sel_tr else ""
-            caption = "Безлимит трафика" if v == 0 else f"{v} ГБ"
-            traffic_buttons.append(
-                InlineKeyboardButton(text=f"{caption}{mark}", callback_data=f"cfg_renew_traffic|{tariff_id}|{v}")
-            )
-
-    if device_buttons and traffic_buttons:
-        max_len = max(len(device_buttons), len(traffic_buttons))
-        for i in range(max_len):
-            row = []
-            if i < len(device_buttons):
-                row.append(device_buttons[i])
-            if i < len(traffic_buttons):
-                row.append(traffic_buttons[i])
-            builder.row(*row)
-    elif device_buttons:
-        for b in device_buttons:
-            builder.row(b)
-    elif traffic_buttons:
-        for b in traffic_buttons:
-            builder.row(b)
-
-    builder.row(InlineKeyboardButton(text="✅ Применить", callback_data=f"cfg_renew_apply|{tariff_id}"))
-    builder.row(InlineKeyboardButton(text=BACK, callback_data="back:group"))
-
-    devices_label = "Безлимит устройств" if selected_devices <= 0 else f"{selected_devices} устройств"
-    traffic_label = (
-        "Безлимит трафика"
-        if (selected_traffic_gb is not None and int(selected_traffic_gb) <= 0)
-        else (f"{int(selected_traffic_gb)} ГБ" if selected_traffic_gb is not None else "—")
-    )
-
-    text = menu_text(
-        "Конфигурация тарифа",
-        "Выберите параметры и нажмите «Применить».",
-        section(
-            "📦 Тариф",
-            f"Название: {tariff.get('name', '—')}",
-            f"Устройства: {devices_label}",
-            f"Трафик: {traffic_label}",
-        ),
-    )
-
-    try:
-        await callback_query.message.edit_text(text=text, reply_markup=builder.as_markup())
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e):
-            raise
-
-    await callback_query.answer()
-
-
-@router.callback_query(F.data.startswith("cfg_renew_traffic|"), IsAdminFilter(), flags={"popup": True})
-async def handle_cfg_renew_traffic(callback_query: CallbackQuery, state: FSMContext, session: AsyncSession):
-    _, tariff_id_str, value_str = callback_query.data.split("|", 2)
-    tariff_id = int(tariff_id_str)
-    value = int(value_str)
 
     data = await state.get_data()
-    if int(data.get("renew_tariff_id") or 0) != tariff_id:
-        await callback_query.answer("Сессия устарела", show_alert=True)
-        return
-
-    await state.update_data(renew_selected_traffic_gb=value)
-
-    tariff = await get_tariff_by_id(session, tariff_id)
-    if not tariff:
-        await callback_query.message.edit_text(menu_text("Тариф клиента", "❌ Тариф не найден."))
-        await state.clear()
-        return
-
-    selected_devices = (await state.get_data()).get("renew_selected_device_limit")
-    selected_traffic_gb = int((await state.get_data()).get("renew_selected_traffic_gb") or 0)
-
-    raw_device_options = tariff.get("device_options")
-    raw_traffic_options = tariff.get("traffic_options_gb")
-
-    raw_device_options = raw_device_options if isinstance(raw_device_options, list) else []
-    raw_traffic_options = raw_traffic_options if isinstance(raw_traffic_options, list) else []
-
-    try:
-        device_options = sorted(raw_device_options, key=lambda v: (int(v) == 0, int(v)))
-    except (TypeError, ValueError):
-        device_options = raw_device_options
-
-    try:
-        traffic_options = sorted(raw_traffic_options, key=lambda v: (int(v) == 0, int(v)))
-    except (TypeError, ValueError):
-        traffic_options = raw_traffic_options
-
-    device_int_options: list[int] = []
-    for v in device_options:
-        try:
-            device_int_options.append(int(v))
-        except (TypeError, ValueError):
-            continue
-
-    traffic_int_options: list[int] = []
-    for v in traffic_options:
-        try:
-            traffic_int_options.append(int(v))
-        except (TypeError, ValueError):
-            continue
-
-    builder = InlineKeyboardBuilder()
-
-    device_buttons: list[InlineKeyboardButton] = []
-    traffic_buttons: list[InlineKeyboardButton] = []
-
-    if device_int_options and len(device_int_options) > 1:
-        sel_dev = int(selected_devices or 0)
-        for v in device_int_options:
-            mark = " ✅" if v == sel_dev else ""
-            caption = "Безлимит устройств" if v == 0 else f"{v} устройств"
-            device_buttons.append(
-                InlineKeyboardButton(text=f"{caption}{mark}", callback_data=f"cfg_renew_devices|{tariff_id}|{v}")
-            )
-
-    if traffic_int_options and len(traffic_int_options) > 1:
-        for v in traffic_int_options:
-            mark = " ✅" if v == selected_traffic_gb else ""
-            caption = "Безлимит трафика" if v == 0 else f"{v} ГБ"
-            traffic_buttons.append(
-                InlineKeyboardButton(text=f"{caption}{mark}", callback_data=f"cfg_renew_traffic|{tariff_id}|{v}")
-            )
-
-    if device_buttons and traffic_buttons:
-        max_len = max(len(device_buttons), len(traffic_buttons))
-        for i in range(max_len):
-            row = []
-            if i < len(device_buttons):
-                row.append(device_buttons[i])
-            if i < len(traffic_buttons):
-                row.append(traffic_buttons[i])
-            builder.row(*row)
-    elif device_buttons:
-        for b in device_buttons:
-            builder.row(b)
-    elif traffic_buttons:
-        for b in traffic_buttons:
-            builder.row(b)
-
-    builder.row(InlineKeyboardButton(text="✅ Применить", callback_data=f"cfg_renew_apply|{tariff_id}"))
-    builder.row(InlineKeyboardButton(text=BACK, callback_data="back:group"))
-
-    devices_label = (
-        "Безлимит устройств"
-        if (selected_devices is not None and int(selected_devices) <= 0)
-        else (f"{int(selected_devices)} устройств" if selected_devices is not None else "—")
+    text, markup = _cfg_renew_screen(
+        tariff, tariff_id, data.get("renew_selected_device_limit"), data.get("renew_selected_traffic_gb")
     )
-    traffic_label = "Безлимит трафика" if selected_traffic_gb <= 0 else f"{selected_traffic_gb} ГБ"
-
-    text = menu_text(
-        "Конфигурация тарифа",
-        "Выберите параметры и нажмите «Применить».",
-        section(
-            "📦 Тариф",
-            f"Название: {tariff.get('name', '—')}",
-            f"Устройства: {devices_label}",
-            f"Трафик: {traffic_label}",
-        ),
-    )
-
     try:
-        await callback_query.message.edit_text(text=text, reply_markup=builder.as_markup())
+        await callback_query.message.edit_text(text=text, reply_markup=markup)
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e):
             raise
