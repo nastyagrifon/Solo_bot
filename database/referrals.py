@@ -1,4 +1,4 @@
-from sqlalchemy import and_, desc, func, insert, select, text
+from sqlalchemy import and_, desc, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import BUTTONS_CONFIG
@@ -300,3 +300,15 @@ async def get_top_referrals(session: AsyncSession, limit: int = 5):
     rows = [{"referrer_user_id": row.referrer_user_id, "referral_count": row.referral_count} for row in result.all()]
     await cache_set(ckey, rows, REFERRAL_STATS_CACHE_TTL_SEC)
     return rows
+
+
+async def mark_referral_reward_issued(session: AsyncSession, referred_legacy: int):
+    ru = await resolve_user_optional(session, referred_legacy)
+    if ru is None:
+        return
+    referrer_ids = list(
+        (await session.execute(select(Referral.referrer_user_id).where(Referral.referred_user_id == ru.id))).scalars()
+    )
+    await session.execute(update(Referral).where(Referral.referred_user_id == ru.id).values(reward_issued=True))
+    for rid in referrer_ids:
+        await cache_delete(cache_key("referral_stats", rid))
