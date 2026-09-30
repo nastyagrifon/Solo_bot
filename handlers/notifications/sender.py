@@ -271,7 +271,8 @@ class FastNotificationSender:
             if "chat not found" in str(e).lower() and is_telegram_chat_id(tg_id):
                 self.blocked_users.add(tg_id)
             return "fail"
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[Уведомления] Не отправлено {tg_id}: {type(e).__name__}: {e}")
             return "fail"
 
     async def _schedule_retry(self, msg: dict) -> None:

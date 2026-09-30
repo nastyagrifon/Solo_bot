@@ -36,6 +36,7 @@ from core.tasks.loop_tasks import (
     scheduled_broadcasts_loop_task,
     server_checks_loop,
 )
+from core.slow_log import loop_lag_loop
 from core.tasks.periodic_manager import periodic_task_manager
 
 
@@ -48,6 +49,7 @@ LOOP_TASKS = (
     ("blocked_drain", blocked_drain_loop, False),
     ("server_checks", server_checks_loop, True),
     ("remnawave_monitor", remnawave_monitor_loop, False),
+    ("loop_lag", loop_lag_loop, False),
 )
 
 # (id, async job, trigger, можно ли в processpool). Остаток бюджета после петель

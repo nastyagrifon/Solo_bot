@@ -2,11 +2,13 @@ import asyncio
 import atexit
 import multiprocessing
 import signal
+import time
 
 from collections.abc import Callable, Coroutine
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor
 from typing import TypeVar
 
+from core.slow_log import warn_if_slow
 from logger import logger
 
 
@@ -111,7 +113,13 @@ def should_run_heavy_tasks_separately() -> bool:
 async def run_io[T](fn: Callable[..., T], *args: object) -> T:
     """Выполняет fn(*args) в пуле потоков (I/O). Один вызов для всех блокирующих операций."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(get_thread_pool(), lambda: fn(*args))
+    queued = time.monotonic()
+
+    def call() -> T:
+        warn_if_slow(f"очередь пула потоков ({getattr(fn, '__name__', fn)})", queued)
+        return fn(*args)
+
+    return await loop.run_in_executor(get_thread_pool(), call)
 
 
 def _drop_process_pool() -> None:
