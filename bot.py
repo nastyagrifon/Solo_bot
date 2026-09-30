@@ -26,7 +26,7 @@ bot = Bot(
     token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML, protect_content=resolve_protect_content())
 )
 bot.session.middleware(SlowTelegramRequests())
-guard_webhook(bot)
+guard_webhook()
 
 RedisStorage = import_module("aiogram.fsm.storage.redis").RedisStorage
 _redis_asyncio = import_module("redis.asyncio")
