@@ -45,12 +45,15 @@ class FastFlowCouponState(StatesGroup):
 PENDING_PURCHASE_KEYS = ("temp_key", "temp_payload", "required_amount")
 
 
-async def release_pending_purchase(state: FSMContext) -> None:
+async def release_pending_purchase(state: FSMContext | None) -> None:
     """Забыть незавершённую покупку: клиент вышел из воронки оплаты.
 
     Без этого пометка живёт до /start, и «Мой баланс» снова и снова
-    открывает счёт на нехватку вместо экрана баланса.
+    открывает счёт на нехватку вместо экрана баланса. state бывает None:
+    режим одной подписки открывает профиль из хука, где FSM нет.
     """
+    if state is None:
+        return
     data = await state.get_data()
     if any(data.get(k) is not None for k in PENDING_PURCHASE_KEYS):
         await state.update_data(**dict.fromkeys(PENDING_PURCHASE_KEYS))
