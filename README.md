@@ -7,7 +7,7 @@
 - **Используйте на свой страх и риск.** Никаких гарантий: ни работоспособности, ни совместимости с апстримом, ни сохранности данных.
 - Апстрим не отслеживается: форк стоит на коммите апстрима `25b258f` (26.09.2026), всё новое в апстриме сюда не попадает.
 
-Рабочая ветка — `dev`. Ниже — все PR, которые легли поверх апстрима, и зачем каждый.
+Рабочая ветка — `dev`. Ниже — PR, которые легли поверх апстрима, и зачем каждый.
 
 ## Исправления
 
@@ -15,12 +15,10 @@
 - [#6](https://github.com/nastyagrifon/Solo_bot/pull/6) — покупка при активном пробнике продлевает его, а не создаёт второй ключ.
 - [#8](https://github.com/nastyagrifon/Solo_bot/pull/8) — пробник предлагается только тем, у кого нет подписки, во всех местах одинаково.
 - [#18](https://github.com/nastyagrifon/Solo_bot/pull/18) — история баланса: каждая операция отдельной цитатой.
-- [#20](https://github.com/nastyagrifon/Solo_bot/pull/20) — возвращён импорт runtime подарков, потерянный в #16.
 - [#42](https://github.com/nastyagrifon/Solo_bot/pull/42) — KassaAI, Heleket и ParityPay читают включение из настроек админки, а не из конфига при импорте.
 - [#56](https://github.com/nastyagrifon/Solo_bot/pull/56) — экраны админки показывают Telegram ID клиента вместо внутреннего id.
 - [#58](https://github.com/nastyagrifon/Solo_bot/pull/58) — профиль открывается без FSM-состояния в режиме одной подписки.
 - [#94](https://github.com/nastyagrifon/Solo_bot/pull/94) — не пытаться редактировать сообщение клиента перед ответом: минус один пустой запрос на каждый /start.
-- [#99](https://github.com/nastyagrifon/Solo_bot/pull/99) — возвращены `process_referrals`/`process_cashback`, нужные закрытым платёжным утилитам (регрессия после #24).
 
 ## Новое
 
@@ -35,7 +33,7 @@
 
 ## Рефакторинг (поведение не меняется)
 
-- [#24](https://github.com/nastyagrifon/Solo_bot/pull/24) — удалены неиспользуемые копии рефералок и кэшбэка (частично возвращено в #99).
+- [#24](https://github.com/nastyagrifon/Solo_bot/pull/24) — удалены неиспользуемые копии рефералок и кэшбэка.
 - [#26](https://github.com/nastyagrifon/Solo_bot/pull/26) — удалён probe-middleware за намертво выключенным флагом.
 - [#28](https://github.com/nastyagrifon/Solo_bot/pull/28) — Google и Yandex OAuth из одной фабрики маршрутов.
 - [#30](https://github.com/nastyagrifon/Solo_bot/pull/30) — один сценарий пополнения баланса на шесть провайдеров.
@@ -67,9 +65,6 @@
 - [#88](https://github.com/nastyagrifon/Solo_bot/pull/88) — удалён неиспользуемый thread-режим cron и обёртки задач из одного поля.
 - [#90](https://github.com/nastyagrifon/Solo_bot/pull/90) — один цикл батчей в `check_notifications_bulk`, один `resolve_cluster`.
 
-## Прочее
-
-- [#15](https://github.com/nastyagrifon/Solo_bot/pull/15) — из комментариев и логов ядра убраны названия конкретного проекта.
 
 <hr style="height:1px;border:0;background:#222;margin:18px 0 16px">
 
