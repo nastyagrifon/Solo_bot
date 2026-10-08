@@ -11,60 +11,65 @@
 
 ## Исправления
 
-- [#5](https://github.com/nastyagrifon/Solo_bot/pull/5) — незавершённая покупка больше не висит в FSM, когда клиент вернулся в профиль.
-- [#6](https://github.com/nastyagrifon/Solo_bot/pull/6) — покупка при активном пробнике продлевает его, а не создаёт второй ключ.
-- [#8](https://github.com/nastyagrifon/Solo_bot/pull/8) — пробник предлагается только тем, у кого нет подписки, во всех местах одинаково.
-- [#18](https://github.com/nastyagrifon/Solo_bot/pull/18) — история баланса: каждая операция отдельной цитатой.
-- [#42](https://github.com/nastyagrifon/Solo_bot/pull/42) — KassaAI, Heleket и ParityPay читают включение из настроек админки, а не из конфига при импорте.
-- [#56](https://github.com/nastyagrifon/Solo_bot/pull/56) — экраны админки показывают Telegram ID клиента вместо внутреннего id.
-- [#58](https://github.com/nastyagrifon/Solo_bot/pull/58) — профиль открывается без FSM-состояния в режиме одной подписки.
-- [#94](https://github.com/nastyagrifon/Solo_bot/pull/94) — не пытаться редактировать сообщение клиента перед ответом: минус один пустой запрос на каждый /start.
+| PR | Что | Зачем |
+|---|---|---|
+| [#5](https://github.com/nastyagrifon/Solo_bot/pull/5) | сброс незавершённой покупки при возврате в профиль | покупка не висит в FSM |
+| [#6](https://github.com/nastyagrifon/Solo_bot/pull/6) | покупка при активном пробнике продлевает его | нет второго ключа |
+| [#8](https://github.com/nastyagrifon/Solo_bot/pull/8) | пробник только без подписки, во всех местах | одно правило вместо трёх |
+| [#18](https://github.com/nastyagrifon/Solo_bot/pull/18) | история баланса: операция = отдельная цитата | читаемость |
+| [#42](https://github.com/nastyagrifon/Solo_bot/pull/42) | KassaAI, Heleket, ParityPay читают включение из админки | выключатель в админке работает |
+| [#56](https://github.com/nastyagrifon/Solo_bot/pull/56) | Telegram ID клиента в экранах админки | внутренний id никому не нужен |
+| [#58](https://github.com/nastyagrifon/Solo_bot/pull/58) | профиль без FSM-состояния в режиме одной подписки | нет ошибки при открытии |
+| [#94](https://github.com/nastyagrifon/Solo_bot/pull/94) | не редактировать сообщение клиента перед ответом | минус один пустой запрос на /start |
 
 ## Новое
 
-- [#7](https://github.com/nastyagrifon/Solo_bot/pull/7) — хук `purchase_confirm`: модуль может забрать оформление покупки себе.
-- [#10](https://github.com/nastyagrifon/Solo_bot/pull/10) — приём вебхуков панели Remnawave в ядре с проверкой подписи и раздачей через хук.
-- [#13](https://github.com/nastyagrifon/Solo_bot/pull/13) — горячий перезапуск модуля снимает и его HTTP-маршруты, middleware и фоновые задачи, а не только роутер.
-- [#16](https://github.com/nastyagrifon/Solo_bot/pull/16) — платёжные провайдеры грузятся по требованию, в том числе включённые из админки на лету.
-- [#22](https://github.com/nastyagrifon/Solo_bot/pull/22) — упрощение runtime горячей загрузки и ленивой загрузки касс, поведение то же.
-- [#92](https://github.com/nastyagrifon/Solo_bot/pull/92) — журнал медленных ожиданий и проглоченных ошибок (Redis, Telegram, пул потоков, event loop).
-- [#96](https://github.com/nastyagrifon/Solo_bot/pull/96) — слоты A/B: второй процесс ядра, готовность, лидер периодики, защита вебхука — переключение без простоя.
-- [#98](https://github.com/nastyagrifon/Solo_bot/pull/98) — слот ждёт встроенный API, порт API на каждый слот свой.
+| PR | Что | Зачем |
+|---|---|---|
+| [#7](https://github.com/nastyagrifon/Solo_bot/pull/7) | хук `purchase_confirm` | модуль забирает оформление покупки |
+| [#10](https://github.com/nastyagrifon/Solo_bot/pull/10) | приём вебхуков Remnawave в ядре, подпись HMAC | события панели без триггеров в БД |
+| [#13](https://github.com/nastyagrifon/Solo_bot/pull/13) | учёт ресурсов модуля: маршруты, middleware, задачи | горячая перезагрузка модуля целиком |
+| [#16](https://github.com/nastyagrifon/Solo_bot/pull/16) | загрузка касс по требованию | включение кассы без перезапуска |
+| [#22](https://github.com/nastyagrifon/Solo_bot/pull/22) | упрощение runtime горячей загрузки | меньше кода, то же поведение |
+| [#92](https://github.com/nastyagrifon/Solo_bot/pull/92) | журнал медленных ожиданий и проглоченных ошибок | видно, где висит клик |
+| [#96](https://github.com/nastyagrifon/Solo_bot/pull/96) | слоты A/B: второй процесс, готовность, лидер периодики | перезагрузка бота без простоя |
+| [#98](https://github.com/nastyagrifon/Solo_bot/pull/98) | слот ждёт встроенный API, порт API на слот | готовность не врёт |
 
 ## Рефакторинг (поведение не меняется)
 
-- [#24](https://github.com/nastyagrifon/Solo_bot/pull/24) — удалены неиспользуемые копии рефералок и кэшбэка.
-- [#26](https://github.com/nastyagrifon/Solo_bot/pull/26) — удалён probe-middleware за намертво выключенным флагом.
-- [#28](https://github.com/nastyagrifon/Solo_bot/pull/28) — Google и Yandex OAuth из одной фабрики маршрутов.
-- [#30](https://github.com/nastyagrifon/Solo_bot/pull/30) — один сценарий пополнения баланса на шесть провайдеров.
-- [#32](https://github.com/nastyagrifon/Solo_bot/pull/32) — периодические задачи регистрируются из двух таблиц, а не копипастой.
-- [#34](https://github.com/nastyagrifon/Solo_bot/pull/34) — CLI без заглушек на случай отсутствия rich.
-- [#36](https://github.com/nastyagrifon/Solo_bot/pull/36) — общая загрузка ключа и каркас экранов между режимами дополнений.
-- [#38](https://github.com/nastyagrifon/Solo_bot/pull/38) — один обработчик произвольной суммы в быстрой оплате.
-- [#40](https://github.com/nastyagrifon/Solo_bot/pull/40) — метод быстрой оплаты берётся из таблицы провайдеров, обёртки на метод удалены.
-- [#44](https://github.com/nastyagrifon/Solo_bot/pull/44) — тонкие обёртки для заморозки ключа, названий месяцев и проверки кластера.
-- [#46](https://github.com/nastyagrifon/Solo_bot/pull/46) — один обработчик на четыре лид-скидки.
-- [#48](https://github.com/nastyagrifon/Solo_bot/pull/48) — один цикл load/update для runtime-настроек вместо тринадцати копий.
-- [#50](https://github.com/nastyagrifon/Solo_bot/pull/50) — общая строка пагинации для клавиатур админки.
-- [#52](https://github.com/nastyagrifon/Solo_bot/pull/52) — один конфигуратор тарифа для цен по устройствам и по трафику.
-- [#54](https://github.com/nastyagrifon/Solo_bot/pull/54) — удалены имена ядра, оставленные только ради внешних модулей.
-- [#60](https://github.com/nastyagrifon/Solo_bot/pull/60) — удалены мёртвые флаги, обработчики и помощники.
-- [#62](https://github.com/nastyagrifon/Solo_bot/pull/62) — один экран конфигурации продления.
-- [#64](https://github.com/nastyagrifon/Solo_bot/pull/64) — общие экраны подключения приложения по платформам.
-- [#66](https://github.com/nastyagrifon/Solo_bot/pull/66) — меню быстрой оплаты собирается один раз.
-- [#68](https://github.com/nastyagrifon/Solo_bot/pull/68) — один выбор серверов для подгрупп и спецгрупп кластера.
-- [#70](https://github.com/nastyagrifon/Solo_bot/pull/70) — один выбор хостов и нод Remnawave.
-- [#72](https://github.com/nastyagrifon/Solo_bot/pull/72) — один помощник для переключателей настроек вкл/выкл.
-- [#74](https://github.com/nastyagrifon/Solo_bot/pull/74) — общее создание купонов на баланс, дни и процент.
-- [#76](https://github.com/nastyagrifon/Solo_bot/pull/76) — один путь «подписка не найдена» для экранов ключей в админке.
-- [#78](https://github.com/nastyagrifon/Solo_bot/pull/78) — одна проверка владельца ключа для экранов подключения и удаления.
-- [#80](https://github.com/nastyagrifon/Solo_bot/pull/80) — один CSV-писатель для всех экспортов.
-- [#82](https://github.com/nastyagrifon/Solo_bot/pull/82) — общий chat id, уведомление и откат на стартовый экран в обработчике ошибок.
-- [#84](https://github.com/nastyagrifon/Solo_bot/pull/84) — обёртки Message для кастомных эмодзи из одной фабрики.
-- [#86](https://github.com/nastyagrifon/Solo_bot/pull/86) — удалён Redis-кэш экрана аудита по пользователю.
-- [#88](https://github.com/nastyagrifon/Solo_bot/pull/88) — удалён неиспользуемый thread-режим cron и обёртки задач из одного поля.
-- [#90](https://github.com/nastyagrifon/Solo_bot/pull/90) — один цикл батчей в `check_notifications_bulk`, один `resolve_cluster`.
-
+| PR | Что | Зачем |
+|---|---|---|
+| [#24](https://github.com/nastyagrifon/Solo_bot/pull/24) | удаление копий рефералок и кэшбэка | мёртвый код |
+| [#26](https://github.com/nastyagrifon/Solo_bot/pull/26) | удаление probe-middleware | флаг был выключен намертво |
+| [#28](https://github.com/nastyagrifon/Solo_bot/pull/28) | Google и Yandex OAuth из одной фабрики | две копии в одну |
+| [#30](https://github.com/nastyagrifon/Solo_bot/pull/30) | один сценарий пополнения на шесть касс | шесть копий в одну |
+| [#32](https://github.com/nastyagrifon/Solo_bot/pull/32) | периодические задачи из двух таблиц | регистрация без копипасты |
+| [#34](https://github.com/nastyagrifon/Solo_bot/pull/34) | CLI без заглушек rich | 140 строк мёртвого кода |
+| [#36](https://github.com/nastyagrifon/Solo_bot/pull/36) | общий каркас экранов дополнений | два режима, один код |
+| [#38](https://github.com/nastyagrifon/Solo_bot/pull/38) | один обработчик произвольной суммы в быстрой оплате | шесть копий в одну |
+| [#40](https://github.com/nastyagrifon/Solo_bot/pull/40) | метод быстрой оплаты из таблицы провайдеров | нет обёрток на метод |
+| [#44](https://github.com/nastyagrifon/Solo_bot/pull/44) | тонкие обёртки: заморозка ключа, месяцы, кластер | один UPDATE вместо двух |
+| [#46](https://github.com/nastyagrifon/Solo_bot/pull/46) | один обработчик четырёх лид-скидок | четыре копии в одну |
+| [#48](https://github.com/nastyagrifon/Solo_bot/pull/48) | один цикл load/update runtime-настроек | 13 копий в одну |
+| [#50](https://github.com/nastyagrifon/Solo_bot/pull/50) | общая строка пагинации админки | семь копий в одну |
+| [#52](https://github.com/nastyagrifon/Solo_bot/pull/52) | один конфигуратор тарифа: устройства и трафик | два близнеца в одного |
+| [#54](https://github.com/nastyagrifon/Solo_bot/pull/54) | удаление имён ядра ради внешних модулей | мёртвые реэкспорты |
+| [#60](https://github.com/nastyagrifon/Solo_bot/pull/60) | удаление мёртвых флагов, обработчиков, помощников | мёртвый код |
+| [#62](https://github.com/nastyagrifon/Solo_bot/pull/62) | один экран конфигурации продления | три копии в одну |
+| [#64](https://github.com/nastyagrifon/Solo_bot/pull/64) | общие экраны подключения по платформам | пять копий в две |
+| [#66](https://github.com/nastyagrifon/Solo_bot/pull/66) | меню быстрой оплаты собирается один раз | две копии в одну |
+| [#68](https://github.com/nastyagrifon/Solo_bot/pull/68) | один выбор серверов для подгрупп и спецгрупп | две копии в одну |
+| [#70](https://github.com/nastyagrifon/Solo_bot/pull/70) | один выбор хостов и нод Remnawave | две копии в одну |
+| [#72](https://github.com/nastyagrifon/Solo_bot/pull/72) | один помощник переключателей вкл/выкл | пять копий в одну |
+| [#74](https://github.com/nastyagrifon/Solo_bot/pull/74) | общее создание купонов: баланс, дни, процент | три копии в одну |
+| [#76](https://github.com/nastyagrifon/Solo_bot/pull/76) | один путь «подписка не найдена» в админке | 20 копий в одну |
+| [#78](https://github.com/nastyagrifon/Solo_bot/pull/78) | одна проверка владельца ключа | две копии в одну |
+| [#80](https://github.com/nastyagrifon/Solo_bot/pull/80) | один CSV-писатель для экспортов | семь копий в одну |
+| [#82](https://github.com/nastyagrifon/Solo_bot/pull/82) | общий откат на стартовый экран в обработчике ошибок | один путь вместо трёх |
+| [#84](https://github.com/nastyagrifon/Solo_bot/pull/84) | обёртки Message для кастомных эмодзи из фабрики | семь копий в одну |
+| [#86](https://github.com/nastyagrifon/Solo_bot/pull/86) | удаление Redis-кэша экрана аудита | кэш не окупался |
+| [#88](https://github.com/nastyagrifon/Solo_bot/pull/88) | удаление thread-режима cron и обёрток задач | мёртвый код |
+| [#90](https://github.com/nastyagrifon/Solo_bot/pull/90) | один цикл батчей уведомлений, один `resolve_cluster` | четыре ветки в одну |
 
 <hr style="height:1px;border:0;background:#222;margin:18px 0 16px">
 
