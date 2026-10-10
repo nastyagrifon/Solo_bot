@@ -145,12 +145,17 @@ async def process_callback_view_profile(
     from core.settings.web_config import (
         get_site_url,
         is_email_binding_enabled,
+        is_web_cabinet_button_visible,
         is_web_enabled,
         is_web_open_in_browser,
     )
 
     web_button = None
-    if is_web_enabled() and BUTTONS_CONFIG.get("WEB_CABINET_BUTTON_ENABLE", True):
+    if (
+        is_web_enabled()
+        and BUTTONS_CONFIG.get("WEB_CABINET_BUTTON_ENABLE", True)
+        and is_web_cabinet_button_visible(chat_id)
+    ):
         site_url = get_site_url()
         if site_url:
             if is_web_open_in_browser():
