@@ -27,6 +27,7 @@
 | [#105](https://github.com/nastyagrifon/Solo_bot/pull/105) | один разбор `X-Forwarded-For` с доверенным списком прокси | адрес клиента в истории входов и в ключе rate-limit нельзя подделать заголовком |
 | [#107](https://github.com/nastyagrifon/Solo_bot/pull/107) | порог чистки аудита — naive `datetime`, как и колонка | чистка старых событий аудита падала вместо работы |
 | [#109](https://github.com/nastyagrifon/Solo_bot/pull/109) | адрес клиента из `X-Real-IP`, когда цепочка `X-Forwarded-For` своя | SSR-слой веб-кабинета затирал адрес клиента адресом контейнера |
+| [#111](https://github.com/nastyagrifon/Solo_bot/pull/111) | история трафика по дням берётся из панели по запросу | график кабинета не зависит от своей таблицы снапшотов |
 
 ## Новое
 
