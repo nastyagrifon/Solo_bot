@@ -7,6 +7,12 @@
 живого процесса.
 
 Запретить такое ядро не может: sys.path общий. Зато может заметить и сказать.
+
+Решает один вопрос: лежит ли модуль там, где ему положено по его же имени.
+Имя переводится в путь внутри корня проекта, и если такой файл есть, его
+настоящее место (через resolve, то есть сквозь симлинки) обязано совпасть с
+тем, откуда модуль взят. Нет такого файла — значит это не наш модуль вовсе:
+библиотека с совпавшим именем, алиас или скомпилированное расширение.
 """
 
 import sys
@@ -19,17 +25,22 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _SHOW_LIMIT = 10
 
+# Эти два имени Python импортирует сам при запуске интерпретатора, задолго до
+# нашего кода, и берёт их из системных каталогов. Одноимённый файл в корне
+# проекта к ним отношения не имеет.
+_INTERPRETER_MODULES = frozenset({"sitecustomize", "usercustomize"})
+
 
 def _library_dirs() -> tuple[Path, ...]:
-    """Каталоги установленных пакетов текущего окружения.
+    """Каталоги установленных пакетов и стандартной библиотеки.
 
-    Имя своего каталога может совпасть с именем сторонней библиотеки: у нас
-    так совпали каталог миграций alembic и сам alembic из venv. Библиотека —
-    не чужой клон проекта, и путать их нельзя.
+    Имя своего каталога может совпасть с именем библиотеки: у нас совпали
+    каталог миграций alembic и сам alembic из окружения.
     """
+    paths = sysconfig.get_paths()
     dirs = []
-    for key in ("purelib", "platlib"):
-        raw = sysconfig.get_paths().get(key)
+    for key in ("purelib", "platlib", "stdlib", "platstdlib"):
+        raw = paths.get(key)
         if not raw:
             continue
         try:
@@ -42,31 +53,10 @@ def _library_dirs() -> tuple[Path, ...]:
 LIBRARY_DIRS = _library_dirs()
 
 
-def _own_tops(root: Path) -> dict[str, Path]:
-    """Свои пакеты и одиночные модули верхнего уровня с их настоящим местом.
-
-    Место берём через resolve(): каталоги вроде modules или storage бывают
-    симлинками на общее дерево, и код оттуда — свой, а не чужой.
-    """
-    tops: dict[str, Path] = {}
-    try:
-        entries = list(root.iterdir())
-    except OSError:
-        return tops
-    for entry in entries:
-        if entry.name.startswith((".", "__")):
-            continue
-        try:
-            if entry.is_dir():
-                # api у нас пакет-пространство имён, без __init__.py, поэтому
-                # признак пакета — вообще наличие питоновских файлов внутри.
-                if (entry / "__init__.py").exists() or any(entry.glob("*.py")):
-                    tops[entry.name] = entry.resolve()
-            elif entry.suffix == ".py":
-                tops[entry.stem] = entry.resolve()
-        except OSError:
-            continue
-    return tops
+def _expected_places(root: Path, name: str) -> tuple[Path, ...]:
+    """Где модулю с таким именем положено лежать внутри корня проекта."""
+    stem = root.joinpath(*name.split("."))
+    return (stem.with_suffix(".py"), stem / "__init__.py")
 
 
 def foreign_modules(
@@ -74,18 +64,18 @@ def foreign_modules(
     modules: dict | None = None,
     library_dirs: tuple[Path, ...] | None = None,
 ) -> dict[str, str]:
-    """Загруженные модули проекта, которые лежат не там, где должны.
+    """Загруженные модули проекта, взятые не из своего дерева.
 
     Ключ — имя модуля, значение — путь, откуда он на самом деле взят.
     """
     base = (root or PROJECT_ROOT).resolve()
     libs = LIBRARY_DIRS if library_dirs is None else library_dirs
-    tops = _own_tops(base)
-    found: dict[str, str] = {}
+
+    suspects: list[tuple[str, Path]] = []
+    legit: set[Path] = set()
+
     for name, module in list((modules if modules is not None else sys.modules).items()):
-        top = name.split(".", 1)[0]
-        expected = tops.get(top)
-        if expected is None:
+        if name in _INTERPRETER_MODULES:
             continue
         source = getattr(module, "__file__", None)
         if not source:
@@ -94,12 +84,21 @@ def foreign_modules(
             actual = Path(source).resolve()
         except OSError:
             continue
-        if actual == expected or expected in actual.parents:
-            continue
         if any(lib == actual or lib in actual.parents for lib in libs):
             continue
-        found[name] = str(actual)
-    return found
+
+        places = [place for place in _expected_places(base, name) if place.exists()]
+        if not places:
+            continue
+        if any(place.resolve() == actual for place in places):
+            legit.add(actual)
+            continue
+        suspects.append((name, actual))
+
+    # Один и тот же файл бывает зарегистрирован под вторым именем (ядро так
+    # кладёт settings.config ещё и как config). Подменой это не является:
+    # сам файл уже признан своим под настоящим именем.
+    return {name: str(actual) for name, actual in suspects if actual not in legit}
 
 
 def warn_on_foreign_modules(where: str, root: Path | None = None) -> dict[str, str]:
