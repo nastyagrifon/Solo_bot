@@ -57,6 +57,12 @@ install_middleware_proxies(dp)
 
 load_modules_from_folder()
 
+# Модуль мог подсунуть в sys.path чужой клон проекта и утащить оттуда наши
+# пакеты. Молча это не выясняется, поэтому смотрим сразу после загрузки.
+from utils.import_guard import warn_on_foreign_modules  # noqa: E402
+
+warn_on_foreign_modules("после загрузки модулей")
+
 from settings.buttons import BUTTON_ICON_CONFIG
 
 

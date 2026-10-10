@@ -6,6 +6,7 @@ from core.tasks.cron_tasks import (
     DAILY_STATS_REPORT_TRIGGER,
     DB_POOL_STATUS_TRIGGER,
     EXPIRED_GIFTS_CLEANUP_TRIGGER,
+    IMPORT_GUARD_TRIGGER,
     KEY_TRAFFIC_HOURLY_SNAPSHOT_TRIGGER,
     KEY_TRAFFIC_SNAPSHOT_TRIGGER,
     MONTHLY_STATS_REPORT_TRIGGER,
@@ -22,6 +23,7 @@ from core.tasks.cron_tasks import (
     scheduled_audit_drain,
     scheduled_monthly_stats_report,
     scheduled_stats_report,
+    import_guard_job,
     snapshot_key_traffic_hourly_job,
     snapshot_key_traffic_job,
     snapshot_subscription_metrics_job,
@@ -68,6 +70,8 @@ CRON_TASKS = (
     ("snapshot_subscription_metrics", snapshot_subscription_metrics_job, SUBSCRIPTION_METRICS_SNAPSHOT_TRIGGER, True),
     ("anomaly_check", anomaly_check_job, ANOMALY_CHECK_TRIGGER, True),
     ("db_pool_status", log_db_pool_status, DB_POOL_STATUS_TRIGGER, False),
+    # Только в event loop: сторожу нужен sys.modules этого процесса.
+    ("import_guard", import_guard_job, IMPORT_GUARD_TRIGGER, False),
 )
 
 

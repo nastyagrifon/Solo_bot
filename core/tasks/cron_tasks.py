@@ -160,6 +160,17 @@ async def abandoned_checkout_reminder_job() -> None:
             logger.error("[AbandonedCheckout] Ошибка отправки напоминаний: {}", error)
 
 
+
+async def import_guard_job() -> None:
+    """Повторная проверка пути импорта.
+
+    Одной проверки при старте мало: ленивые роутеры подтягивают пакеты по
+    первому запросу, то есть много позже, и утечка появляется уже на ходу.
+    """
+    from utils.import_guard import warn_on_foreign_modules
+
+    warn_on_foreign_modules("проверка на ходу")
+
 async def snapshot_key_traffic_job() -> None:
     """Дневной снапшот использованного трафика по ключам (для графиков использования)."""
     from services.traffic_history import snapshot_all_key_traffic
@@ -305,3 +316,4 @@ KEY_TRAFFIC_HOURLY_SNAPSHOT_TRIGGER = CronTrigger(minute=5, timezone="Europe/Mos
 SUBSCRIPTION_METRICS_SNAPSHOT_TRIGGER = CronTrigger(hour=0, minute=20, timezone="Europe/Moscow")
 ANOMALY_CHECK_TRIGGER = CronTrigger(hour=9, minute=0, timezone="Europe/Moscow")
 DB_POOL_STATUS_TRIGGER = IntervalTrigger(minutes=1)
+IMPORT_GUARD_TRIGGER = IntervalTrigger(hours=1)
