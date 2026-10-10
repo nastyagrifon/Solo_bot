@@ -279,7 +279,8 @@ async def partner_me_invited(
         """
         SELECT pr.joined_tg_id, pr.created_at, COALESCE(u.balance, 0),
             (SELECT COUNT(*) FROM keys k WHERE k.tg_id = pr.joined_tg_id),
-            (SELECT COUNT(*) FROM payments pay WHERE pay.tg_id = pr.joined_tg_id AND lower(pay.status) = 'success')
+            (SELECT COUNT(*) FROM payments pay WHERE pay.tg_id = pr.joined_tg_id AND lower(pay.status) = 'success'),
+            u.username, u.first_name
         FROM partners pr
         LEFT JOIN users u ON u.tg_id = pr.joined_tg_id
         WHERE pr.partner_tg_id = :tg_id
@@ -296,6 +297,8 @@ async def partner_me_invited(
             balance=float(row[2] or 0),
             keys_count=int(row[3] or 0),
             payments_count=int(row[4] or 0),
+            tg_username=row[5] or None,
+            tg_first_name=row[6] or None,
         )
         for row in rows
     ]

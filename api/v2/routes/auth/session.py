@@ -44,6 +44,7 @@ from database.models import (
     Key,
     Payment,
     SubscriptionEvent,
+    User,
     WebNotification,
 )
 from database.referrals import get_referral_stats
@@ -192,6 +193,19 @@ async def onboarding_set_stage(
     return IdentityResponse.model_validate(identity)
 
 
+async def _tg_profile(session: AsyncSession, billing_user_id) -> dict:
+    """Имя клиента в Telegram. Кабинет без него подписывает человека почтой
+    или его же tg_id, а бот показывает имя — брать его неоткуда, кроме users."""
+    if billing_user_id is None:
+        return {}
+    row = (
+        await session.execute(select(User.username, User.first_name).where(User.id == int(billing_user_id)))
+    ).first()
+    if row is None:
+        return {}
+    return {"username": row[0] or None, "first_name": row[1] or None}
+
+
 @router.get("/summary", response_model=AccountSummaryResponse)
 async def auth_summary(
     request: Request,
@@ -234,11 +248,13 @@ async def auth_summary(
         gifts_claimed = await _safe(lambda: _count(GiftUsage, GiftUsage.user_id == billing_user_id), 0)
         coupons_used = await _safe(lambda: _count(CouponUsage, CouponUsage.user_id == billing_user_id), 0)
         partner = await _safe(lambda: _resolve_partner_snapshot(session, int(billing_user_id)), {}) or {}
+        tg_profile = await _safe(lambda: _tg_profile(session, billing_user_id), {}) or {}
         counters = {
             "gifts_sent": int(gifts_sent),
             "gifts_claimed": int(gifts_claimed),
             "coupons_used": int(coupons_used),
             "partner": partner,
+            "tg_profile": tg_profile,
         }
         if counters_key:
             await cache_set(counters_key, counters, 60)
@@ -246,12 +262,15 @@ async def auth_summary(
     gifts_claimed = counters["gifts_claimed"]
     coupons_used = counters["coupons_used"]
     partner = counters.get("partner") or {}
+    tg_profile = counters.get("tg_profile") or {}
     ref = await _safe(lambda: get_referral_stats(session, billing_user_id), {}) or {}
     unread_notifications = int(await _safe(lambda: count_unread_for_identity(session, identity.id), 0) or 0)
     return AccountSummaryResponse(
         identity_id=identity.id,
         email=identity.email,
         tg_id=identity.tg_id,
+        tg_username=tg_profile.get("username"),
+        tg_first_name=tg_profile.get("first_name"),
         linked_telegram=identity.tg_id is not None,
         created_at=identity.created_at.isoformat() if identity.created_at else None,
         password_set=bool(identity.password_set),
