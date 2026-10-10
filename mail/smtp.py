@@ -78,7 +78,7 @@ async def send_login_code_email(to_addr: str, code: str) -> None:
         _get_email_template("EMAIL_LOGIN_SUBJECT", "{project}: код для входа"), project=project, code=code
     )
     body = _render(_get_email_template("EMAIL_LOGIN_BODY", "Код для входа: {code}"), project=project, code=code)
-    await _send_notice(to_addr, subject, body, "кода входа")
+    await _send_notice(to_addr, subject, body, "кода входа", code=code)
 
 
 async def send_support_reply_email(to_addr: str, ticket_ref: str, reply: str) -> None:
@@ -108,7 +108,7 @@ async def send_password_reset_code_email(to_addr: str, code: str) -> None:
     project = PROJECT_NAME
     subject = _render(_get_email_template("EMAIL_RESET_SUBJECT", "{project}: сброс пароля"), project=project, code=code)
     body = _render(_get_email_template("EMAIL_RESET_BODY", "Код для сброса пароля: {code}"), project=project, code=code)
-    await _send_notice(to_addr, subject, body, "кода сброса пароля")
+    await _send_notice(to_addr, subject, body, "кода сброса пароля", code=code)
 
 
 async def send_email_verify_code_email(to_addr: str, code: str) -> None:
@@ -121,26 +121,83 @@ async def send_email_verify_code_email(to_addr: str, code: str) -> None:
     body = _render(
         _get_email_template("EMAIL_VERIFY_BODY", "Код подтверждения email: {code}"), project=project, code=code
     )
-    await _send_notice(to_addr, subject, body, "кода подтверждения email")
+    await _send_notice(to_addr, subject, body, "кода подтверждения email", code=code)
 
 
+# Каркас письма. Тёмный по умолчанию, светлая тема — медиазапросом; разметка
+# на таблицах, потому что почтовые клиентыflex и grid не понимают. Цвета
+# фирменные, из логотипа. Макет утверждён владельцем 11.10.2026.
 DEFAULT_BROADCAST_TEMPLATE = (
     '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
-    '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
-    '<body style="margin:0;padding:24px 0;background:#f4f5f7;'
-    'font-family:Arial,Helvetica,sans-serif;">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<meta name="color-scheme" content="dark light">'
+    "<style>body{margin:0;padding:0;}"
+    "@media (prefers-color-scheme: light){"
+    ".bg{background:#f3f0fa!important}.card{background:#ffffff!important}"
+    ".tx{color:#140d26!important}.mt{color:#6b6080!important}"
+    ".box{background:#f3f0fa!important}.foot{background:#f7f5fc!important}}"
+    "</style></head>"
+    '<body class="bg" style="margin:0;padding:28px 12px;background:#1a1030;'
+    "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;\">"
+    "{preheader}"
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">'
     '<table role="presentation" width="600" cellpadding="0" cellspacing="0" '
-    'style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;">'
-    '<tr><td style="background:#111827;padding:20px 28px;">'
-    '<span style="color:#ffffff;font-size:18px;font-weight:bold;">{project}</span></td></tr>'
+    'style="max-width:600px;width:100%;">'
+    '<tr><td style="padding:0 4px 18px;">{logo}'
+    '<span class="tx" style="color:#ffffff;font-size:19px;font-weight:bold;'
+    'vertical-align:middle;">{project}</span></td></tr>'
+    '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="card" '
+    'style="background:#241a46;border-radius:16px;overflow:hidden;">'
     "{image}"
-    '<tr><td style="padding:28px;color:#1f2937;font-size:15px;line-height:1.6;">{content}</td></tr>'
+    '<tr><td class="mt" style="padding:30px 30px 4px;color:#a89ec4;font-size:15px;'
+    'line-height:1.6;">{content}</td></tr>'
+    "{code}"
     "{cta}"
-    '<tr><td style="background:#f9fafb;padding:18px 28px;color:#9ca3af;font-size:12px;">'
-    "© {year} {project}</td></tr>"
-    "</table></td></tr></table></body></html>"
+    '<tr><td class="foot" style="background:#1f1640;padding:18px 30px;'
+    'color:#8a7fa6;font-size:13px;">© {year} {project}</td></tr>'
+    "</table></td></tr></table></td></tr></table></body></html>"
 )
+
+
+def _preheader_block(body: str) -> str:
+    """Первая строка письма, которую почтовый клиент показывает в списке."""
+    first = html_escape(body.strip().split("\n", 1)[0])[:120]
+    return (
+        f'<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{first}</div>'
+        if first
+        else ""
+    )
+
+
+def _logo_block() -> str:
+    """Логотип в шапке письма. Адрес берётся из настроек, пусто — только текст."""
+    url = _get_email_template("EMAIL_LOGO_URL", "").strip()
+    if not url:
+        return ""
+    return (
+        f'<img src="{html_escape(url)}" width="32" height="32" alt="" '
+        f'style="display:inline-block;vertical-align:middle;border:0;'
+        f'border-radius:8px;margin-right:10px;">'
+    )
+
+
+def _code_block(code: str | None) -> str:
+    """Код отдельной плашкой: его ищут глазами, а не читают в абзаце."""
+    value = (code or "").strip()
+    if not value:
+        return ""
+    hint = _get_email_template("EMAIL_CODE_HINT", "Никому не сообщайте этот код")
+    return (
+        '<tr><td style="padding:18px 30px 4px;">'
+        '<table role="presentation" width="100%" class="box" '
+        'style="background:#2c1c55;border-radius:12px;"><tr>'
+        '<td align="center" style="padding:22px;">'
+        f'<div class="tx" style="font-size:36px;font-weight:bold;letter-spacing:8px;'
+        f'color:#ffffff;">{html_escape(value)}</div>'
+        f'<div class="mt" style="color:#a89ec4;font-size:13px;padding-top:8px;">'
+        f"{html_escape(hint)}</div>"
+        "</td></tr></table></td></tr>"
+    )
 
 
 def _html_to_text(html: str) -> str:
@@ -168,7 +225,22 @@ def _site_url() -> str:
         return ""
 
 
-def build_notice_email(body: str) -> str:
+def _body_without_code(body: str, code: str | None) -> str:
+    """Убрать из HTML-части строки, где код уже напечатан словами.
+
+    Код показывается отдельной плашкой, и вторая его копия в абзаце выглядит
+    опечаткой. Текстовая часть письма при этом остаётся полной: в ней плашек
+    нет, и код из неё убирать нельзя.
+    """
+    value = (code or "").strip()
+    if not value:
+        return body
+    kept = [line for line in body.splitlines() if value not in line]
+    text = "\n".join(kept).strip()
+    return text or _get_email_template("EMAIL_CODE_LEAD", "Введите код ниже.")
+
+
+def build_notice_email(body: str, code: str | None = None) -> str:
     """HTML служебного письма — тем же каркасом, что и рассылки.
 
     Письма с кодами уходили голым текстом: «Код для привязки email: 334997».
@@ -179,12 +251,16 @@ def build_notice_email(body: str) -> str:
     project = PROJECT_NAME
     site_url = _site_url()
     cta_block = (
-        f'<tr><td style="padding:0 28px 28px;"><a href="{html_escape(site_url)}" '
-        f'style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;'
-        f'padding:12px 22px;border-radius:8px;font-size:14px;">Открыть личный кабинет</a></td></tr>'
+        f'<tr><td style="padding:26px 30px 30px;"><a href="{html_escape(site_url)}" '
+        f'style="display:inline-block;background:#7656c8;color:#ffffff;text-decoration:none;'
+        f'padding:13px 24px;border-radius:8px;font-size:14px;font-weight:bold;">'
+        f'Открыть личный кабинет</a></td></tr>'
         if site_url
         else ""
     )
+    # Превью письма строим без кода: иначе он виден в списке писем и на
+    # заблокированном экране телефона.
+    lead = _body_without_code(body, code)
     template = _get_email_template("EMAIL_NOTICE_TEMPLATE", DEFAULT_BROADCAST_TEMPLATE)
     return (
         template.replace("{project}", html_escape(project))
@@ -192,18 +268,21 @@ def build_notice_email(body: str) -> str:
         .replace("{cta}", cta_block)
         .replace("{site_url}", html_escape(site_url))
         .replace("{year}", str(datetime.now().year))
-        .replace("{content}", html_escape(body).replace("\n", "<br>"))
+        .replace("{content}", html_escape(lead).replace("\n", "<br>"))
+        .replace("{preheader}", _preheader_block(lead))
+        .replace("{logo}", _logo_block())
+        .replace("{code}", _code_block(code))
     )
 
 
-async def _send_notice(to_addr: str, subject: str, body: str, what: str) -> None:
+async def _send_notice(to_addr: str, subject: str, body: str, what: str, code: str | None = None) -> None:
     """Служебное письмо: текстовая часть и html одним и тем же содержимым."""
     msg = EmailMessage()
     msg["Subject"] = subject
     _apply_sender(msg)
     msg["To"] = to_addr
     msg.set_content(body)
-    msg.add_alternative(build_notice_email(body), subtype="html")
+    msg.add_alternative(build_notice_email(body, code), subtype="html")
     try:
         await aiosmtplib.send(msg, **_smtp_kwargs())
     except Exception as exc:
@@ -233,9 +312,10 @@ def build_broadcast_email(text_html: str, image_url: str | None = None) -> tuple
         else ""
     )
     cta_block = (
-        f'<tr><td style="padding:0 28px 28px;"><a href="{html_escape(site_url)}" '
-        f'style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;'
-        f'padding:12px 22px;border-radius:8px;font-size:14px;">Открыть личный кабинет</a></td></tr>'
+        f'<tr><td style="padding:26px 30px 30px;"><a href="{html_escape(site_url)}" '
+        f'style="display:inline-block;background:#7656c8;color:#ffffff;text-decoration:none;'
+        f'padding:13px 24px;border-radius:8px;font-size:14px;font-weight:bold;">'
+        f'Открыть личный кабинет</a></td></tr>'
         if site_url
         else ""
     )
@@ -245,6 +325,9 @@ def build_broadcast_email(text_html: str, image_url: str | None = None) -> tuple
         template.replace("{project}", html_escape(project))
         .replace("{image}", image_block)
         .replace("{cta}", cta_block)
+        .replace("{preheader}", _preheader_block(plain))
+        .replace("{logo}", _logo_block())
+        .replace("{code}", "")
         .replace("{site_url}", html_escape(site_url))
         .replace("{year}", str(datetime.now().year))
         .replace("{content}", _telegram_html_to_email(text_html))
@@ -272,4 +355,4 @@ async def send_email_link_code_email(to_addr: str, code: str) -> None:
         _get_email_template("EMAIL_LINK_SUBJECT", "{project}: подтверждение привязки email"), project=project, code=code
     )
     body = _render(_get_email_template("EMAIL_LINK_BODY", "Код для привязки email: {code}"), project=project, code=code)
-    await _send_notice(to_addr, subject, body, "кода привязки email")
+    await _send_notice(to_addr, subject, body, "кода привязки email", code=code)
