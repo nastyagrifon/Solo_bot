@@ -208,10 +208,11 @@ async def get_traffic_history_from_panel(
         if user_id is None:
             return None
         # Готового метода под bandwidth-stats у клиента панели нет, поэтому
-        # произвольный запрос. Путь ждёт числовой id, не vlessUuid.
+        # произвольный запрос. Путь ждёт числовой id, не vlessUuid, и идёт без
+        # префикса /api: он уже в базовом адресе клиента, иначе выйдет /api/api.
         response = await api._request(
             "GET",
-            f"/api/bandwidth-stats/users/{user_id}",
+            f"/bandwidth-stats/users/{user_id}",
             params={"start": start.isoformat(), "end": end.isoformat()},
         )
         if response.status_code != 200:
