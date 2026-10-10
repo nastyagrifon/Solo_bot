@@ -21,6 +21,8 @@
 | [#56](https://github.com/nastyagrifon/Solo_bot/pull/56) | Telegram ID клиента в экранах админки | внутренний id никому не нужен |
 | [#58](https://github.com/nastyagrifon/Solo_bot/pull/58) | профиль без FSM-состояния в режиме одной подписки | нет ошибки при открытии |
 | [#94](https://github.com/nastyagrifon/Solo_bot/pull/94) | не редактировать сообщение клиента перед ответом | минус один пустой запрос на /start |
+| [#101](https://github.com/nastyagrifon/Solo_bot/pull/101) | скрытые хосты не попадают в статус серверов кабинета | клиент не видит то, что спрятано |
+| [#102](https://github.com/nastyagrifon/Solo_bot/pull/102) | трафик панели сопоставляется и по `vlessUuid`, и по `username` | история трафика была пуста у половины клиентов |
 
 ## Новое
 
