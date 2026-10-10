@@ -5,6 +5,8 @@ class AccountSummaryResponse(BaseModel):
     identity_id: str
     email: str | None = None
     tg_id: int | None = None
+    tg_username: str | None = None
+    tg_first_name: str | None = None
     linked_telegram: bool = False
     created_at: str | None = None
     password_set: bool = False
@@ -455,6 +457,8 @@ class PartnerTopResponse(BaseModel):
 
 class PartnerInvitedEntry(BaseModel):
     tg_id: int
+    tg_username: str | None = None
+    tg_first_name: str | None = None
     joined_at: str | None = None
     balance: float = 0.0
     keys_count: int = 0
