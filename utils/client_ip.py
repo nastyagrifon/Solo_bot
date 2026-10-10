@@ -66,6 +66,12 @@ def client_ip(request) -> str:
     Первое недоверенное звено и есть клиент: подделанные элементы заголовка
     остаются левее него и до результата не доходят. Прямое подключение (peer не
     в доверенных сетях) заголовок не читает вовсе.
+
+    Если вся цепочка оказалась внутри доверенных сетей, спрашиваем X-Real-IP:
+    промежуточный слой (SSR веб-кабинета) умеет перезаписывать X-Forwarded-For
+    своим адресом, а этот заголовок пробрасывает нетронутым. Доверять ему можно
+    по той же причине, что и цепочке: запрос пришёл от доверенного звена, а
+    фронт-прокси значение заголовка ЗАМЕНЯЕТ, а не дополняет.
     """
     if request is None:
         return ""
@@ -90,5 +96,15 @@ def client_ip(request) -> str:
             break
         result = str(ip)
         if not _is_trusted(ip):
-            break
+            return result
+
+    # Сюда попадаем, когда клиента в цепочке нет: либо заголовка нет вовсе, либо
+    # все его звенья наши. Тогда адрес может лежать в X-Real-IP.
+    try:
+        real_raw = request.headers.get("x-real-ip") or ""
+    except Exception:
+        real_raw = ""
+    real = _parse_ip(real_raw)
+    if real is not None and not _is_trusted(real):
+        return str(real)
     return result or peer_raw.strip()
