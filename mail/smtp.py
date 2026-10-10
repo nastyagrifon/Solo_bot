@@ -78,16 +78,7 @@ async def send_login_code_email(to_addr: str, code: str) -> None:
         _get_email_template("EMAIL_LOGIN_SUBJECT", "{project}: код для входа"), project=project, code=code
     )
     body = _render(_get_email_template("EMAIL_LOGIN_BODY", "Код для входа: {code}"), project=project, code=code)
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    _apply_sender(msg)
-    msg["To"] = to_addr
-    msg.set_content(body)
-    try:
-        await aiosmtplib.send(msg, **_smtp_kwargs())
-    except Exception as exc:
-        logger.warning(f"[SMTP] Отправка кода входа на {to_addr} не удалась: {exc}")
-        raise
+    await _send_notice(to_addr, subject, body, "кода входа")
 
 
 async def send_support_reply_email(to_addr: str, ticket_ref: str, reply: str) -> None:
@@ -108,16 +99,7 @@ async def send_support_reply_email(to_addr: str, ticket_ref: str, reply: str) ->
         ref=ticket_ref,
         reply=reply,
     )
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    _apply_sender(msg)
-    msg["To"] = to_addr
-    msg.set_content(body)
-    try:
-        await aiosmtplib.send(msg, **_smtp_kwargs())
-    except Exception as exc:
-        logger.warning(f"[SMTP] Отправка ответа поддержки на {to_addr} не удалась: {exc}")
-        raise
+    await _send_notice(to_addr, subject, body, "ответа поддержки")
 
 
 async def send_password_reset_code_email(to_addr: str, code: str) -> None:
@@ -126,16 +108,7 @@ async def send_password_reset_code_email(to_addr: str, code: str) -> None:
     project = PROJECT_NAME
     subject = _render(_get_email_template("EMAIL_RESET_SUBJECT", "{project}: сброс пароля"), project=project, code=code)
     body = _render(_get_email_template("EMAIL_RESET_BODY", "Код для сброса пароля: {code}"), project=project, code=code)
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    _apply_sender(msg)
-    msg["To"] = to_addr
-    msg.set_content(body)
-    try:
-        await aiosmtplib.send(msg, **_smtp_kwargs())
-    except Exception as exc:
-        logger.warning(f"[SMTP] Отправка кода сброса пароля на {to_addr} не удалась: {exc}")
-        raise
+    await _send_notice(to_addr, subject, body, "кода сброса пароля")
 
 
 async def send_email_verify_code_email(to_addr: str, code: str) -> None:
@@ -148,16 +121,7 @@ async def send_email_verify_code_email(to_addr: str, code: str) -> None:
     body = _render(
         _get_email_template("EMAIL_VERIFY_BODY", "Код подтверждения email: {code}"), project=project, code=code
     )
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    _apply_sender(msg)
-    msg["To"] = to_addr
-    msg.set_content(body)
-    try:
-        await aiosmtplib.send(msg, **_smtp_kwargs())
-    except Exception as exc:
-        logger.warning(f"[SMTP] Отправка кода подтверждения email на {to_addr} не удалась: {exc}")
-        raise
+    await _send_notice(to_addr, subject, body, "кода подтверждения email")
 
 
 DEFAULT_BROADCAST_TEMPLATE = (
@@ -192,6 +156,59 @@ def _telegram_html_to_email(html: str) -> str:
     body = re.sub(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>', r"\1", html)
     body = body.replace("\r\n", "\n").replace("\n", "<br>")
     return body
+
+
+def _site_url() -> str:
+    """Адрес кабинета, если веб включён. Нужен для кнопки в письме."""
+    try:
+        from core.settings.web_config import get_site_url, is_web_enabled
+
+        return get_site_url() if is_web_enabled() else ""
+    except Exception:
+        return ""
+
+
+def build_notice_email(body: str) -> str:
+    """HTML служебного письма — тем же каркасом, что и рассылки.
+
+    Письма с кодами уходили голым текстом: «Код для привязки email: 334997».
+    Шапка, карточка и подвал у проекта уже есть, незачем держать два вида
+    писем. Текст берётся как есть и экранируется: это не разметка, а строка
+    из настроек, куда админ может написать что угодно.
+    """
+    project = PROJECT_NAME
+    site_url = _site_url()
+    cta_block = (
+        f'<tr><td style="padding:0 28px 28px;"><a href="{html_escape(site_url)}" '
+        f'style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;'
+        f'padding:12px 22px;border-radius:8px;font-size:14px;">Открыть личный кабинет</a></td></tr>'
+        if site_url
+        else ""
+    )
+    template = _get_email_template("EMAIL_NOTICE_TEMPLATE", DEFAULT_BROADCAST_TEMPLATE)
+    return (
+        template.replace("{project}", html_escape(project))
+        .replace("{image}", "")
+        .replace("{cta}", cta_block)
+        .replace("{site_url}", html_escape(site_url))
+        .replace("{year}", str(datetime.now().year))
+        .replace("{content}", html_escape(body).replace("\n", "<br>"))
+    )
+
+
+async def _send_notice(to_addr: str, subject: str, body: str, what: str) -> None:
+    """Служебное письмо: текстовая часть и html одним и тем же содержимым."""
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    _apply_sender(msg)
+    msg["To"] = to_addr
+    msg.set_content(body)
+    msg.add_alternative(build_notice_email(body), subtype="html")
+    try:
+        await aiosmtplib.send(msg, **_smtp_kwargs())
+    except Exception as exc:
+        logger.warning(f"[SMTP] Отправка {what} на {to_addr} не удалась: {exc}")
+        raise
 
 
 def build_broadcast_email(text_html: str, image_url: str | None = None) -> tuple[str, str, str]:
@@ -255,13 +272,4 @@ async def send_email_link_code_email(to_addr: str, code: str) -> None:
         _get_email_template("EMAIL_LINK_SUBJECT", "{project}: подтверждение привязки email"), project=project, code=code
     )
     body = _render(_get_email_template("EMAIL_LINK_BODY", "Код для привязки email: {code}"), project=project, code=code)
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    _apply_sender(msg)
-    msg["To"] = to_addr
-    msg.set_content(body)
-    try:
-        await aiosmtplib.send(msg, **_smtp_kwargs())
-    except Exception as exc:
-        logger.warning(f"[SMTP] Отправка кода привязки email на {to_addr} не удалась: {exc}")
-        raise
+    await _send_notice(to_addr, subject, body, "кода привязки email")
