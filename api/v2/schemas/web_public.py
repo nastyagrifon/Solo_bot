@@ -26,6 +26,7 @@ class AccountSummaryResponse(BaseModel):
     partner_percent: float = 0.0
     partner_percent_custom: bool = False
     partner_referred_total: int = 0
+    partner_referred_trial: int = 0
     partner_referred_paid: int = 0
     partner_payout_method: str | None = None
     unread_notifications: int = 0
@@ -455,19 +456,20 @@ class PartnerTopResponse(BaseModel):
     top: list[PartnerTopEntryResponse] = []
 
 
-class PartnerInvitedEntry(BaseModel):
-    tg_id: int
-    tg_username: str | None = None
-    tg_first_name: str | None = None
-    joined_at: str | None = None
-    balance: float = 0.0
-    keys_count: int = 0
-    payments_count: int = 0
-
-
 class PartnerInvitedResponse(BaseModel):
+    """Воронка партнёра без персональных данных приведённых.
+
+    Клиенту показываем только количества и суммы: кто именно пришёл по его
+    ссылке — не его дело, это чужие люди. Поимённо смотрят администраторы
+    в боте. Раньше ручка отдавала tg_id, баланс и число ключей по каждому
+    человеку, а кабинет подписывал их как «tg · <их id>».
+    """
+
     total: int = 0
-    items: list[PartnerInvitedEntry] = []
+    trial_activated: int = 0
+    trial_percent: int = 0
+    paid: int = 0
+    paid_percent: int = 0
 
 
 class CouponApplyRequest(BaseModel):

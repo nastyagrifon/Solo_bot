@@ -290,6 +290,7 @@ async def auth_summary(
         partner_percent=float(partner.get("partner_percent") or 0.0),
         partner_percent_custom=bool(partner.get("partner_percent_custom", False)),
         partner_referred_total=int(partner.get("partner_referred_total") or 0),
+        partner_referred_trial=int(partner.get("partner_referred_trial") or 0),
         partner_referred_paid=int(partner.get("partner_referred_paid") or 0),
         partner_payout_method=partner.get("partner_payout_method"),
         unread_notifications=int(unread_notifications),
