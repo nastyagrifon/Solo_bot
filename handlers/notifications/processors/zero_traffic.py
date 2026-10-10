@@ -68,11 +68,11 @@ async def process_zero_traffic(
     if not candidate_keys:
         return
 
-    needed_uuids = {k.client_id for k in candidate_keys if k.client_id}
-    logger.info(f"[ZeroTraffic] Кандидатов: {len(candidate_keys)}, UUID: {len(needed_uuids)}")
+    needed_ids = {k.client_id for k in candidate_keys if k.client_id} | {k.email for k in candidate_keys if k.email}
+    logger.info(f"[ZeroTraffic] Кандидатов: {len(candidate_keys)}, идентификаторов: {len(needed_ids)}")
 
     try:
-        traffic_map = await fetch_all_remnawave_traffic(session, needed_uuids=needed_uuids)
+        traffic_map = await fetch_all_remnawave_traffic(session, needed_ids=needed_ids)
     except Exception as e:
         logger.error(f"[ZeroTraffic] Ошибка получения трафика: {e}")
         return
@@ -86,6 +86,8 @@ async def process_zero_traffic(
         client_id = key.client_id
 
         used_bytes = traffic_map.get(client_id)
+        if used_bytes is None and email:
+            used_bytes = traffic_map.get(email)
         if used_bytes is None or used_bytes > 0:
             continue
 
