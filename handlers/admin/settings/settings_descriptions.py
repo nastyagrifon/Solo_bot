@@ -28,6 +28,8 @@ SETTING_HINTS: Final[dict[str, str]] = {
     "ANDROID_TV_BUTTON_ENABLE": "Кнопка подключения Android TV",
     "COUPON_BUTTON_ENABLE": "Кнопка активации купона в профиле",
     "WEB_CABINET_BUTTON_ENABLE": "Кнопка перехода в веб-кабинет в профиле",
+    "WEB_CABINET_BUTTON_MODE": "Кому показывать кнопку: all — всем, whitelist — только списку, blacklist — всем кроме списка. Сам сайт работает в любом режиме",
+    "WEB_CABINET_BUTTON_LIST": "Telegram id через запятую для режимов whitelist и blacklist",
     "RENEW_ENABLED": "Автопродление подписок с баланса при истечении",
     "EXPIRY_24H_ENABLED": "Первое напоминание об истечении подписки",
     "EXPIRY_10H_ENABLED": "Второе напоминание ближе к истечению",
