@@ -280,7 +280,10 @@ def _build_connection_targets(
     """Реальные клиентские endpoint'ы из хостов панели: host.address:host.port.
 
     online/load берутся по inbound хоста (жива ли обслуживающая нода и её нагрузка).
-    Выключенные вручную хосты (isDisabled) пропускаются.
+    Пропускаются выключенные вручную (isDisabled) И скрытые (isHidden): скрытый
+    хост намеренно спрятан от клиента в подписке, показывать его в кабинете -
+    то же самое, что не прятать. На нашей панели из 67 не выключенных хостов
+    39 скрытых: это служебные точки, белые входы и маскировочные домены.
     """
     alive = _build_inbound_alive_map(nodes)
     load = _build_inbound_load_map(nodes)
@@ -289,7 +292,7 @@ def _build_connection_targets(
     have_nodes = bool(node_dicts)
     out: list[dict[str, Any]] = []
     for host in hosts:
-        if not isinstance(host, dict) or host.get("isDisabled"):
+        if not isinstance(host, dict) or host.get("isDisabled") or host.get("isHidden"):
             continue
         host_uuid = host.get("uuid")
         if not host_uuid:
