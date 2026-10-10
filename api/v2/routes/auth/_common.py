@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.v2.schemas.identities import IdentityResponse, LoginResponse
 from logger import logger
 from settings.config import API_TOKEN_TTL_DAYS
+from utils.client_ip import client_ip
 from utils.referral_codes import encode_partner_code
 
 
@@ -37,17 +38,9 @@ def with_login_marker(path: str) -> str:
     return f"{path}{separator}{LOGIN_MARKER_PARAM}=1"
 
 
-_TRUSTED_PROXY_CIDRS: list[str] = []
-
-
 def _client_ip(request: Request) -> str:
-    client_host = (request.client.host if request.client else "") or ""
-    forwarded = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
-    if not forwarded:
-        return client_host
-    if not _TRUSTED_PROXY_CIDRS and client_host not in ("127.0.0.1", "::1"):
-        return client_host
-    return forwarded.split(",")[0].strip() or client_host
+    """Адрес клиента. Разбор один на проект — см. utils.client_ip."""
+    return client_ip(request)
 
 
 async def _resolve_partner_snapshot(session: AsyncSession, billing_user_id: int) -> dict[str, object]:
