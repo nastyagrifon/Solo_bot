@@ -12,6 +12,8 @@ class IdentityResponse(BaseModel):
     id: str
     email: str | None
     tg_id: int | None
+    display_name: str | None = Field(None, description="Подпись аккаунта в шапке сайта")
+    avatar_url: str | None = Field(None, description="Картинка аккаунта в шапке сайта")
     is_admin: bool = False
     role: str = "user"
     email_verified: bool = False
