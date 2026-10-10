@@ -55,6 +55,22 @@ from utils.referral_codes import encode_referral_code
 
 router = APIRouter()
 
+# Подпись и картинка кнопки аккаунта в шапке сайта. Сайт берёт их из этой
+# ручки: подпись как `display_name → username → «Аккаунт»`, картинку из
+# `avatar_url`, а без неё рисует первые две буквы подписи — отсюда и брались
+# «АК» у кнопки «Аккаунт».
+ACCOUNT_LABEL = "Профиль"
+# Силуэт в data-URI, а не файл: так картинка не зависит от путей статики и
+# переживает любую пересборку сайта. Лавандовый круг и тёмный силуэт
+# читаются и на светлой, и на тёмной шапке.
+ACCOUNT_AVATAR = (
+    "data:image/svg+xml;base64,"
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCIgd2lkdGg9IjQ4"
+    "IiBoZWlnaHQ9IjQ4Ij48Y2lyY2xlIGN4PSIyNCIgY3k9IjI0IiByPSIyNCIgZmlsbD0iI2JiOTllOSIvPjxjaXJjbGUg"
+    "Y3g9IjI0IiBjeT0iMTgiIHI9IjgiIGZpbGw9IiMyYzFjNTUiLz48cGF0aCBkPSJNOCA0NGMwLTguOCA3LjItMTYgMTYt"
+    "MTZzMTYgNy4yIDE2IDE2eiIgZmlsbD0iIzJjMWM1NSIvPjwvc3ZnPg=="
+)
+
 
 @router.get("/me", response_model=IdentityResponse)
 async def me(
@@ -64,6 +80,8 @@ async def me(
     """Текущая идентичность по HttpOnly cookie `auth_token`."""
     data = IdentityResponse.model_validate(identity)
     data.role = await resolve_identity_role(session, identity)
+    data.display_name = ACCOUNT_LABEL
+    data.avatar_url = ACCOUNT_AVATAR
     return data
 
 
