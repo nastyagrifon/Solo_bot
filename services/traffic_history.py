@@ -183,3 +183,62 @@ async def get_traffic_history_hourly(session: AsyncSession, client_id: str, hour
             prev = cur
         out.append({"date": h.isoformat(), "used_gb": delta, "limit_gb": None})
     return out
+
+
+async def get_traffic_history_from_panel(
+    session: AsyncSession,
+    client_id: str,
+    username: str | None,
+    days: int = 30,
+) -> list[dict] | None:
+    """История трафика прямо из панели: она считает расход по дням сама.
+
+    Отдаёт None, когда панель недоступна или не знает такого пользователя, —
+    вызывающий решает, брать ли запасной путь из своей таблицы снапшотов.
+    Формат точек тот же, что у get_traffic_history.
+    """
+    from panels.remnawave_runtime import with_remnawave_api
+
+    days = max(1, min(365, days))
+    end = _dt.datetime.utcnow().date()
+    start = end - _dt.timedelta(days=days - 1)
+
+    async def _fetch(api) -> dict | None:
+        user_id = await api.resolve_user_id(client_id, username=username)
+        if user_id is None:
+            return None
+        # Готового метода под bandwidth-stats у клиента панели нет, поэтому
+        # произвольный запрос. Путь ждёт числовой id, не vlessUuid.
+        response = await api._request(
+            "GET",
+            f"/api/bandwidth-stats/users/{user_id}",
+            params={"start": start.isoformat(), "end": end.isoformat()},
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "[TrafficHistory] панель ответила {} на историю для client_id={}",
+                response.status_code,
+                client_id,
+            )
+            return None
+        payload = response.json()
+        return payload.get("response") if isinstance(payload, dict) else None
+
+    data = await with_remnawave_api(session, "", _fetch, fallback_any=True, timeout_sec=10.0)
+    if not isinstance(data, dict):
+        return None
+
+    dates = data.get("categories") or []
+    used_bytes = data.get("sparklineData") or []
+    if not dates:
+        return None
+
+    out: list[dict] = []
+    for index, day in enumerate(dates):
+        raw = used_bytes[index] if index < len(used_bytes) else None
+        try:
+            used_gb = round(int(raw) / _GB, 3) if raw is not None else None
+        except (TypeError, ValueError):
+            used_gb = None
+        out.append({"date": str(day), "used_gb": used_gb, "limit_gb": None})
+    return out

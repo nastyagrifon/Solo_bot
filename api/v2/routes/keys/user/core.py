@@ -167,11 +167,14 @@ async def user_key_traffic_history(
     billing_user_id = await resolve_billing_user_id(request, identity, session)
     owns = (
         await session.execute(
-            select(Key.client_id).where(Key.user_id == billing_user_id, Key.client_id == client_id).limit(1)
+            select(Key.client_id, Key.email)
+            .where(Key.user_id == billing_user_id, Key.client_id == client_id)
+            .limit(1)
         )
-    ).scalar_one_or_none()
+    ).first()
     if owns is None:
         raise HTTPException(status_code=404, detail="Подписка не найдена")
+    key_email = owns[1]
 
     if granularity == "hour":
         from services.traffic_history import get_traffic_history_hourly
@@ -179,9 +182,19 @@ async def user_key_traffic_history(
         points = await get_traffic_history_hourly(session, client_id, hours=24)
         return {"client_id": client_id, "days": 1, "granularity": "hour", "points": points}
 
-    from services.traffic_history import get_traffic_history
+    from core.redis_cache import cache_get, cache_key, cache_set
+    from services.traffic_history import get_traffic_history, get_traffic_history_from_panel
 
-    points = await get_traffic_history(session, client_id, days)
+    """По дням историю считает сама панель, своя таблица снапшотов — запасной путь.
+    Кеш короткий: расход за сегодня растёт весь день, а ручку дёргает график кабинета."""
+    points_key = cache_key("traffic_history", client_id, days)
+    points = await cache_get(points_key)
+    if not isinstance(points, list):
+        points = await get_traffic_history_from_panel(session, client_id, key_email, days)
+        if points is None:
+            points = await get_traffic_history(session, client_id, days)
+        else:
+            await cache_set(points_key, points, 300)
     return {"client_id": client_id, "days": days, "granularity": "day", "points": points}
 
 
