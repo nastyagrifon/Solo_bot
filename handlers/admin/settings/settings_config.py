@@ -15,6 +15,7 @@ BUTTON_TITLES: Final[dict[str, str]] = {
     "HWID_RESET_BUTTON_ENABLE": "Сброс HWID",
     "ANDROID_TV_BUTTON_ENABLE": "Android TV",
     "COUPON_BUTTON_ENABLE": "Активировать купон",
+    "WEB_CABINET_BUTTON_ENABLE": "Веб-кабинет",
 }
 
 NOTIFICATION_TITLES: Final[dict[str, str]] = {

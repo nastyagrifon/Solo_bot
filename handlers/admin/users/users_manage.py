@@ -800,7 +800,11 @@ async def handle_users_site_tab(callback: CallbackQuery, callback_data: AdminUse
     IsAdminFilter(),
     flags={"popup": True},
 )
-async def handle_users_site_send(callback: CallbackQuery, callback_data: AdminUserEditorCallback):
+async def handle_users_site_send(
+    callback: CallbackQuery,
+    callback_data: AdminUserEditorCallback,
+    session: AsyncSession,
+):
     tab = str(callback_data.data or "")
     label = SITE_TAB_LABELS.get(tab)
     if not label:
@@ -827,16 +831,24 @@ async def handle_users_site_send(callback: CallbackQuery, callback_data: AdminUs
         )
     builder.row(button)
 
+    # В карточку клиента приходит внутренний users.id, а слать надо на tg_id:
+    # прямая отправка по user_id всегда падала и выглядела как «клиент не запускал бота».
+    user = await resolve_user_optional(session, callback_data.user_id)
+    chat_id = int(user.tg_id) if user and user.tg_id and int(user.tg_id) > 0 else None
+    if chat_id is None:
+        await callback.answer("У клиента нет Telegram", show_alert=True)
+        return
+
     from bot import bot
 
     try:
         await bot.send_message(
-            callback_data.user_id,
+            chat_id,
             "Откройте раздел в личном кабинете 👇",
             reply_markup=builder.as_markup(),
         )
     except Exception as e:
-        logger.warning(f"[users_site_send] send to {callback_data.user_id} failed: {e}")
+        logger.warning(f"[users_site_send] send to {chat_id} failed: {e}")
         await callback.answer("Клиент не запускал бота", show_alert=True)
         return
     await callback.answer(f"✅ Отправлено клиенту: {label}", show_alert=True)

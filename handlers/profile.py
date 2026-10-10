@@ -150,7 +150,7 @@ async def process_callback_view_profile(
     )
 
     web_button = None
-    if is_web_enabled():
+    if is_web_enabled() and BUTTONS_CONFIG.get("WEB_CABINET_BUTTON_ENABLE", True):
         site_url = get_site_url()
         if site_url:
             if is_web_open_in_browser():

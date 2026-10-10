@@ -9,6 +9,7 @@ def _normalize(config: dict[str, bool]) -> None:
     config.pop("TOGGLE_CLIENT_BUTTON_ENABLE", None)
     config.setdefault("ANDROID_TV_BUTTON_ENABLE", False)
     config.setdefault("COUPON_BUTTON_ENABLE", True)
+    config.setdefault("WEB_CABINET_BUTTON_ENABLE", True)
 
 
 BUTTONS_CONFIG: dict[str, bool] = DEFAULT_BUTTONS_CONFIG.copy()
