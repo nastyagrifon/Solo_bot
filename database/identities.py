@@ -13,6 +13,7 @@ from database.access.tg_mirror import refresh_tg_mirrors_for_user, release_tg_mi
 from database.models import Admin, Identity, User
 from logger import logger
 from settings.config import API_TOKEN_TTL_DAYS
+from utils.client_ip import client_ip
 from utils.cpu_tasks import check_password, hash_password
 
 
@@ -23,13 +24,8 @@ def _request_meta(request) -> tuple[str | None, str | None]:
         ua = request.headers.get("user-agent")
     except Exception:
         ua = None
-    ip = None
     try:
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            ip = xff.split(",")[0].strip()
-        elif request.client and request.client.host:
-            ip = request.client.host
+        ip = client_ip(request) or None
     except Exception:
         ip = None
     return ua, ip
