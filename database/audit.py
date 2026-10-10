@@ -37,7 +37,9 @@ async def delete_old_audit_events_db(
     older_than_days: int = 90,
 ) -> int:
     await ensure_audit_table(session)
-    threshold = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    # created_at у AuditEvent — naive DateTime (default=datetime.utcnow), поэтому и порог
+    # должен быть naive: aware-значение драйвер к timestamp without time zone не приводит.
+    threshold = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=older_than_days)
     stmt = delete(AuditEvent).where(AuditEvent.created_at < threshold)
     result = await session.execute(stmt)
     return result.rowcount or 0
