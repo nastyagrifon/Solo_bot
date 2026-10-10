@@ -10,6 +10,7 @@
 """
 
 import sys
+import sysconfig
 from pathlib import Path
 
 from logger import logger
@@ -17,6 +18,28 @@ from logger import logger
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _SHOW_LIMIT = 10
+
+
+def _library_dirs() -> tuple[Path, ...]:
+    """Каталоги установленных пакетов текущего окружения.
+
+    Имя своего каталога может совпасть с именем сторонней библиотеки: у нас
+    так совпали каталог миграций alembic и сам alembic из venv. Библиотека —
+    не чужой клон проекта, и путать их нельзя.
+    """
+    dirs = []
+    for key in ("purelib", "platlib"):
+        raw = sysconfig.get_paths().get(key)
+        if not raw:
+            continue
+        try:
+            dirs.append(Path(raw).resolve())
+        except OSError:
+            continue
+    return tuple(dict.fromkeys(dirs))
+
+
+LIBRARY_DIRS = _library_dirs()
 
 
 def _own_tops(root: Path) -> dict[str, Path]:
@@ -46,12 +69,17 @@ def _own_tops(root: Path) -> dict[str, Path]:
     return tops
 
 
-def foreign_modules(root: Path | None = None, modules: dict | None = None) -> dict[str, str]:
+def foreign_modules(
+    root: Path | None = None,
+    modules: dict | None = None,
+    library_dirs: tuple[Path, ...] | None = None,
+) -> dict[str, str]:
     """Загруженные модули проекта, которые лежат не там, где должны.
 
     Ключ — имя модуля, значение — путь, откуда он на самом деле взят.
     """
     base = (root or PROJECT_ROOT).resolve()
+    libs = LIBRARY_DIRS if library_dirs is None else library_dirs
     tops = _own_tops(base)
     found: dict[str, str] = {}
     for name, module in list((modules if modules is not None else sys.modules).items()):
@@ -67,6 +95,8 @@ def foreign_modules(root: Path | None = None, modules: dict | None = None) -> di
         except OSError:
             continue
         if actual == expected or expected in actual.parents:
+            continue
+        if any(lib == actual or lib in actual.parents for lib in libs):
             continue
         found[name] = str(actual)
     return found
