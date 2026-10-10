@@ -27,6 +27,7 @@ SETTING_HINTS: Final[dict[str, str]] = {
     "HWID_RESET_BUTTON_ENABLE": "Кнопка сброса привязанных устройств",
     "ANDROID_TV_BUTTON_ENABLE": "Кнопка подключения Android TV",
     "COUPON_BUTTON_ENABLE": "Кнопка активации купона в профиле",
+    "WEB_CABINET_BUTTON_ENABLE": "Кнопка перехода в веб-кабинет в профиле",
     "RENEW_ENABLED": "Автопродление подписок с баланса при истечении",
     "EXPIRY_24H_ENABLED": "Первое напоминание об истечении подписки",
     "EXPIRY_10H_ENABLED": "Второе напоминание ближе к истечению",
