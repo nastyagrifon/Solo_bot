@@ -256,9 +256,16 @@ _CABINET_TABS = {"profile", "keys", "instructions", "referrals", "partners", "gi
 async def handle_cabinet_tab_link(message, tab):
     if tab not in _CABINET_TABS:
         return False
-    from core.settings.web_config import get_site_url, is_web_enabled, is_web_open_in_browser
+    from core.settings.web_config import (
+        get_site_url,
+        is_web_cabinet_button_visible,
+        is_web_enabled,
+        is_web_open_in_browser,
+    )
 
     if not is_web_enabled():
+        return False
+    if not is_web_cabinet_button_visible(getattr(message.chat, "id", None)):
         return False
     site_url = get_site_url()
     if not site_url:
