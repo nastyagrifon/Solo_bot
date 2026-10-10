@@ -268,9 +268,14 @@ async def invalidate_remnawave_profile(
 
 async def fetch_all_remnawave_traffic(
     session: AsyncSession,
-    needed_uuids: set[str] | None = None,
+    needed_ids: set[str] | None = None,
 ) -> dict[str, int]:
-    """Bulk-запрос: возвращает {uuid: usedTrafficBytes} для всех (или нужных) юзеров Remnawave."""
+    """Bulk-запрос: возвращает {идентификатор: usedTrafficBytes} по юзерам Remnawave.
+
+    Значение кладётся под ДВА ключа — vlessUuid и username. keys.client_id в боте
+    и vlessUuid в панели совпадают не у всех (на нашем проде — лишь у половины), а username
+    панели равен keys.email у всех, поэтому вызывающий может искать по любому из них.
+    """
     servers = await get_servers(session)
     api_url = None
     for cluster in servers.values():
@@ -304,16 +309,20 @@ async def fetch_all_remnawave_traffic(
         return {}
 
     result: dict[str, int] = {}
+    matched = 0
     for user in all_users:
-        uuid = user.get("vlessUuid") or user.get("uuid")
-        if not uuid:
+        ids = [i for i in (user.get("vlessUuid") or user.get("uuid"), user.get("username")) if i]
+        if not ids:
             continue
-        if needed_uuids and uuid not in needed_uuids:
+        if needed_ids and not any(i in needed_ids for i in ids):
             continue
         traffic = user.get("userTraffic") or {}
-        result[uuid] = traffic.get("usedTrafficBytes", 0)
+        used = traffic.get("usedTrafficBytes", 0)
+        matched += 1
+        for i in ids:
+            result[i] = used
 
-    logger.info(f"[Bulk Traffic] Получено {len(result)} профилей трафика из {len(all_users)} юзеров Remnawave")
+    logger.info(f"[Bulk Traffic] Получено {matched} профилей трафика из {len(all_users)} юзеров Remnawave")
     return result
 
 

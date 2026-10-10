@@ -22,18 +22,18 @@ async def snapshot_all_key_traffic(session: AsyncSession) -> int:
     now_ms = int(time.time() * 1000)
     rows = (
         await session.execute(
-            select(Key.client_id).where(
+            select(Key.client_id, Key.email).where(
                 Key.expiry_time > now_ms,
                 Key.is_frozen.isnot(True),
                 Key.client_id.isnot(None),
             )
         )
     ).all()
-    active = [str(cid) for (cid,) in rows if cid]
+    active = [(str(cid), str(email) if email else None) for (cid, email) in rows if cid]
     if not active:
         return 0
 
-    needed = set(active)
+    needed = {cid for cid, _ in active} | {email for _, email in active if email}
     try:
         used_map = await asyncio.wait_for(fetch_all_remnawave_traffic(session, needed), timeout=_BULK_TIMEOUT_SEC)
     except (TimeoutError, Exception) as exc:
@@ -44,8 +44,10 @@ async def snapshot_all_key_traffic(session: AsyncSession) -> int:
 
     today = _dt.datetime.utcnow().date()
     count = 0
-    for cid in active:
+    for cid, email in active:
         used_bytes = used_map.get(cid)
+        if used_bytes is None and email:
+            used_bytes = used_map.get(email)
         if used_bytes is None:
             continue
         used_gb = round(int(used_bytes) / _GB, 3)
@@ -110,18 +112,18 @@ async def snapshot_all_key_traffic_hourly(session: AsyncSession) -> int:
     now_ms = int(time.time() * 1000)
     rows = (
         await session.execute(
-            select(Key.client_id).where(
+            select(Key.client_id, Key.email).where(
                 Key.expiry_time > now_ms,
                 Key.is_frozen.isnot(True),
                 Key.client_id.isnot(None),
             )
         )
     ).all()
-    active = [str(cid) for (cid,) in rows if cid]
+    active = [(str(cid), str(email) if email else None) for (cid, email) in rows if cid]
     if not active:
         return 0
 
-    needed = set(active)
+    needed = {cid for cid, _ in active} | {email for _, email in active if email}
     try:
         used_map = await asyncio.wait_for(fetch_all_remnawave_traffic(session, needed), timeout=_BULK_TIMEOUT_SEC)
     except (TimeoutError, Exception) as exc:
@@ -132,8 +134,10 @@ async def snapshot_all_key_traffic_hourly(session: AsyncSession) -> int:
 
     hour = _dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
     count = 0
-    for cid in active:
+    for cid, email in active:
         used_bytes = used_map.get(cid)
+        if used_bytes is None and email:
+            used_bytes = used_map.get(email)
         if used_bytes is None:
             continue
         used_gb = round(int(used_bytes) / _GB, 3)
