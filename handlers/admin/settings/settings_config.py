@@ -122,6 +122,8 @@ WEB_TITLES: Final[dict[str, str]] = {
     "SITE_URL": "URL сайта",
     "SITE_MODE": "Режим сайта",
     "WEB_OPEN_IN_BROWSER": "Открывать в браузере",
+    "WEB_CABINET_BUTTON_MODE": "Кнопка кабинета: режим (all/whitelist/blacklist)",
+    "WEB_CABINET_BUTTON_LIST": "Кнопка кабинета: список Telegram id",
     "WEB_NODE_STATUS_INTERVAL_MIN": "Статус серверов (мин)",
     "EMAIL_BINDING_ENABLED": "Привязка почты",
     "WEB_NOTIFY_PAYMENT_TITLE": "Уведомление об оплате — заголовок",
