@@ -10,6 +10,9 @@
 """
 
 import os
+import sys
+
+from pathlib import Path
 
 import aiohttp
 
@@ -19,6 +22,46 @@ from logger import logger
 
 
 _ready = False
+
+#: Корень процесса: каталог, в котором лежит это ядро.
+PROCESS_ROOT = str(Path(__file__).resolve().parent.parent)
+
+
+def _looks_like_bot_root(path: str) -> bool:
+    """Похож ли каталог на второй корень бота: рядом `bot.py` и пакет `api`."""
+    try:
+        base = Path(path).resolve()
+    except (OSError, ValueError):
+        return False
+    return (base / "bot.py").is_file() and (base / "api").is_dir()
+
+
+def guard_import_path(root: str = PROCESS_ROOT) -> list[str]:
+    """Держит корень процесса первым в `sys.path` и убирает чужие копии дерева.
+
+    Зачем: рядом со слотом живёт прежний дом бота с таким же деревом пакетов.
+    Модулю достаточно сделать `sys.path.insert(0, ...)` на него — и импорт
+    пойдёт из чужой копии, причём молча: поведение станет старым, а в журнале
+    не будет ни одной ошибки. Так 10.10.2026 процесс и утащил 87 модулей
+    пакета `api` из дома, из-за чего правки в `api/` на прод не доезжали.
+
+    Возвращает список убранных путей — пусто, когда всё в порядке.
+    """
+    root = str(Path(root).resolve())
+    ubrano = []
+    ostalos = []
+    for path in sys.path:
+        if path and path != root and _looks_like_bot_root(path):
+            ubrano.append(path)
+            continue
+        ostalos.append(path)
+    sys.path[:] = [root] + [p for p in ostalos if p != root]
+    if ubrano:
+        logger.warning(
+            "[Slots] В sys.path нашлась чужая копия дерева бота, убрана: %s. "
+            "Корень процесса: %s", ", ".join(ubrano), root,
+        )
+    return ubrano
 
 
 def mark_ready() -> None:

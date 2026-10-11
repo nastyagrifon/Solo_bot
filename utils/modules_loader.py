@@ -18,8 +18,13 @@ def _is_safe_module_name(name: str) -> bool:
 
 
 def load_modules_from_folder(folder: str = "modules") -> list[Router]:
+    from core.slots import guard_import_path
+
     routers = []
     base_path = Path(folder)
+    # Модуль может подсунуть процессу чужую копию дерева бота через
+    # sys.path.insert — проверяем до загрузки и после каждого модуля.
+    guard_import_path()
 
     for _finder, name, _ispkg in pkgutil.iter_modules([str(base_path)]):
         name = (name or "").strip()
@@ -43,6 +48,9 @@ def load_modules_from_folder(folder: str = "modules") -> list[Router]:
                 logger.warning(f"[Modules] В модуле {module_path} не найден router")
         except Exception as e:
             logger.error(f"[Modules] Ошибка при загрузке {module_path}: {e}")
+        finally:
+            if guard_import_path():
+                logger.warning(f"[Modules] Путь импорта правил модуль '{name}'")
     return routers
 
 
