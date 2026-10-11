@@ -19,6 +19,29 @@ async def scheduled_audit_drain() -> None:
         logger.error("[AuditDrain] Ошибка ночного drain: {}", error)
 
 
+async def scheduled_audit_drain_if_long() -> None:
+    """Разбирает очередь аудита, не дожидаясь полуночи, если она разрослась.
+
+    Раз в сутки мало: 11.10.2026 одна фоновая вкладка кабинета с протухшей
+    сессией нагнала 469 тысяч записей за день. Потолок очереди спасает Redis,
+    но ценой потери событий — лучше сливать их в базу по мере накопления.
+    Проверка дешёвая (один LLEN), слив идёт только при превышении порога.
+    """
+    from audit import AUDIT_REDIS_FLUSH_KEY, drain_audit_redis_to_db
+    from core.redis_cache import cache_llen
+    from settings.cache_config import AUDIT_DRAIN_LENGTH_THRESHOLD
+
+    try:
+        length = await cache_llen(AUDIT_REDIS_FLUSH_KEY)
+        if length < AUDIT_DRAIN_LENGTH_THRESHOLD:
+            return
+        logger.info("[AuditDrain] Очередь выросла до {}, разбираю не дожидаясь ночи", length)
+        drained = await drain_audit_redis_to_db(async_session_maker)
+        logger.info("[AuditDrain] Внеочередной drain завершён, записано событий: {}", drained)
+    except Exception as error:
+        logger.error("[AuditDrain] Ошибка внеочередного drain: {}", error)
+
+
 async def scheduled_stats_report() -> None:
     from handlers.admin.stats.stats_handler import send_daily_stats_report
 
@@ -304,6 +327,8 @@ async def log_db_pool_status() -> None:
 
 
 AUDIT_DRAIN_TRIGGER = CronTrigger(hour=0, minute=0, timezone="Europe/Moscow")
+#: Проверка длины очереди — раз в десять минут, сам слив только при превышении.
+AUDIT_DRAIN_BY_LENGTH_TRIGGER = IntervalTrigger(minutes=10)
 DAILY_STATS_REPORT_TRIGGER = CronTrigger(hour=0, minute=1, timezone="Europe/Moscow")
 MONTHLY_STATS_REPORT_TRIGGER = CronTrigger(day=1, hour=0, minute=10, timezone="Europe/Moscow")
 STALE_PAYMENTS_SWEEP_TRIGGER = CronTrigger(minute=0, timezone="Europe/Moscow")
