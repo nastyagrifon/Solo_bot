@@ -200,6 +200,18 @@ async def cache_rpush(key: str, *values: Any) -> int:
         return 0
 
 
+async def cache_llen(key: str) -> int:
+    """Длина списка. 0 — пусто, ключа нет или Redis недоступен."""
+    client = await _get_redis()
+    if client is None:
+        return 0
+    try:
+        return int(await client.llen(key))
+    except Exception as exc:
+        logger.warning(f"[Redis] llen({key}) не удался: {exc}")
+        return 0
+
+
 async def cache_expire(key: str, ttl_sec: int) -> bool:
     """Устанавливает TTL для ключа. Возвращает True при успехе."""
     client = await _get_redis()
