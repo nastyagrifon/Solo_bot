@@ -77,6 +77,18 @@ AUDIT_REDIS_USER_PREFIX = "audit:user:tg:"
 AUDIT_REDIS_IDENTITY_PREFIX = "audit:user:identity:"
 AUDIT_REDIS_USER_TTL_SEC = 25 * 3600
 AUDIT_REDIS_DRAIN_BATCH = 1000
+#: Потолок очереди аудита. Выше него записи отбрасываются: очередь живёт в той
+#: же базе Redis, что и FSM-состояния диалогов, а политика allkeys-lru вытесняет
+#: любые ключи — переполненный аудит способен оборвать клиенту покупку.
+#: 11.10.2026 одна фоновая вкладка кабинета с протухшей сессией нагнала
+#: 469 тысяч записей за сутки и заняла 159 МБ из 256.
+AUDIT_REDIS_MAX_LEN = 100_000
+#: Пути, для которых неудачная авторизация в аудит НЕ пишется: 401 на них —
+#: обычный неавторизованный заход, а не событие безопасности.
+AUDIT_SKIP_UNAUTHORIZED_PATHS = (
+    "/api/auth/me",
+    "/api/auth/summary",
+)
 
 BLOCKED_EVENTS_REDIS_KEY = "blocked:events"
 BLOCKED_DRAIN_BATCH = 500
