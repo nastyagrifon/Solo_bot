@@ -72,6 +72,20 @@ ACCOUNT_AVATAR = (
 )
 
 
+async def _tg_profile(session: AsyncSession, tg_id: int | None) -> tuple[str | None, str | None]:
+    """Имя и username клиента из таблицы `users` по его Telegram ID."""
+    if not tg_id:
+        return None, None
+    row = (
+        await session.execute(select(User.first_name, User.username).where(User.tg_id == tg_id))
+    ).first()
+    if row is None:
+        return None, None
+    first_name = (row[0] or "").strip() or None
+    username = (row[1] or "").strip().lstrip("@") or None
+    return first_name, username
+
+
 @router.get("/me", response_model=IdentityResponse)
 async def me(
     session: AsyncSession = Depends(get_session),
@@ -80,7 +94,13 @@ async def me(
     """Текущая идентичность по HttpOnly cookie `auth_token`."""
     data = IdentityResponse.model_validate(identity)
     data.role = await resolve_identity_role(session, identity)
-    data.display_name = ACCOUNT_LABEL
+    first_name, username = await _tg_profile(session, getattr(identity, "tg_id", None))
+    data.first_name = first_name
+    data.username = username
+    # Сайт берёт подпись как `display_name → username → «Аккаунт»`, поэтому
+    # кладём сюда настоящее имя клиента, а ACCOUNT_LABEL оставляем запасным:
+    # у клиента без Telegram имени нет вовсе.
+    data.display_name = first_name or username or ACCOUNT_LABEL
     data.avatar_url = ACCOUNT_AVATAR
     return data
 
