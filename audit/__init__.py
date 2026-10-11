@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 
 from collections.abc import Iterable
@@ -45,7 +46,9 @@ try:
         AUDIT_REDIS_FLUSH_KEY,
         AUDIT_REDIS_IDENTITY_PREFIX,
         AUDIT_REDIS_USER_PREFIX,
+        AUDIT_REDIS_MAX_LEN,
         AUDIT_REDIS_USER_TTL_SEC,
+        AUDIT_SKIP_UNAUTHORIZED_PATHS,
     )
 except ImportError:
     AUDIT_REDIS_BUFFER_ENABLED = False
@@ -54,6 +57,8 @@ except ImportError:
     AUDIT_REDIS_IDENTITY_PREFIX = "audit:user:identity:"
     AUDIT_REDIS_USER_TTL_SEC = 25 * 3600
     AUDIT_REDIS_DRAIN_BATCH = 1000
+    AUDIT_REDIS_MAX_LEN = 100_000
+    AUDIT_SKIP_UNAUTHORIZED_PATHS = ("/api/auth/me", "/api/auth/summary")
 
 
 _MAX_TEXT_LEN = 160
@@ -462,8 +467,40 @@ def _audit_record_for_redis(
     }
 
 
+#: Про переполнение очереди говорим раз в десять минут, а не на каждой записи.
+_AUDIT_OVERFLOW_QUIET_SEC = 600
+_audit_overflow_warned_at = 0.0
+
+
+async def _audit_queue_overflown() -> bool:
+    """Очередь переросла потолок — дальше не пишем, иначе выдавим чужие ключи.
+
+    Очередь делит базу Redis с FSM-состояниями диалогов, а политика
+    allkeys-lru вытесняет что угодно. Лучше потерять часть аудита, чем
+    оборвать клиенту покупку.
+    """
+    global _audit_overflow_warned_at
+    from core.redis_cache import cache_llen
+
+    length = await cache_llen(AUDIT_REDIS_FLUSH_KEY)
+    if length < AUDIT_REDIS_MAX_LEN:
+        return False
+    now = time.monotonic()
+    if now - _audit_overflow_warned_at >= _AUDIT_OVERFLOW_QUIET_SEC:
+        _audit_overflow_warned_at = now
+        logger.warning(
+            "[Audit] Очередь {} переросла потолок {}: сейчас {}. Новые события "
+            "отбрасываются, пока слив её не разберёт.",
+            AUDIT_REDIS_FLUSH_KEY, AUDIT_REDIS_MAX_LEN, length,
+        )
+    return True
+
+
 async def _push_audit_record_to_redis(record: dict[str, Any]) -> None:
     from core.redis_cache import cache_expire, cache_rpush
+
+    if await _audit_queue_overflown():
+        return
 
     n = await cache_rpush(AUDIT_REDIS_FLUSH_KEY, record)
     if n == 0:
@@ -523,6 +560,18 @@ async def record_api_access_event_to_redis(
     await _push_audit_record_to_redis(record)
 
 
+def _is_audit_noise(path: str, status_code: int) -> bool:
+    """Неудачная авторизация публичной ручки — не событие аудита, а обычный заход.
+
+    `/api/auth/me` страница кабинета дёргает при каждой загрузке, и у гостя он
+    всегда отвечает 401. 11.10.2026 одна фоновая вкладка с протухшей сессией
+    нагнала этим 469 тысяч записей за сутки.
+    """
+    if status_code not in (401, 403):
+        return False
+    return path in AUDIT_SKIP_UNAUTHORIZED_PATHS
+
+
 async def record_api_access_event_background(
     session_factory: Any,
     request: Request,
@@ -531,6 +580,8 @@ async def record_api_access_event_background(
     reason: str | None = None,
     status_code: int = 200,
 ) -> None:
+    if _is_audit_noise(request.url.path, status_code):
+        return
     context = ensure_api_context(request)
     path_or_handler = f"{request.method} {request.url.path}"
     if request.url.query:
