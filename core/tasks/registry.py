@@ -1,6 +1,7 @@
 from core.tasks.cron_tasks import (
     ABANDONED_CHECKOUT_TRIGGER,
     ANOMALY_CHECK_TRIGGER,
+    AUDIT_DRAIN_BY_LENGTH_TRIGGER,
     AUDIT_DRAIN_TRIGGER,
     AUTOCLOSE_TICKETS_TRIGGER,
     DAILY_STATS_REPORT_TRIGGER,
@@ -21,6 +22,7 @@ from core.tasks.cron_tasks import (
     log_db_pool_status,
     run_in_own_loop,
     scheduled_audit_drain,
+    scheduled_audit_drain_if_long,
     scheduled_monthly_stats_report,
     scheduled_stats_report,
     import_guard_job,
@@ -58,6 +60,7 @@ LOOP_TASKS = (
 # либо >0 — тогда все process_ok идут в processpool, либо 0 — все в event loop.
 CRON_TASKS = (
     ("audit_drain_midnight", scheduled_audit_drain, AUDIT_DRAIN_TRIGGER, True),
+    ("audit_drain_if_long", scheduled_audit_drain_if_long, AUDIT_DRAIN_BY_LENGTH_TRIGGER, True),
     ("daily_stats_report", scheduled_stats_report, DAILY_STATS_REPORT_TRIGGER, False),
     ("monthly_stats_report", scheduled_monthly_stats_report, MONTHLY_STATS_REPORT_TRIGGER, False),
     ("sweep_stale_payments", sweep_stale_payments_job, STALE_PAYMENTS_SWEEP_TRIGGER, True),
