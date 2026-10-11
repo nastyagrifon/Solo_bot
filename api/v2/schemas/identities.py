@@ -14,6 +14,8 @@ class IdentityResponse(BaseModel):
     tg_id: int | None
     display_name: str | None = Field(None, description="Подпись аккаунта в шапке сайта")
     avatar_url: str | None = Field(None, description="Картинка аккаунта в шапке сайта")
+    username: str | None = Field(None, description="Telegram username клиента, без @")
+    first_name: str | None = Field(None, description="Имя клиента из Telegram")
     is_admin: bool = False
     role: str = "user"
     email_verified: bool = False
