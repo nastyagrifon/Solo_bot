@@ -72,8 +72,13 @@ ACCOUNT_AVATAR = (
 )
 
 
-async def _tg_profile(session: AsyncSession, tg_id: int | None) -> tuple[str | None, str | None]:
-    """Имя и username клиента из таблицы `users` по его Telegram ID."""
+async def _client_tg_name(session: AsyncSession, tg_id: int | None) -> tuple[str | None, str | None]:
+    """Имя и username клиента из таблицы `users` по его Telegram ID.
+
+    ‼️ Имя `_tg_profile` в этом файле уже занято другой функцией (ниже,
+    возвращает dict по billing_user_id). Позднее определение перекрывает
+    раннее, и `/me` звала чужую — отсюда 500 на проде 11.10.2026.
+    """
     if not tg_id:
         return None, None
     row = (
@@ -94,7 +99,7 @@ async def me(
     """Текущая идентичность по HttpOnly cookie `auth_token`."""
     data = IdentityResponse.model_validate(identity)
     data.role = await resolve_identity_role(session, identity)
-    first_name, username = await _tg_profile(session, getattr(identity, "tg_id", None))
+    first_name, username = await _client_tg_name(session, getattr(identity, "tg_id", None))
     data.first_name = first_name
     data.username = username
     # Сайт берёт подпись как `display_name → username → «Аккаунт»`, поэтому
