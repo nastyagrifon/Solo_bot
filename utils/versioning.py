@@ -99,6 +99,45 @@ def _remote_note(cwd: str, branch: str, local_hash: str) -> str:
     return _remote_cache
 
 
+def _slot_info() -> str:
+    """Какой слот работает и на каком порту. Пусто, если установка не слотами.
+
+    Имя слота — последний сегмент каталога бота (`.../slots/b` → `b`),
+    порт — из окружения процесса (`SLOT_PORT`, его ставит slotctl). Нужно,
+    чтобы по панели сразу было видно, какая половина поднята: при откате
+    через `slotctl switch` версия меняется, а догадываться какой слот активен
+    по хэшу неудобно (Настя, 16.10.2026: «инфа верная но не информативная»).
+    """
+    порт = os.environ.get("SLOT_PORT") or ""
+    каталог = os.path.basename(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    if not порт and len(каталог) > 2:
+        return ""
+    куски = [f"слот {каталог}"] if len(каталог) <= 2 else []
+    if порт:
+        куски.append(f":{порт}")
+    return " ".join(куски)
+
+
+def _uptime() -> str:
+    """Сколько работает ЭТОТ процесс. Пусто, если прочитать не удалось.
+
+    По /proc/self: st_ctime каталога процесса — момент его создания. Нужно,
+    чтобы видеть, подхватил ли бот свежую правку: настройки и код читаются на
+    старте, и «поднят 3 минуты назад» отвечает на это сразу.
+    """
+    try:
+        секунд = int(time.time() - os.stat("/proc/self").st_ctime)
+    except OSError:
+        return ""
+    if секунд < 60:
+        return f"поднят {секунд} с назад"
+    if секунд < 3600:
+        return f"поднят {секунд // 60} мин назад"
+    if секунд < 86400:
+        return f"поднят {секунд // 3600} ч {секунд % 3600 // 60} мин назад"
+    return f"поднят {секунд // 86400} дн назад"
+
+
 def get_git_commit_number() -> str:
     """Git-часть строки версии для админки. Пусто, если репозитория рядом нет."""
     cwd = _repo_dir()
@@ -109,7 +148,11 @@ def get_git_commit_number() -> str:
     except Exception as exc:
         logger.warning("[Git] версия слота не прочиталась: {}", exc)
         return ""
-    return f'\n<a href="{REPO_URL}/commit/{full}">{short}</a> ({branch}){_remote_note(cwd, branch, full)}'
+    строки = [f'<a href="{REPO_URL}/commit/{full}">{short}</a> ({branch}){_remote_note(cwd, branch, full)}']
+    хвост = " · ".join(x for x in (_slot_info(), _uptime()) if x)
+    if хвост:
+        строки.append(хвост)
+    return "\n" + "\n".join(строки)
 
 
 def get_version(include_git_info: bool = True) -> str:
