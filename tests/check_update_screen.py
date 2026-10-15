@@ -92,6 +92,8 @@ LEAKS = ("ready=", "venv=", ":3101", ":3102", ".service", "inactive", "active ")
 leaked = [bad for bad in LEAKS if bad in text]
 check("внутренности не на экране", not leaked, leaked)
 check("дата слота на экране", "16.10 22:51" in text, text[:200])
+check("состояние открывает строку", "Работает" in text and "Свободен" in text, text[:260])
+check("работающая установка сверху", text.index("Работает") < text.index("Свободен"), "-")
 check("про простой не врём", "замолчит" not in text and "перезапустится" not in text, "-")
 ALLOWED = {"b", "/b", "blockquote", "/blockquote", "code", "/code", "i", "/i", "u", "/u", "tg-spoiler", "/tg-spoiler"}
 tags = set(re.findall(r"<([^>\s]+)[^>]*>", text))
@@ -165,5 +167,5 @@ check("отчёт над каталогом проекта", uh.REPORT_DIR != RO
 check("в команде адрес целевого слота", ".update_report.b" in script, script[-140:])
 
 print()
-print("ИТОГ: " + ("всё зелёное, проверок %d" % (41 - len(fails)) if not fails else "красных %d: %s" % (len(fails), fails)))
+print("ИТОГ: " + ("всё зелёное, проверок %d" % (43 - len(fails)) if not fails else "красных %d: %s" % (len(fails), fails)))
 sys.exit(1 if fails else 0)

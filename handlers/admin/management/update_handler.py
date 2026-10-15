@@ -223,34 +223,41 @@ def _build_kb(inactive: str) -> InlineKeyboardBuilder:
 
 
 def _screen_text(status: str, inactive: str) -> str:
+    """Экран обновления: сначала состояние, потом модель двух установок.
+
+    Строку открывает состояние, а не имя слота: админу важно «что работает»,
+    а буква — лишь адрес (Настя, 16.10.2026: прежний вид читался как дамп).
+    """
     rows = []
-    for slot in _slots(status):
-        parts = ["▶️ активный"] if slot["active"] else []
+    for slot in sorted(_slots(status), key=lambda x: not x["active"]):
+        parts = [f"слот {slot['name']}"]
         date = _slot_date(slot["name"])
         if date:
             parts.append(date)
         if slot["commit"]:
             parts.append(slot["commit"])
-        rows.append("%s: %s" % (slot["name"], " · ".join(parts)))
+        label = "▶️ Работает" if slot["active"] else "⏸ Свободен"
+        rows.append("%s: %s" % (label, " · ".join(parts)))
 
     blocks = []
     if rows:
-        blocks.append(section("🧩 Слоты", *rows))
+        blocks.append(section("Установки бота", *rows))
     else:
-        blocks.append(note("🧩 Слоты", html.escape(status or "slotctl молчит")))
+        blocks.append(note("Установки бота", html.escape(status or "slotctl молчит")))
 
     if inactive:
         blocks.append(
             note(
-                "📋 Как это работает",
-                f"Новое ставим в слот {inactive} — активный слот всё это время работает.",
-                "Переключение переводит трафик, когда новый слот уже поднят и готов, "
-                "поэтому клиенты его не замечают. Не поднялся — остаёмся на текущем.",
-                "«Откатить» возвращает прежний слот тем же переключением.",
+                "Как обновляемся",
+                "Бот держит две установки и работает на одной. Новую версию "
+                f"ставим в свободную — слот {inactive}, — и только потом переводим "
+                "на неё трафик.",
+                "Рабочая установка при этом не трогается: простоя нет, а откат — "
+                "это просто переключение назад.",
             )
         )
     else:
-        blocks.append(note("📋 Как это работает", "Слоты не найдены: обновление только руками, slotctl на сервере."))
+        blocks.append(note("Как обновляемся", "Слоты не найдены: обновление только руками, slotctl на сервере."))
     return menu_text("Обновление", *blocks)
 
 
