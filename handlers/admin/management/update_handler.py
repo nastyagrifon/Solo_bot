@@ -10,6 +10,7 @@
 
 import asyncio
 import html
+import re
 import os
 import shlex
 import shutil
@@ -35,8 +36,16 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 INSTALL_REF = "dev"
 
 #: Отчёт лежит НАД каталогом проекта: переключение меняет активный слот, и
-#: читать отчёт будет уже другой экземпляр бота из другого каталога.
-REPORT_FILE = os.path.join(os.path.dirname(PROJECT_DIR), ".update_report")
+#: читать отчёт будет уже другой экземпляр бота из другого каталога. В имя
+#: входит слот-получатель: старый слот живёт до последней секунды и его
+#: сторож успевает прочитать отчёт первым, а потом гаснет вместе с процессом
+#: — сообщение так не уходит никому (поймано живой проверкой 16.10.2026).
+REPORT_DIR = os.path.dirname(PROJECT_DIR)
+OWN_SLOT = os.path.basename(PROJECT_DIR)
+
+
+def _report_file(slot: str) -> str:
+    return os.path.join(REPORT_DIR, f".update_report.{slot}")
 
 #: Установка тянет ref и зависимости. Переключение ждёт /slot/ready.
 INSTALL_TIMEOUT = 900.0
@@ -82,19 +91,19 @@ def _run_slotctl(args: list[str], timeout: float) -> tuple[int, str]:
     return done.returncode, (done.stdout or b"").decode(errors="replace").strip()
 
 
-def _launch_detached(args: list[str], admin_id: int) -> None:
+def _launch_detached(args: list[str], admin_id: int, target: str) -> None:
     """Запуск, переживающий смерть бота, с отчётом в файл.
 
     Про телеграм slotctl не знает, поэтому отчёт пишем сами: сначала в .tmp,
     потом mv — иначе сторож прочитает недописанный файл.
     """
     quoted = " ".join(shlex.quote(part) for part in _slotctl(args))
-    target = shlex.quote(REPORT_FILE)
+    path = shlex.quote(_report_file(target))
     script = (
         'out=$(%s 2>&1); rc=$?; '
         '{ [ "$rc" = 0 ] && echo "ok %d" || echo "fail %d"; echo "$out"; } > %s.tmp; '
         'mv %s.tmp %s'
-    ) % (quoted, admin_id, admin_id, target, target, target)
+    ) % (quoted, admin_id, admin_id, path, path, path)
     command = ["sh", "-c", script]
 
     runner = shutil.which("systemd-run")
@@ -122,26 +131,64 @@ def _launch_detached(args: list[str], admin_id: int) -> None:
     )
 
 
-def _short_status(raw: str) -> list[str]:
-    """Строка slotctl status без venv-хэша и темы коммита."""
-    rows = []
+def _slots(raw: str) -> list[dict]:
+    """Слоты из вывода slotctl status: имя, активный ли, хэш коммита."""
+    slots: list[dict] = []
     for line in raw.splitlines():
-        parts = [part for part in line.split() if not part.startswith("venv=")]
+        parts = line.split()
         if not parts:
             continue
-        if parts[0] != "▶":
-            parts.insert(0, " ")
-        rows.append(" ".join(parts[:6]))
-    return rows
+        active = parts[0] == "▶"
+        if active:
+            parts = parts[1:]
+        if not parts or len(parts[0]) > 2:
+            continue
+        rest, commit = parts[1:], ""
+        for index, part in enumerate(rest):
+            if part.startswith("venv="):
+                commit = rest[index + 1] if index + 1 < len(rest) else ""
+                break
+        slots.append({"name": parts[0], "active": active, "commit": commit})
+    return slots
+
+
+#: Пояс, в котором даты читают люди: сервер в UTC, и ночной коммит по Москве
+#: выглядел вчерашним.
+HUMAN_TZ = "Europe/Moscow"
+
+
+def _slot_date(name: str) -> str:
+    """Дата коммита в слоте по Москве: «16.10 02:05». Пусто, если git молчит."""
+    path = os.path.join(os.path.dirname(PROJECT_DIR), name)
+    try:
+        done = subprocess.run(
+            ["git", "-C", path, "log", "-1", "--format=%cd", "--date=format-local:%d.%m %H:%M"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            env={**os.environ, "TZ": HUMAN_TZ},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (done.stdout or b"").decode(errors="replace").strip() if done.returncode == 0 else ""
 
 
 def _inactive_slot(raw: str) -> str:
-    """Имя неактивного слота: строка без маркера ▶."""
-    for line in raw.splitlines():
-        parts = line.split()
-        if parts and parts[0] != "▶" and len(parts[0]) == 1:
-            return parts[0]
+    """Имя неактивного слота."""
+    for slot in _slots(raw):
+        if not slot["active"]:
+            return slot["name"]
     return ""
+
+
+def _human_tail(out: str) -> str:
+    """Последняя строка вывода slotctl без метки времени, коротко."""
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    tail = re.sub(r"^\d\d:\d\d:\d\d\s+", "", lines[-1])
+    return tail[:90]
 
 
 def _build_kb(inactive: str) -> InlineKeyboardBuilder:
@@ -176,24 +223,41 @@ def _build_kb(inactive: str) -> InlineKeyboardBuilder:
 
 
 def _screen_text(status: str, inactive: str) -> str:
-    blocks = [f"Установлено: <b>{html.escape(_installed_version())}</b>"]
-    rows = _short_status(status)
+    """Экран обновления: сначала состояние, потом модель двух установок.
+
+    Строку открывает состояние, а не имя слота: админу важно «что работает»,
+    а буква — лишь адрес (Настя, 16.10.2026: прежний вид читался как дамп).
+    """
+    rows = []
+    for slot in sorted(_slots(status), key=lambda x: not x["active"]):
+        parts = [f"слот {slot['name']}"]
+        date = _slot_date(slot["name"])
+        if date:
+            parts.append(date)
+        if slot["commit"]:
+            parts.append(slot["commit"])
+        label = "▶️ Работает" if slot["active"] else "⏸ Свободен"
+        rows.append("%s: %s" % (label, " · ".join(parts)))
+
+    blocks = []
     if rows:
-        blocks.append(section("🧩 Слоты", *[html.escape(row) for row in rows]))
+        blocks.append(section("Установки бота", *rows))
     else:
-        blocks.append(note("🧩 Слоты", html.escape(status or "slotctl молчит")))
+        blocks.append(note("Установки бота", html.escape(status or "slotctl молчит")))
+
     if inactive:
         blocks.append(
             note(
-                "📋 Порядок",
-                f"Сначала «Поставить {INSTALL_REF}»: ref уедет в слот {inactive}, бот при этом работает.",
-                f"Потом «Переключить»: слот {inactive} поднимется, активный погаснет. "
-                "Не поднялся — slotctl гасит его сам, активный остаётся на месте.",
-                "«Откатить» возвращает прежний слот тем же переключением.",
+                "Как обновляемся",
+                "Бот держит две установки и работает на одной. Новую версию "
+                f"ставим в свободную — слот {inactive}, — и только потом переводим "
+                "на неё трафик.",
+                "Рабочая установка при этом не трогается: простоя нет, а откат — "
+                "это просто переключение назад.",
             )
         )
     else:
-        blocks.append(note("📋 Порядок", "Слоты не найдены: обновление только руками, slotctl на сервере."))
+        blocks.append(note("Как обновляемся", "Слоты не найдены: обновление только руками, slotctl на сервере."))
     return menu_text("Обновление", *blocks)
 
 
@@ -227,16 +291,25 @@ async def install_slot(callback: CallbackQuery) -> None:
     kb = InlineKeyboardBuilder()
     kb.row(build_admin_back_btn("update"))
     await callback.message.edit_text(
-        text=menu_text("Обновление", f"⏳ Ставлю <b>{INSTALL_REF}</b> в неактивный слот.", quote("Бот работает, клиентов это не задевает.")),
+        text=menu_text(
+            "Обновление",
+            f"⏳ Ставлю <b>{INSTALL_REF}</b> в неактивный слот.",
+            quote("Активный слот работает как обычно."),
+        ),
         reply_markup=kb.as_markup(),
     )
 
     code, out = await run_io(lambda: _run_slotctl(["install", INSTALL_REF], INSTALL_TIMEOUT))
     logger.info("[Update] slotctl install {} вернул {}", INSTALL_REF, code)
-    title = "✅ Поставлено" if code == 0 else f"❌ Установка не удалась (код {code})"
-    tail = "\n".join(out.splitlines()[-12:]) or "вывода нет"
+    if code == 0:
+        body = note("Готово", html.escape(_human_tail(out) or "слот обновлён"))
+        title = "✅ Поставлено"
+    else:
+        # При отказе показываем вывод целиком: причина только там.
+        body = note("Вывод slotctl", html.escape("\n".join(out.splitlines()[-12:]) or "вывода нет"))
+        title = f"❌ Установка не удалась (код {code})"
     await callback.message.edit_text(
-        text=menu_text("Обновление", title, note("Вывод slotctl", html.escape(tail))),
+        text=menu_text("Обновление", title, body),
         reply_markup=kb.as_markup(),
     )
 
@@ -257,14 +330,15 @@ def _confirm_kb(action: str) -> InlineKeyboardBuilder:
 )
 async def confirm_move(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
     rollback = callback_data.action == "update_rollback"
-    title = "↩️ Откатить на прежний слот?" if rollback else "🔀 Переключить на неактивный слот?"
+    title = "↩️ Откатить на прежний слот?" if rollback else "🔀 Переключить слот?"
     await callback.message.edit_text(
         text=menu_text(
             "Обновление",
             title,
             quote(
-                "Бот перезапустится: несколько секунд он не отвечает.",
-                "Отчёт придёт сюда же, когда поднимется.",
+                "Новый слот поднимется, трафик перейдёт на него, старый остановится. "
+                "Перевод идёт только после готовности нового слота.",
+                "Отчёт придёт сюда же.",
             ),
         ),
         reply_markup=_confirm_kb(f"{callback_data.action}_go").as_markup(),
@@ -285,39 +359,52 @@ async def move_slot(callback: CallbackQuery, callback_data: AdminPanelCallback) 
     await callback.message.edit_text(
         text=menu_text(
             "Обновление",
-            f"⏳ Выполняю slotctl {command}.",
-            quote("Бот сейчас перезапустится — это нормально.", "Когда поднимется, пришлю отчёт сюда же."),
+            "⏳ Откатываю слот." if command == "rollback" else "⏳ Переключаю слот.",
+            quote("Поднимаю слот, жду готовности, перевожу трафик.", "Отчёт пришлю сюда же."),
         ),
         reply_markup=kb.as_markup(),
     )
 
+    code, status = await run_io(lambda: _run_slotctl(["status"], STATUS_TIMEOUT))
+    target = _inactive_slot(status) if code == 0 else ""
+    if not target:
+        await callback.message.edit_text(
+            text=menu_text("Обновление", "❌ Не вижу, на какой слот переключаться", note("Вывод slotctl", html.escape(status or "пусто"))),
+            reply_markup=kb.as_markup(),
+        )
+        return
+
     try:
-        os.unlink(REPORT_FILE)
+        os.unlink(_report_file(target))
     except OSError:
         pass
 
-    logger.info("[Update] Отвязанный запуск slotctl {}", command)
-    spawn(_run_move(command, callback.from_user.id))
+    logger.info("[Update] Отвязанный запуск slotctl {} на слот {}", command, target)
+    spawn(_run_move(command, callback.from_user.id, target))
 
 
-async def _run_move(command: str, admin_id: int) -> None:
+async def _run_move(command: str, admin_id: int, target: str) -> None:
     await asyncio.sleep(1)
     try:
-        await run_io(lambda: _launch_detached([command], admin_id))
+        await run_io(lambda: _launch_detached([command], admin_id, target))
     except Exception as error:
         logger.error("[Update] Не удалось запустить slotctl {}: {}", command, error)
 
 
 def take_update_report() -> tuple[str, int, str] | None:
-    """Отчёт переключения: статус, кому доложить, вывод. Читается один раз."""
+    """Отчёт, адресованный ЭТОМУ слоту: статус, кому доложить, вывод.
+
+    Читается один раз. Чужой отчёт не трогаем: иначе уходящий слот съедает
+    доклад, предназначенный пришедшему.
+    """
     try:
-        with open(REPORT_FILE, encoding="utf-8") as fh:
+        with open(_report_file(OWN_SLOT), encoding="utf-8") as fh:
             head = fh.readline().split()
             body = fh.read().strip()
     except OSError:
         return None
     try:
-        os.unlink(REPORT_FILE)
+        os.unlink(_report_file(OWN_SLOT))
     except OSError:
         pass
     if len(head) != 2 or not head[1].isdigit():
@@ -327,9 +414,17 @@ def take_update_report() -> tuple[str, int, str] | None:
 
 
 def format_report(status: str, body: str) -> str:
-    title = "✅ Переключение прошло" if status == "ok" else "❌ Переключение не удалось"
-    tail = "\n".join(body.splitlines()[-12:]) or "вывода нет"
-    return menu_text("Обновление", title, note("Вывод slotctl", html.escape(tail)))
+    if status == "ok":
+        return menu_text(
+            "Обновление",
+            "✅ Переключение прошло",
+            note("Готово", html.escape(_human_tail(body) or "слот переключён")),
+        )
+    return menu_text(
+        "Обновление",
+        "❌ Переключение не удалось",
+        note("Вывод slotctl", html.escape("\n".join(body.splitlines()[-12:]) or "вывода нет")),
+    )
 
 
 async def report_update_result(bot) -> None:
