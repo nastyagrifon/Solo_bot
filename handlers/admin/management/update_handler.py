@@ -10,6 +10,7 @@
 
 import asyncio
 import html
+import re
 import os
 import shlex
 import shutil
@@ -122,26 +123,58 @@ def _launch_detached(args: list[str], admin_id: int) -> None:
     )
 
 
-def _short_status(raw: str) -> list[str]:
-    """Строка slotctl status без venv-хэша и темы коммита."""
-    rows = []
+def _slots(raw: str) -> list[dict]:
+    """Слоты из вывода slotctl status: имя, активный ли, хэш коммита."""
+    slots: list[dict] = []
     for line in raw.splitlines():
-        parts = [part for part in line.split() if not part.startswith("venv=")]
+        parts = line.split()
         if not parts:
             continue
-        if parts[0] != "▶":
-            parts.insert(0, " ")
-        rows.append(" ".join(parts[:6]))
-    return rows
+        active = parts[0] == "▶"
+        if active:
+            parts = parts[1:]
+        if not parts or len(parts[0]) > 2:
+            continue
+        rest, commit = parts[1:], ""
+        for index, part in enumerate(rest):
+            if part.startswith("venv="):
+                commit = rest[index + 1] if index + 1 < len(rest) else ""
+                break
+        slots.append({"name": parts[0], "active": active, "commit": commit})
+    return slots
+
+
+def _slot_date(name: str) -> str:
+    """Дата коммита, лежащего в слоте: «16.10 22:51». Пусто, если git молчит."""
+    path = os.path.join(os.path.dirname(PROJECT_DIR), name)
+    try:
+        done = subprocess.run(
+            ["git", "-C", path, "log", "-1", "--format=%cd", "--date=format:%d.%m %H:%M"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (done.stdout or b"").decode(errors="replace").strip() if done.returncode == 0 else ""
 
 
 def _inactive_slot(raw: str) -> str:
-    """Имя неактивного слота: строка без маркера ▶."""
-    for line in raw.splitlines():
-        parts = line.split()
-        if parts and parts[0] != "▶" and len(parts[0]) == 1:
-            return parts[0]
+    """Имя неактивного слота."""
+    for slot in _slots(raw):
+        if not slot["active"]:
+            return slot["name"]
     return ""
+
+
+def _human_tail(out: str) -> str:
+    """Последняя строка вывода slotctl без метки времени, коротко."""
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    tail = re.sub(r"^\d\d:\d\d:\d\d\s+", "", lines[-1])
+    return tail[:90]
 
 
 def _build_kb(inactive: str) -> InlineKeyboardBuilder:
@@ -176,24 +209,34 @@ def _build_kb(inactive: str) -> InlineKeyboardBuilder:
 
 
 def _screen_text(status: str, inactive: str) -> str:
-    blocks = [f"Установлено: <b>{html.escape(_installed_version())}</b>"]
-    rows = _short_status(status)
+    rows = []
+    for slot in _slots(status):
+        parts = ["▶️ активный"] if slot["active"] else []
+        date = _slot_date(slot["name"])
+        if date:
+            parts.append(date)
+        if slot["commit"]:
+            parts.append(slot["commit"])
+        rows.append("%s: %s" % (slot["name"], " · ".join(parts)))
+
+    blocks = []
     if rows:
-        blocks.append(section("🧩 Слоты", *[html.escape(row) for row in rows]))
+        blocks.append(section("🧩 Слоты", *rows))
     else:
         blocks.append(note("🧩 Слоты", html.escape(status or "slotctl молчит")))
+
     if inactive:
         blocks.append(
             note(
-                "📋 Порядок",
-                f"Сначала «Поставить {INSTALL_REF}»: ref уедет в слот {inactive}, бот при этом работает.",
-                f"Потом «Переключить»: слот {inactive} поднимется, активный погаснет. "
-                "Не поднялся — slotctl гасит его сам, активный остаётся на месте.",
+                "📋 Как это работает",
+                f"Новое ставим в слот {inactive} — активный слот всё это время работает.",
+                "Переключение переводит трафик, когда новый слот уже поднят и готов, "
+                "поэтому клиенты его не замечают. Не поднялся — остаёмся на текущем.",
                 "«Откатить» возвращает прежний слот тем же переключением.",
             )
         )
     else:
-        blocks.append(note("📋 Порядок", "Слоты не найдены: обновление только руками, slotctl на сервере."))
+        blocks.append(note("📋 Как это работает", "Слоты не найдены: обновление только руками, slotctl на сервере."))
     return menu_text("Обновление", *blocks)
 
 
@@ -227,16 +270,25 @@ async def install_slot(callback: CallbackQuery) -> None:
     kb = InlineKeyboardBuilder()
     kb.row(build_admin_back_btn("update"))
     await callback.message.edit_text(
-        text=menu_text("Обновление", f"⏳ Ставлю <b>{INSTALL_REF}</b> в неактивный слот.", quote("Бот работает, клиентов это не задевает.")),
+        text=menu_text(
+            "Обновление",
+            f"⏳ Ставлю <b>{INSTALL_REF}</b> в неактивный слот.",
+            quote("Активный слот работает как обычно."),
+        ),
         reply_markup=kb.as_markup(),
     )
 
     code, out = await run_io(lambda: _run_slotctl(["install", INSTALL_REF], INSTALL_TIMEOUT))
     logger.info("[Update] slotctl install {} вернул {}", INSTALL_REF, code)
-    title = "✅ Поставлено" if code == 0 else f"❌ Установка не удалась (код {code})"
-    tail = "\n".join(out.splitlines()[-12:]) or "вывода нет"
+    if code == 0:
+        body = note("Готово", html.escape(_human_tail(out) or "слот обновлён"))
+        title = "✅ Поставлено"
+    else:
+        # При отказе показываем вывод целиком: причина только там.
+        body = note("Вывод slotctl", html.escape("\n".join(out.splitlines()[-12:]) or "вывода нет"))
+        title = f"❌ Установка не удалась (код {code})"
     await callback.message.edit_text(
-        text=menu_text("Обновление", title, note("Вывод slotctl", html.escape(tail))),
+        text=menu_text("Обновление", title, body),
         reply_markup=kb.as_markup(),
     )
 
@@ -257,14 +309,15 @@ def _confirm_kb(action: str) -> InlineKeyboardBuilder:
 )
 async def confirm_move(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
     rollback = callback_data.action == "update_rollback"
-    title = "↩️ Откатить на прежний слот?" if rollback else "🔀 Переключить на неактивный слот?"
+    title = "↩️ Откатить на прежний слот?" if rollback else "🔀 Переключить слот?"
     await callback.message.edit_text(
         text=menu_text(
             "Обновление",
             title,
             quote(
-                "Бот перезапустится: несколько секунд он не отвечает.",
-                "Отчёт придёт сюда же, когда поднимется.",
+                "Новый слот поднимется, трафик перейдёт на него, старый остановится. "
+                "Перевод идёт только после готовности нового слота.",
+                "Отчёт придёт сюда же.",
             ),
         ),
         reply_markup=_confirm_kb(f"{callback_data.action}_go").as_markup(),
@@ -285,8 +338,8 @@ async def move_slot(callback: CallbackQuery, callback_data: AdminPanelCallback) 
     await callback.message.edit_text(
         text=menu_text(
             "Обновление",
-            f"⏳ Выполняю slotctl {command}.",
-            quote("Бот сейчас перезапустится — это нормально.", "Когда поднимется, пришлю отчёт сюда же."),
+            "⏳ Откатываю слот." if command == "rollback" else "⏳ Переключаю слот.",
+            quote("Поднимаю слот, жду готовности, перевожу трафик.", "Отчёт пришлю сюда же."),
         ),
         reply_markup=kb.as_markup(),
     )
@@ -327,9 +380,17 @@ def take_update_report() -> tuple[str, int, str] | None:
 
 
 def format_report(status: str, body: str) -> str:
-    title = "✅ Переключение прошло" if status == "ok" else "❌ Переключение не удалось"
-    tail = "\n".join(body.splitlines()[-12:]) or "вывода нет"
-    return menu_text("Обновление", title, note("Вывод slotctl", html.escape(tail)))
+    if status == "ok":
+        return menu_text(
+            "Обновление",
+            "✅ Переключение прошло",
+            note("Готово", html.escape(_human_tail(body) or "слот переключён")),
+        )
+    return menu_text(
+        "Обновление",
+        "❌ Переключение не удалось",
+        note("Вывод slotctl", html.escape("\n".join(body.splitlines()[-12:]) or "вывода нет")),
+    )
 
 
 async def report_update_result(bot) -> None:
