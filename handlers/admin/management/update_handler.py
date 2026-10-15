@@ -144,16 +144,22 @@ def _slots(raw: str) -> list[dict]:
     return slots
 
 
+#: Пояс, в котором даты читают люди: сервер в UTC, и ночной коммит по Москве
+#: выглядел вчерашним.
+HUMAN_TZ = "Europe/Moscow"
+
+
 def _slot_date(name: str) -> str:
-    """Дата коммита, лежащего в слоте: «16.10 22:51». Пусто, если git молчит."""
+    """Дата коммита в слоте по Москве: «16.10 02:05». Пусто, если git молчит."""
     path = os.path.join(os.path.dirname(PROJECT_DIR), name)
     try:
         done = subprocess.run(
-            ["git", "-C", path, "log", "-1", "--format=%cd", "--date=format:%d.%m %H:%M"],
+            ["git", "-C", path, "log", "-1", "--format=%cd", "--date=format-local:%d.%m %H:%M"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=10,
+            env={**os.environ, "TZ": HUMAN_TZ},
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
