@@ -68,22 +68,35 @@ def check(name, cond, got=""):
     print(("  ok  " if cond else " FAIL ") + name + ("" if cond else "  <- " + str(got)[:180]))
     if not cond: fails.append(name)
 
-rows = uh._short_status(STATUS)
-check("две строки статуса", len(rows) == 2, rows)
-check("venv выброшен", all("venv=" not in r for r in rows), rows)
-check("тема коммита выброшена", all("Merge" not in r for r in rows), rows)
-check("хэш активного на месте", "b4c662ff" in rows[0], rows[0])
-check("хэш неактивного на месте", "ef141303" in rows[1], rows[1])
-check("маркер активного", rows[0].startswith("▶"), rows[0])
+slots = uh._slots(STATUS)
+check("разобраны два слота", len(slots) == 2, slots)
+check("имена слотов", [x["name"] for x in slots] == ["a", "b"], slots)
+check("активный один и это a", [x["active"] for x in slots] == [True, False], slots)
+check("хэш активного", slots[0]["commit"] == "b4c662ff", slots[0])
+check("хэш неактивного", slots[1]["commit"] == "ef141303", slots[1])
 check("неактивный = b", uh._inactive_slot(STATUS) == "b", uh._inactive_slot(STATUS))
 check("пустой статус = нет слота", uh._inactive_slot("") == "", "-")
+check("мусорная строка не слот", uh._slots("bash: slotctl: command not found") == [], uh._slots("bash: slotctl: command not found"))
 
-uh._installed_version = lambda: "v6.0 / b4c662ff (dev)"
+tail = uh._human_tail("22:52:01 поднимаю слот\n22:52:42 ✔ активный слот b\n")
+check("хвост без метки времени", tail == "✔ активный слот b", tail)
+check("пустой вывод = пустой хвост", uh._human_tail("") == "", "-")
+
+uh._installed_version = lambda: "v6.0 · 16.10 22:51 · b4c662ff (dev)"
+uh._slot_date = lambda name: "16.10 22:51" if name == "a" else "15.10 19:04"
 text = uh._screen_text(STATUS, "b")
+
+# Внутренности на экран не лезут: админу они ничего не говорят, а экран
+# превращается в дамп (Настя, 16.10.2026: «нечитаемое машинное дерьмо»).
+LEAKS = ("ready=", "venv=", ":3101", ":3102", ".service", "inactive", "active ")
+leaked = [bad for bad in LEAKS if bad in text]
+check("внутренности не на экране", not leaked, leaked)
+check("дата слота на экране", "16.10 22:51" in text, text[:200])
+check("про простой не врём", "замолчит" not in text and "перезапустится" not in text, "-")
 ALLOWED = {"b", "/b", "blockquote", "/blockquote", "code", "/code", "i", "/i", "u", "/u", "tg-spoiler", "/tg-spoiler"}
 tags = set(re.findall(r"<([^>\s]+)[^>]*>", text))
 check("теги только разрешённые", tags <= ALLOWED, sorted(tags - ALLOWED))
-check("в тексте оба слота", "3101" in text and "3102" in text, text[:200])
+check("в тексте оба слота", "15.10 19:04" in text and "16.10 22:51" in text, text[:200])
 empty = uh._screen_text("", "")
 check("экран без слотов не падает", "slotctl" in empty, "-")
 # Угловые скобки в тексте Telegram читает как тег и отбрасывает сообщение
@@ -114,7 +127,10 @@ open(uh.REPORT_FILE, "w").write("fail 1\nне поднялся\n")
 st, who, body = uh.take_update_report()
 txt = uh.format_report(st, body)
 check("провал помечен", "не удалось" in txt, txt[:100])
-check("успех помечен", "прошло" in uh.format_report("ok", "ok"), "-")
+ok_txt = uh.format_report("ok", "22:52:01 поднимаю\n22:52:42 ✔ активный слот b\n")
+check("успех помечен", "прошло" in ok_txt, ok_txt[:100])
+check("успех без простыни вывода", "22:52:01" not in ok_txt, ok_txt[:160])
+check("провал показывает вывод", "не поднялся" in txt, txt[:160])
 tags = set(re.findall(r"<([^>\s]+)[^>]*>", txt))
 check("теги отчёта разрешены", tags <= ALLOWED, sorted(tags - ALLOWED))
 
@@ -137,5 +153,5 @@ check("id админа в отчёте", "4242" in script, script[:70])
 check("отчёт над каталогом проекта", os.path.dirname(uh.REPORT_FILE) != ROOT, uh.REPORT_FILE)
 
 print()
-print("ИТОГ: " + ("всё зелёное, проверок %d" % (30 - len(fails)) if not fails else "красных %d: %s" % (len(fails), fails)))
+print("ИТОГ: " + ("всё зелёное, проверок %d" % (37 - len(fails)) if not fails else "красных %d: %s" % (len(fails), fails)))
 sys.exit(1 if fails else 0)

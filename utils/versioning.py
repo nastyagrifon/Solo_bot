@@ -51,6 +51,14 @@ def _git(cwd: str, *args: str, timeout: int = 10) -> str:
     )
 
 
+def _commit_date(cwd: str) -> str:
+    """Дата коммита слота: «16.10 22:51». Пусто, если git не ответил."""
+    try:
+        return _git(cwd, "log", "-1", "--format=%cd", "--date=format:%d.%m %H:%M")
+    except Exception:
+        return ""
+
+
 def _local_info(cwd: str) -> tuple[str, str, str]:
     """Хэш, короткий хэш и ветка текущего слота."""
     full = _git(cwd, "rev-parse", "HEAD")
@@ -90,12 +98,9 @@ def _remote_note(cwd: str, branch: str, local_hash: str) -> str:
     if not remote_hash:
         _remote_cache = ""
     elif remote_hash == local_hash:
-        _remote_cache = " · актуально"
+        _remote_cache = " · свежая"
     else:
-        _remote_cache = (
-            f' · <a href="{REPO_URL}/commit/{remote_hash}">на origin новее</a>,'
-            " обновить: <code>slotctl install dev</code> → <code>slotctl switch</code>"
-        )
+        _remote_cache = f' · <a href="{REPO_URL}/commit/{remote_hash}">есть новее</a>'
     return _remote_cache
 
 
@@ -110,12 +115,10 @@ def _slot_info() -> str:
     """
     порт = os.environ.get("SLOT_PORT") or ""
     каталог = os.path.basename(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    if not порт and len(каталог) > 2:
+    if len(каталог) > 2:
         return ""
-    куски = [f"слот {каталог}"] if len(каталог) <= 2 else []
-    if порт:
-        куски.append(f":{порт}")
-    return " ".join(куски)
+    # Порт сюда не выводим: это внутренность, а не сведение для человека.
+    return f"слот {каталог}" if (порт or len(каталог) <= 2) else ""
 
 
 def _uptime() -> str:
@@ -148,11 +151,16 @@ def get_git_commit_number() -> str:
     except Exception as exc:
         logger.warning("[Git] версия слота не прочиталась: {}", exc)
         return ""
-    строки = [f'<a href="{REPO_URL}/commit/{full}">{short}</a> ({branch}){_remote_note(cwd, branch, full)}']
+    # Две строки: что стоит и где это крутится. Команды сюда не пишем -
+    # их делает кнопка «Обновить» (Настя, 16.10.2026: строка была простынёй).
+    голова = " · ".join(
+        x for x in (_commit_date(cwd), f'<a href="{REPO_URL}/commit/{full}">{short}</a> ({branch})') if x
+    )
+    строки = [голова + _remote_note(cwd, branch, full)]
     хвост = " · ".join(x for x in (_slot_info(), _uptime()) if x)
     if хвост:
         строки.append(хвост)
-    return "\n" + "\n".join(строки)
+    return " · " + "\n".join(строки)
 
 
 def get_version(include_git_info: bool = True) -> str:
