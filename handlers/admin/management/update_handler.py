@@ -1,12 +1,19 @@
+"""Обновление бота слотами.
+
+Путь вендора (cli_launcher.py) обезврежен: его установщик перезаписывал
+папку бота релизом из публичного репозитория и уносил наши правки, img/ и
+модули, а обещанный «автоматический откат» возвращал сток, а не нас.
+
+Здесь обновление идёт слотами: ref ставится в НЕАКТИВНЫЙ слот, переключение
+без простоя, откат — обратным переключением. 16.10.2026, решение Насти.
+"""
+
 import asyncio
-import json
+import html
 import os
-import re
+import shlex
 import shutil
 import subprocess
-import sys
-
-import aiohttp
 
 from aiogram import F
 from aiogram.types import CallbackQuery, InlineKeyboardButton
@@ -17,34 +24,30 @@ from filters.admin import HasPermission, IsAdminFilter
 from filters.permissions import PERM_MANAGEMENT
 from logger import logger
 
-from ..panel.headers import menu_text, quote, section
+from ..panel.headers import menu_text, note, quote, section
 from ..panel.keyboard import AdminPanelCallback, build_admin_back_btn
 from . import router
 
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-LAUNCHER = os.path.join(PROJECT_DIR, "cli_launcher.py")
-REPORT_FILE = os.path.join(PROJECT_DIR, ".update_report.json")
 
-#: Наш форк. У вендора своя история: его релиз, поставленный поверх, сносит
-#: наши фиксы, img/ и модули. 16.10.2026 — обезврежено по решению Насти.
-RELEASES_URL = "https://api.github.com/repos/nastyagrifon/Solo_bot/releases"
-TAGS_URL = "https://api.github.com/repos/nastyagrifon/Solo_bot/tags"
-MIN_MAJOR = 4
-TAGS_SHOWN = 8
+#: Что ставим в неактивный слот: ветка нашего форка, а не тег вендора.
+INSTALL_REF = "dev"
 
-FILE_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("img", "Картинки"),
-    ("buttons", "Кнопки"),
-    ("redis_cache", "Redis"),
-)
-FILE_KEYS = frozenset(key for key, _ in FILE_OPTIONS)
+#: Отчёт лежит НАД каталогом проекта: переключение меняет активный слот, и
+#: читать отчёт будет уже другой экземпляр бота из другого каталога.
+REPORT_FILE = os.path.join(os.path.dirname(PROJECT_DIR), ".update_report")
 
-_state: dict[int, dict] = {}
+#: Установка тянет ref и зависимости. Переключение ждёт /slot/ready.
+INSTALL_TIMEOUT = 900.0
+STATUS_TIMEOUT = 20.0
 
+#: Юнит для отвязанного запуска: переключение гасит бота вместе со всем его
+#: cgroup, поэтому команда должна жить в отдельном.
+SLOTCTL_UNIT = "solobot-slotctl"
 
-def _admin_state(admin_id: int) -> dict:
-    return _state.setdefault(admin_id, {"channel": "release", "tag": "", "overwrite": {}})
+REPORT_WAIT_SECONDS = 300
+REPORT_POLL_SECONDS = 5
 
 
 def _installed_version() -> str:
@@ -53,111 +56,154 @@ def _installed_version() -> str:
     return local_version(PROJECT_DIR) or "неизвестна"
 
 
-def parse_tag_version(tag: str) -> tuple[int, ...]:
-    """Кортеж чисел из тега для сортировки: v.5.1 → (5, 1)."""
-    parts: list[int] = []
-    for part in re.split(r"[.\s]+", tag.strip().lstrip("v.")):
-        try:
-            parts.append(int(part))
-        except ValueError:
-            break
-    return tuple(parts) if parts else (0,)
+def _slotctl(args: list[str]) -> list[str]:
+    """Команда slotctl. Бот обычно работает под root — тогда без sudo."""
+    binary = shutil.which("slotctl") or "/usr/local/bin/slotctl"
+    command = [binary, *args]
+    if os.geteuid() != 0:
+        command = ["sudo", "-n", *command]
+    return command
 
 
-async def fetch_tags() -> list[tuple[str, bool]]:
-    """Теги от старых к новым: (имя, это релиз). Пустой список — GitHub недоступен."""
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(TAGS_URL, params={"per_page": 50}) as response:
-            if response.status != 200:
-                return []
-            tags = await response.json()
-        release_names: set[str] = set()
-        async with session.get(RELEASES_URL) as response:
-            if response.status == 200:
-                release_names = {item.get("tag_name") for item in await response.json()}
-
-    names = [str(item.get("name") or "") for item in tags]
-    names = [name for name in names if name and parse_tag_version(name)[0] >= MIN_MAJOR]
-    names.sort(key=parse_tag_version)
-    return [(name, name in release_names) for name in names]
+def _run_slotctl(args: list[str], timeout: float) -> tuple[int, str]:
+    """Синхронный запуск. Возвращает код и слитый вывод."""
+    try:
+        done = subprocess.run(
+            _slotctl(args),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return 127, "slotctl не найден: установка не на слотах"
+    except subprocess.TimeoutExpired:
+        return 124, "не уложился в %d с" % int(timeout)
+    return done.returncode, (done.stdout or b"").decode(errors="replace").strip()
 
 
-def _build_kb(state: dict) -> InlineKeyboardBuilder:
-    builder = InlineKeyboardBuilder()
-    channel = state.get("channel", "release")
+def _launch_detached(args: list[str], admin_id: int) -> None:
+    """Запуск, переживающий смерть бота, с отчётом в файл.
 
-    builder.row(
-        InlineKeyboardButton(
-            text=f"{'🟢' if channel == 'release' else '⚪️'} Релиз",
-            callback_data=AdminPanelCallback(action="update_channel_release").pack(),
-        ),
-        InlineKeyboardButton(
-            text=f"{'🟡' if channel == 'beta' else '⚪️'} Бета",
-            callback_data=AdminPanelCallback(action="update_channel_beta").pack(),
-        ),
+    Про телеграм slotctl не знает, поэтому отчёт пишем сами: сначала в .tmp,
+    потом mv — иначе сторож прочитает недописанный файл.
+    """
+    quoted = " ".join(shlex.quote(part) for part in _slotctl(args))
+    target = shlex.quote(REPORT_FILE)
+    script = (
+        'out=$(%s 2>&1); rc=$?; '
+        '{ [ "$rc" = 0 ] && echo "ok %d" || echo "fail %d"; echo "$out"; } > %s.tmp; '
+        'mv %s.tmp %s'
+    ) % (quoted, admin_id, admin_id, target, target, target)
+    command = ["sh", "-c", script]
+
+    runner = shutil.which("systemd-run")
+    if runner:
+        prefix = [runner, "--unit", SLOTCTL_UNIT, "--collect", "--service-type=oneshot"]
+        if os.geteuid() != 0:
+            prefix = ["sudo", "-n", *prefix]
+        done = subprocess.run(
+            prefix + command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        if done.returncode == 0:
+            return
+        logger.warning("[Update] systemd-run не сработал: {}", (done.stderr or b"").decode(errors="replace").strip())
+
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
 
-    if channel == "release":
+
+def _short_status(raw: str) -> list[str]:
+    """Строка slotctl status без venv-хэша и темы коммита."""
+    rows = []
+    for line in raw.splitlines():
+        parts = [part for part in line.split() if not part.startswith("venv=")]
+        if not parts:
+            continue
+        if parts[0] != "▶":
+            parts.insert(0, " ")
+        rows.append(" ".join(parts[:6]))
+    return rows
+
+
+def _inactive_slot(raw: str) -> str:
+    """Имя неактивного слота: строка без маркера ▶."""
+    for line in raw.splitlines():
+        parts = line.split()
+        if parts and parts[0] != "▶" and len(parts[0]) == 1:
+            return parts[0]
+    return ""
+
+
+def _build_kb(inactive: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    if inactive:
         builder.row(
             InlineKeyboardButton(
-                text=f"🏷 Версия: {state.get('tag') or 'последняя'}",
-                callback_data=AdminPanelCallback(action="update_tags").pack(),
+                text=f"⬇️ Поставить {INSTALL_REF} в слот {inactive}",
+                callback_data=AdminPanelCallback(action="update_install").pack(),
             )
         )
-
-    overwrite = state.get("overwrite") or {}
-    for key, title in FILE_OPTIONS:
         builder.row(
             InlineKeyboardButton(
-                text=f"{'♻️' if overwrite.get(key) else '🔒'} {title}",
-                callback_data=AdminPanelCallback(action=f"update_toggle_{key}").pack(),
+                text=f"🔀 Переключить на слот {inactive}",
+                callback_data=AdminPanelCallback(action="update_switch").pack(),
             )
         )
-
-    # Кнопки «Обновить» здесь больше нет. Она запускала cli_launcher.py -
-    # установщик вендора, который ПЕРЕЗАПИСЫВАЕТ папку бота релизом из
-    # публичного репозитория. На форке это означает потерю наших правок, img/
-    # и модулей, а обещанный «автоматический откат» возвращает сток, а не нас.
-    # Обновляемся слотами: ставим ref в неактивный слот и переключаемся без
-    # простоя, откат - обратным переключением. 16.10.2026, решение Насти.
+        builder.row(
+            InlineKeyboardButton(
+                text="↩️ Откатить",
+                callback_data=AdminPanelCallback(action="update_rollback").pack(),
+            )
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Обновить статус",
+            callback_data=AdminPanelCallback(action="update").pack(),
+        )
+    )
     builder.row(build_admin_back_btn("management"))
     return builder
 
 
-def _screen_text(state: dict, markup=None) -> str:
-    channel = state.get("channel", "release")
-    overwrite = state.get("overwrite") or {}
-
-    lines = [f"Канал: {'релиз' if channel == 'release' else 'бета'}"]
-    if channel == "release":
-        lines.append(f"Версия: {state.get('tag') or 'последняя'}")
-    for key, title in FILE_OPTIONS:
-        lines.append(f"{title}: {'♻️ перезапишем' if overwrite.get(key) else '🔒 сохраним'}")
-
-    return menu_text(
-        "Обновление",
-        f"Установлено: <b>{_installed_version()}</b>",
-        section("⚙️ Что ставим", *lines),
-        section(
-            "⚠️ Обновление — слотами, не отсюда",
-            "ставим версию в НЕАКТИВНЫЙ слот: slotctl install dev",
-            "переключаемся без простоя: slotctl switch",
-            "откат — тем же slotctl switch обратно",
-            "перед выкладкой — дамп базы: pg_dump -Fc -d имя_базы",
-        ),
-        section(
-            "🚫 Чего здесь нет",
-            "кнопки обновления: установщик перезаписывал папку бота",
-            "и уносил наши правки, картинки и модули",
-        ),
-    )
+def _screen_text(status: str, inactive: str) -> str:
+    blocks = [f"Установлено: <b>{html.escape(_installed_version())}</b>"]
+    rows = _short_status(status)
+    if rows:
+        blocks.append(section("🧩 Слоты", *[html.escape(row) for row in rows]))
+    else:
+        blocks.append(note("🧩 Слоты", html.escape(status or "slotctl молчит")))
+    if inactive:
+        blocks.append(
+            note(
+                "📋 Порядок",
+                f"Сначала «Поставить {INSTALL_REF}»: ref уедет в слот {inactive}, бот при этом работает.",
+                f"Потом «Переключить»: слот {inactive} поднимется, активный погаснет. "
+                "Не поднялся — slotctl гасит его сам, активный остаётся на месте.",
+                "«Откатить» возвращает прежний слот тем же переключением.",
+            )
+        )
+    else:
+        blocks.append(note("📋 Порядок", "Слоты не найдены: обновление только руками, slotctl на сервере."))
+    return menu_text("Обновление", *blocks)
 
 
 async def _render(callback: CallbackQuery) -> None:
-    state = _admin_state(callback.from_user.id)
-    markup = _build_kb(state).as_markup()
-    await callback.message.edit_text(text=_screen_text(state, markup), reply_markup=markup)
+    code, status = await run_io(lambda: _run_slotctl(["status"], STATUS_TIMEOUT))
+    if code != 0:
+        logger.warning("[Update] slotctl status вернул {}: {}", code, status)
+    inactive = _inactive_slot(status) if code == 0 else ""
+    markup = _build_kb(inactive).as_markup()
+    await callback.message.edit_text(text=_screen_text(status, inactive), reply_markup=markup)
     await callback.answer()
 
 
@@ -171,218 +217,126 @@ async def open_update(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(
-    AdminPanelCallback.filter(F.action.in_({"update_channel_release", "update_channel_beta"})),
-    HasPermission(PERM_MANAGEMENT),
-)
-async def switch_channel(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    state = _admin_state(callback.from_user.id)
-    state["channel"] = "beta" if callback_data.action.endswith("beta") else "release"
-    await _render(callback)
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action == "update_tags"), HasPermission(PERM_MANAGEMENT))
-async def choose_tag(callback: CallbackQuery) -> None:
-    try:
-        tags = await fetch_tags()
-    except Exception as error:
-        logger.error("[Update] Не удалось получить список версий: {}", error)
-        tags = []
-
-    if not tags:
-        await callback.answer("GitHub недоступен, список версий не получен", show_alert=True)
-        return
-
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text="🆕 Последняя доступная",
-            callback_data=AdminPanelCallback(action="update_tag|").pack(),
-        )
-    )
-    for name, is_release in reversed(tags[-TAGS_SHOWN:]):
-        builder.row(
-            InlineKeyboardButton(
-                text=f"{'🟢' if is_release else '🩹'} {name}",
-                callback_data=AdminPanelCallback(action=f"update_tag|{name}").pack(),
-            )
-        )
-    builder.row(build_admin_back_btn("update"))
-
-    markup = builder.as_markup()
-    await callback.message.edit_text(
-        text=menu_text("Версии", f"Установлено: <b>{_installed_version()}</b>", quote("🟢 — релиз, 🩹 — патч.")),
-        reply_markup=markup,
-    )
-    await callback.answer()
-
-
-@router.callback_query(AdminPanelCallback.filter(F.action.startswith("update_tag|")), HasPermission(PERM_MANAGEMENT))
-async def set_tag(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    state = _admin_state(callback.from_user.id)
-    state["tag"] = callback_data.action.split("|", 1)[1]
-    await _render(callback)
-
-
-@router.callback_query(
-    AdminPanelCallback.filter(F.action.startswith("update_toggle_")),
-    HasPermission(PERM_MANAGEMENT),
-)
-async def toggle_file(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
-    key = callback_data.action.removeprefix("update_toggle_")
-    if key not in FILE_KEYS:
-        await callback.answer("Неизвестный пункт", show_alert=True)
-        return
-    overwrite = _admin_state(callback.from_user.id).setdefault("overwrite", {})
-    overwrite[key] = not overwrite.get(key, False)
-    await _render(callback)
-
-
-def build_update_command(state: dict, notify: int) -> list[str]:
-    """Аргументы неинтерактивного запуска CLI: канал, версия и что разрешено перезаписать."""
-    command = [sys.executable, LAUNCHER, "--update", state.get("channel", "release")]
-    tag = str(state.get("tag") or "").strip()
-    if tag and state.get("channel", "release") == "release":
-        command += ["--tag", tag]
-    for key, _title in FILE_OPTIONS:
-        if (state.get("overwrite") or {}).get(key):
-            command.append(f"--with-{key.replace('_', '-')}")
-    command += ["--notify", str(notify)]
-    return command
-
-
-UPDATE_UNIT = "solobot-update"
-
-
-def _systemd_command(command: list[str]) -> list[str] | None:
-    """Обновлятель в отдельном юните: systemd гасит весь cgroup службы вместе с ботом."""
-    runner = shutil.which("systemd-run")
-    if not runner:
-        return None
-    prefix = [
-        runner,
-        "--unit",
-        UPDATE_UNIT,
-        "--collect",
-        "--service-type=oneshot",
-        "--working-directory",
-        PROJECT_DIR,
-    ]
-    if os.geteuid() != 0:
-        prefix = ["sudo", "-n", *prefix]
-    return prefix + command
-
-
-def _launch_detached(command: list[str]) -> None:
-    unit_command = _systemd_command(command)
-    if unit_command is not None:
-        result = subprocess.run(
-            unit_command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            return
-        logger.warning("[Update] systemd-run не сработал: {}", result.stderr.decode(errors="replace").strip())
-
-    subprocess.Popen(
-        command,
-        cwd=PROJECT_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-
-@router.callback_query(
-    AdminPanelCallback.filter(F.action == "update_start"),
+    AdminPanelCallback.filter(F.action == "update_install"),
     HasPermission(PERM_MANAGEMENT),
     IsAdminFilter(),
 )
-async def start_update(callback: CallbackQuery) -> None:
-    # Обработчик оставлен, но ничего не запускает: кнопка убрана с экрана, а
-    # callback_data мог остаться в старом сообщении у админа - нажатие по нему
-    # прежде запускало установщик вендора. 16.10.2026.
-    await callback.answer(
-        "Обновление — через слоты: slotctl install dev, затем slotctl switch. "
-        "Установщик вендора перезаписывал папку бота и уносил наши правки.",
-        show_alert=True,
+async def install_slot(callback: CallbackQuery) -> None:
+    """slotctl install: долго, но бот жив — ждём прямо здесь."""
+    await callback.answer("Ставлю, это несколько минут")
+    kb = InlineKeyboardBuilder()
+    kb.row(build_admin_back_btn("update"))
+    await callback.message.edit_text(
+        text=menu_text("Обновление", f"⏳ Ставлю <b>{INSTALL_REF}</b> в неактивный слот.", quote("Бот работает, клиентов это не задевает.")),
+        reply_markup=kb.as_markup(),
     )
-    return
 
-    # Прежний путь сохранён ниже как справка, недостижим.
-    if not os.path.isfile(LAUNCHER):
-        await callback.answer("Установщик не найден рядом с ботом", show_alert=True)
-        return
+    code, out = await run_io(lambda: _run_slotctl(["install", INSTALL_REF], INSTALL_TIMEOUT))
+    logger.info("[Update] slotctl install {} вернул {}", INSTALL_REF, code)
+    title = "✅ Поставлено" if code == 0 else f"❌ Установка не удалась (код {code})"
+    tail = "\n".join(out.splitlines()[-12:]) or "вывода нет"
+    await callback.message.edit_text(
+        text=menu_text("Обновление", title, note("Вывод slotctl", html.escape(tail))),
+        reply_markup=kb.as_markup(),
+    )
 
-    state = _admin_state(callback.from_user.id)
+
+def _confirm_kb(action: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Да", callback_data=AdminPanelCallback(action=action).pack()),
+        InlineKeyboardButton(text="✖️ Отмена", callback_data=AdminPanelCallback(action="update").pack()),
+    )
+    return builder
+
+
+@router.callback_query(
+    AdminPanelCallback.filter(F.action.in_({"update_switch", "update_rollback"})),
+    HasPermission(PERM_MANAGEMENT),
+    IsAdminFilter(),
+)
+async def confirm_move(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
+    rollback = callback_data.action == "update_rollback"
+    title = "↩️ Откатить на прежний слот?" if rollback else "🔀 Переключить на неактивный слот?"
+    await callback.message.edit_text(
+        text=menu_text(
+            "Обновление",
+            title,
+            quote(
+                "Бот перезапустится: несколько секунд он не отвечает.",
+                "Отчёт придёт сюда же, когда поднимется.",
+            ),
+        ),
+        reply_markup=_confirm_kb(f"{callback_data.action}_go").as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    AdminPanelCallback.filter(F.action.in_({"update_switch_go", "update_rollback_go"})),
+    HasPermission(PERM_MANAGEMENT),
+    IsAdminFilter(),
+)
+async def move_slot(callback: CallbackQuery, callback_data: AdminPanelCallback) -> None:
+    command = "rollback" if callback_data.action.startswith("update_rollback") else "switch"
+    await callback.answer()
+    kb = InlineKeyboardBuilder()
+    kb.row(build_admin_back_btn("management"))
+    await callback.message.edit_text(
+        text=menu_text(
+            "Обновление",
+            f"⏳ Выполняю slotctl {command}.",
+            quote("Бот сейчас перезапустится — это нормально.", "Когда поднимется, пришлю отчёт сюда же."),
+        ),
+        reply_markup=kb.as_markup(),
+    )
+
     try:
         os.unlink(REPORT_FILE)
     except OSError:
         pass
 
-    kb = InlineKeyboardBuilder()
-    kb.row(build_admin_back_btn("management"))
-    markup = kb.as_markup()
-    await callback.message.edit_text(
-        text=menu_text(
-            "Обновление",
-            "⏳ Обновление запущено.",
-            quote("Бот сейчас выключится — это нормально.\nКогда он поднимется, пришлю отчёт сюда же."),
-        ),
-        reply_markup=markup,
-    )
-    await callback.answer()
-
-    command = build_update_command(state, callback.from_user.id)
-    logger.info("[Update] Запуск обновления: {}", " ".join(command[2:]))
-    spawn(_run_update(command))
+    logger.info("[Update] Отвязанный запуск slotctl {}", command)
+    spawn(_run_move(command, callback.from_user.id))
 
 
-async def _run_update(command: list[str]) -> None:
+async def _run_move(command: str, admin_id: int) -> None:
     await asyncio.sleep(1)
     try:
-        await run_io(lambda: _launch_detached(command))
+        await run_io(lambda: _launch_detached([command], admin_id))
     except Exception as error:
-        logger.error("[Update] Не удалось запустить обновление: {}", error)
+        logger.error("[Update] Не удалось запустить slotctl {}: {}", command, error)
 
 
-def take_update_report() -> dict | None:
-    """Отчёт обновлятеля. Читается один раз — потом файл удаляется."""
+def take_update_report() -> tuple[str, int, str] | None:
+    """Отчёт переключения: статус, кому доложить, вывод. Читается один раз."""
     try:
         with open(REPORT_FILE, encoding="utf-8") as fh:
-            report = json.load(fh)
-    except (OSError, ValueError):
+            head = fh.readline().split()
+            body = fh.read().strip()
+    except OSError:
         return None
     try:
         os.unlink(REPORT_FILE)
     except OSError:
         pass
-    return report if isinstance(report, dict) else None
+    if len(head) != 2 or not head[1].isdigit():
+        logger.warning("[Update] Отчёт испорчен, пропускаю")
+        return None
+    return head[0], int(head[1]), body
 
 
-def format_report(report: dict) -> str:
-    status = str(report.get("status") or "")
-    detail = str(report.get("detail") or "")
-    channel = "бета" if report.get("channel") == "beta" else "релиз"
-    title = {
-        "ok": "✅ Обновление завершено",
-        "skipped": "⚠️ Обновление отменено",
-    }.get(status, "❌ Обновление не удалось")
-    return menu_text("Обновление", title, quote(f"Канал: {channel}\n{detail}"))
-
-
-REPORT_WAIT_SECONDS = 300
-REPORT_POLL_SECONDS = 5
+def format_report(status: str, body: str) -> str:
+    title = "✅ Переключение прошло" if status == "ok" else "❌ Переключение не удалось"
+    tail = "\n".join(body.splitlines()[-12:]) or "вывода нет"
+    return menu_text("Обновление", title, note("Вывод slotctl", html.escape(tail)))
 
 
 async def report_update_result(bot) -> None:
-    """Доклад админу после обновления.
+    """Доклад админу после переключения слота.
 
-    CLI дожидается старта бота и только потом пишет отчёт, поэтому на момент
-    запуска файла ещё нет — ждём его появления в фоне.
+    Команда работает в отдельном юните и пишет отчёт, уже когда новый слот
+    поднялся — на момент старта файла ещё нет, поэтому ждём его в фоне.
     """
     spawn(_watch_report(bot))
 
@@ -392,13 +346,11 @@ async def _watch_report(bot) -> None:
     while deadline > 0:
         report = take_update_report()
         if report is not None:
-            admin_id = int(report.get("notify") or 0)
-            if not admin_id:
-                return
+            status, admin_id, body = report
             try:
-                await bot.send_message(admin_id, format_report(report))
+                await bot.send_message(admin_id, format_report(status, body))
             except Exception as error:
-                logger.error("[Update] Не удалось отправить отчёт админу {}: {}", admin_id, error)
+                logger.error("[Update] Не удалось отправить отчёт: {}", error)
             return
         await asyncio.sleep(REPORT_POLL_SECONDS)
         deadline -= REPORT_POLL_SECONDS
