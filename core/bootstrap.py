@@ -86,3 +86,13 @@ async def bootstrap() -> None:
                     )
     except Exception as exc:
         logger.warning("[bootstrap] identity-session cleanup failed: {}", exc)
+
+    # Переключение слота убивает бота, поэтому отчёт о нём досылает уже новый
+    # экземпляр: сторож ждёт файл и пишет админу, который нажал кнопку.
+    try:
+        from bot import bot
+        from handlers.admin.management.update_handler import report_update_result
+
+        await report_update_result(bot)
+    except Exception as exc:
+        logger.warning("[bootstrap] доклад о переключении слота не запущен: {}", exc)
