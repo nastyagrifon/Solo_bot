@@ -3,9 +3,48 @@ from collections.abc import Iterable
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from database.tariffs import get_active_tariffs_by_group_code
+from logger import logger
 from services.payments.currency_rates import format_for_user
 from settings.buttons import BACK, CUSTOM_AMOUNT
 from settings.config import RENEWAL_PRICES
+
+#: Группа тарифов, цены которой предлагаются при пополнении баланса.
+TOPUP_TARIFF_GROUP = "basic"
+
+
+async def _topup_amounts(db_session) -> list[int]:
+    """Суммы кнопок пополнения: базовые цены тарифов, по возрастанию срока.
+
+    Берём `price_rub` активных тарифов группы `basic` - это цена за ОДНО
+    устройство (решение Насти 15.10.2026). До этого кнопки брались из
+    `RENEWAL_PRICES`, захардкоженного в settings/config.py: 100/285/540/1000.
+    Числа остались от старой сетки, и после подорожания 27.09.2026 клиент
+    видел 100 рублей там, где месяц стоит 229 - ни одна кнопка, кроме 1000,
+    не покрывала даже один период.
+
+    Тарифы конфигурируемые: за каждое устройство сверх первого цена растёт,
+    поэтому суммы здесь - минимальные, а не итоговые для клиента с тремя
+    устройствами.
+
+    При пустой группе или сбое базы возвращаем прежний список: без кнопок
+    пополнения клиент остаётся вообще без способа заплатить, и это хуже
+    неактуальных сумм.
+    """
+    try:
+        tariffs = await get_active_tariffs_by_group_code(db_session, TOPUP_TARIFF_GROUP)
+    except Exception as exc:
+        logger.warning(f"[Topup] Тарифы не прочитались, беру RENEWAL_PRICES: {exc}")
+        return [int(p) for p in RENEWAL_PRICES.values()]
+    amounts = [
+        int(t.price_rub)
+        for t in sorted(tariffs, key=lambda x: (x.duration_days or 0))
+        if t.price_rub and int(t.price_rub) > 0
+    ]
+    if not amounts:
+        logger.warning("[Topup] В группе %s нет платных тарифов, беру RENEWAL_PRICES" % TOPUP_TARIFF_GROUP)
+        return [int(p) for p in RENEWAL_PRICES.values()]
+    return amounts
 
 
 async def payment_options_for_user(
@@ -16,7 +55,7 @@ async def payment_options_for_user(
     force_currency: str | None = None,
 ) -> list[dict]:
     items = []
-    for price_rub in RENEWAL_PRICES.values():
+    for price_rub in await _topup_amounts(db_session):
         txt = await format_for_user(
             db_session,
             tg_id,
