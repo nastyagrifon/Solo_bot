@@ -36,8 +36,16 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 INSTALL_REF = "dev"
 
 #: Отчёт лежит НАД каталогом проекта: переключение меняет активный слот, и
-#: читать отчёт будет уже другой экземпляр бота из другого каталога.
-REPORT_FILE = os.path.join(os.path.dirname(PROJECT_DIR), ".update_report")
+#: читать отчёт будет уже другой экземпляр бота из другого каталога. В имя
+#: входит слот-получатель: старый слот живёт до последней секунды и его
+#: сторож успевает прочитать отчёт первым, а потом гаснет вместе с процессом
+#: — сообщение так не уходит никому (поймано живой проверкой 16.10.2026).
+REPORT_DIR = os.path.dirname(PROJECT_DIR)
+OWN_SLOT = os.path.basename(PROJECT_DIR)
+
+
+def _report_file(slot: str) -> str:
+    return os.path.join(REPORT_DIR, f".update_report.{slot}")
 
 #: Установка тянет ref и зависимости. Переключение ждёт /slot/ready.
 INSTALL_TIMEOUT = 900.0
@@ -83,19 +91,19 @@ def _run_slotctl(args: list[str], timeout: float) -> tuple[int, str]:
     return done.returncode, (done.stdout or b"").decode(errors="replace").strip()
 
 
-def _launch_detached(args: list[str], admin_id: int) -> None:
+def _launch_detached(args: list[str], admin_id: int, target: str) -> None:
     """Запуск, переживающий смерть бота, с отчётом в файл.
 
     Про телеграм slotctl не знает, поэтому отчёт пишем сами: сначала в .tmp,
     потом mv — иначе сторож прочитает недописанный файл.
     """
     quoted = " ".join(shlex.quote(part) for part in _slotctl(args))
-    target = shlex.quote(REPORT_FILE)
+    path = shlex.quote(_report_file(target))
     script = (
         'out=$(%s 2>&1); rc=$?; '
         '{ [ "$rc" = 0 ] && echo "ok %d" || echo "fail %d"; echo "$out"; } > %s.tmp; '
         'mv %s.tmp %s'
-    ) % (quoted, admin_id, admin_id, target, target, target)
+    ) % (quoted, admin_id, admin_id, path, path, path)
     command = ["sh", "-c", script]
 
     runner = shutil.which("systemd-run")
@@ -350,33 +358,46 @@ async def move_slot(callback: CallbackQuery, callback_data: AdminPanelCallback) 
         reply_markup=kb.as_markup(),
     )
 
+    code, status = await run_io(lambda: _run_slotctl(["status"], STATUS_TIMEOUT))
+    target = _inactive_slot(status) if code == 0 else ""
+    if not target:
+        await callback.message.edit_text(
+            text=menu_text("Обновление", "❌ Не вижу, на какой слот переключаться", note("Вывод slotctl", html.escape(status or "пусто"))),
+            reply_markup=kb.as_markup(),
+        )
+        return
+
     try:
-        os.unlink(REPORT_FILE)
+        os.unlink(_report_file(target))
     except OSError:
         pass
 
-    logger.info("[Update] Отвязанный запуск slotctl {}", command)
-    spawn(_run_move(command, callback.from_user.id))
+    logger.info("[Update] Отвязанный запуск slotctl {} на слот {}", command, target)
+    spawn(_run_move(command, callback.from_user.id, target))
 
 
-async def _run_move(command: str, admin_id: int) -> None:
+async def _run_move(command: str, admin_id: int, target: str) -> None:
     await asyncio.sleep(1)
     try:
-        await run_io(lambda: _launch_detached([command], admin_id))
+        await run_io(lambda: _launch_detached([command], admin_id, target))
     except Exception as error:
         logger.error("[Update] Не удалось запустить slotctl {}: {}", command, error)
 
 
 def take_update_report() -> tuple[str, int, str] | None:
-    """Отчёт переключения: статус, кому доложить, вывод. Читается один раз."""
+    """Отчёт, адресованный ЭТОМУ слоту: статус, кому доложить, вывод.
+
+    Читается один раз. Чужой отчёт не трогаем: иначе уходящий слот съедает
+    доклад, предназначенный пришедшему.
+    """
     try:
-        with open(REPORT_FILE, encoding="utf-8") as fh:
+        with open(_report_file(OWN_SLOT), encoding="utf-8") as fh:
             head = fh.readline().split()
             body = fh.read().strip()
     except OSError:
         return None
     try:
-        os.unlink(REPORT_FILE)
+        os.unlink(_report_file(OWN_SLOT))
     except OSError:
         pass
     if len(head) != 2 or not head[1].isdigit():

@@ -116,14 +116,25 @@ conf = [btn.callback_data for row in uh._confirm_kb("update_switch_go").export()
 check("подтверждение ведёт на _go", any("update_switch_go" in c for c in conf), conf)
 check("подтверждение даёт отмену", any(c.endswith("update:1") for c in conf), conf)
 
-uh.REPORT_FILE = "/tmp/slot_report"
-open(uh.REPORT_FILE, "w").write("ok 4242\nslot b up\nCaddy switched\n")
+uh.REPORT_DIR = "/tmp"
+uh.OWN_SLOT = "b"
+own, alien = uh._report_file("b"), uh._report_file("a")
+check("отчёты слотов — разные файлы", own != alien, (own, alien))
+
+open(own, "w").write("ok 4242\nslot b up\nCaddy switched\n")
 check("отчёт прочитан", uh.take_update_report() == ("ok", 4242, "slot b up\nCaddy switched"), "-")
-check("файл удалён после чтения", not os.path.exists(uh.REPORT_FILE), "-")
+check("файл удалён после чтения", not os.path.exists(own), "-")
 check("нет файла = None", uh.take_update_report() is None, "-")
-open(uh.REPORT_FILE, "w").write("garbage\n")
+
+# Уходящий слот не должен съедать доклад, адресованный пришедшему.
+open(alien, "w").write("ok 4242\nчужой отчёт\n")
+check("чужой отчёт не читается", uh.take_update_report() is None, "-")
+check("чужой отчёт не удалён", os.path.exists(alien), "-")
+os.unlink(alien)
+
+open(own, "w").write("garbage\n")
 check("битый отчёт = None", uh.take_update_report() is None, "-")
-open(uh.REPORT_FILE, "w").write("fail 1\nне поднялся\n")
+open(own, "w").write("fail 1\nне поднялся\n")
 st, who, body = uh.take_update_report()
 txt = uh.format_report(st, body)
 check("провал помечен", "не удалось" in txt, txt[:100])
@@ -143,15 +154,16 @@ uh.subprocess = types.SimpleNamespace(
     Popen=lambda cmd, **k: captured.setdefault("popen", cmd),
     DEVNULL=-3, PIPE=-1, STDOUT=-2, TimeoutExpired=Exception)
 uh.shutil = types.SimpleNamespace(which=lambda n: "/usr/bin/" + n)
-uh._launch_detached(["switch"], 4242)
+uh._launch_detached(["switch"], 4242, "b")
 cmd = captured.get("cmd", [])
 script = cmd[-1] if cmd else ""
 check("отдельный юнит", "--unit" in cmd and "--collect" in cmd, cmd[:6])
 check("в скрипте slotctl switch", "slotctl switch" in script, script[:160])
 check("отчёт пишется через mv", ".tmp" in script and "mv " in script, script[-120:])
 check("id админа в отчёте", "4242" in script, script[:70])
-check("отчёт над каталогом проекта", os.path.dirname(uh.REPORT_FILE) != ROOT, uh.REPORT_FILE)
+check("отчёт над каталогом проекта", uh.REPORT_DIR != ROOT, uh.REPORT_DIR)
+check("в команде адрес целевого слота", ".update_report.b" in script, script[-140:])
 
 print()
-print("ИТОГ: " + ("всё зелёное, проверок %d" % (37 - len(fails)) if not fails else "красных %d: %s" % (len(fails), fails)))
+print("ИТОГ: " + ("всё зелёное, проверок %d" % (41 - len(fails)) if not fails else "красных %d: %s" % (len(fails), fails)))
 sys.exit(1 if fails else 0)
