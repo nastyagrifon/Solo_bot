@@ -26,8 +26,10 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 LAUNCHER = os.path.join(PROJECT_DIR, "cli_launcher.py")
 REPORT_FILE = os.path.join(PROJECT_DIR, ".update_report.json")
 
-RELEASES_URL = "https://api.github.com/repos/Vladless/Solo_bot/releases"
-TAGS_URL = "https://api.github.com/repos/Vladless/Solo_bot/tags"
+#: Наш форк. У вендора своя история: его релиз, поставленный поверх, сносит
+#: наши фиксы, img/ и модули. 16.10.2026 — обезврежено по решению Насти.
+RELEASES_URL = "https://api.github.com/repos/nastyagrifon/Solo_bot/releases"
+TAGS_URL = "https://api.github.com/repos/nastyagrifon/Solo_bot/tags"
 MIN_MAJOR = 4
 TAGS_SHOWN = 8
 
@@ -113,12 +115,12 @@ def _build_kb(state: dict) -> InlineKeyboardBuilder:
             )
         )
 
-    builder.row(
-        InlineKeyboardButton(
-            text="⬇️ Обновить",
-            callback_data=AdminPanelCallback(action="update_start").pack(),
-        )
-    )
+    # Кнопки «Обновить» здесь больше нет. Она запускала cli_launcher.py -
+    # установщик вендора, который ПЕРЕЗАПИСЫВАЕТ папку бота релизом из
+    # публичного репозитория. На форке это означает потерю наших правок, img/
+    # и модулей, а обещанный «автоматический откат» возвращает сток, а не нас.
+    # Обновляемся слотами: ставим ref в неактивный слот и переключаемся без
+    # простоя, откат - обратным переключением. 16.10.2026, решение Насти.
     builder.row(build_admin_back_btn("management"))
     return builder
 
@@ -138,10 +140,16 @@ def _screen_text(state: dict, markup=None) -> str:
         f"Установлено: <b>{_installed_version()}</b>",
         section("⚙️ Что ставим", *lines),
         section(
-            "⚠️ Как это работает",
-            "папка бота перезаписывается версией из выбранного канала",
-            "перед этим создаётся бэкап, при сбое откат автоматический",
-            "бот выключится на время обновления и пришлёт отчёт после старта",
+            "⚠️ Обновление — слотами, не отсюда",
+            "ставим версию в НЕАКТИВНЫЙ слот: slotctl install dev",
+            "переключаемся без простоя: slotctl switch",
+            "откат — тем же slotctl switch обратно",
+            "дамп базы перед выкладкой: pg_dump -Fc -d <база>",
+        ),
+        section(
+            "🚫 Чего здесь нет",
+            "кнопки обновления: установщик перезаписывал папку бота",
+            "и уносил наши правки, картинки и модули",
         ),
     )
 
@@ -294,6 +302,17 @@ def _launch_detached(command: list[str]) -> None:
     IsAdminFilter(),
 )
 async def start_update(callback: CallbackQuery) -> None:
+    # Обработчик оставлен, но ничего не запускает: кнопка убрана с экрана, а
+    # callback_data мог остаться в старом сообщении у админа - нажатие по нему
+    # прежде запускало установщик вендора. 16.10.2026.
+    await callback.answer(
+        "Обновление — через слоты: slotctl install dev, затем slotctl switch. "
+        "Установщик вендора перезаписывал папку бота и уносил наши правки.",
+        show_alert=True,
+    )
+    return
+
+    # Прежний путь сохранён ниже как справка, недостижим.
     if not os.path.isfile(LAUNCHER):
         await callback.answer("Установщик не найден рядом с ботом", show_alert=True)
         return
