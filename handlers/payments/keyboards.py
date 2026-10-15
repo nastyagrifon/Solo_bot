@@ -12,6 +12,63 @@ from settings.config import RENEWAL_PRICES
 #: Группа тарифов, цены которой предлагаются при пополнении баланса.
 TOPUP_TARIFF_GROUP = "basic"
 
+#: Режим кнопок пополнения по умолчанию: "tariffs" - цены тарифов,
+#: "manual" - фиксированный список TOPUP_MANUAL_AMOUNTS.
+TOPUP_MODE_DEFAULT = "tariffs"
+
+#: Суммы режима "manual". Решение Максима 15.10.2026: 300/500/700.
+TOPUP_MANUAL_DEFAULT = (300, 500, 700)
+
+
+def _topup_mode() -> str:
+    """Режим кнопок: читаем из settings/config.py, если владелец его задал.
+
+    Через getattr, а не импортом: `settings/config.py` в .gitignore (там
+    секреты), и при установке в несколько слотов это обычно симлинк на один
+    общий файл. Значит константы в нём может не быть вовсе, а если есть -
+    правка применится сразу всем слотам. 15.10.2026.
+    """
+    try:
+        from settings import config as _cfg
+    except Exception:
+        return TOPUP_MODE_DEFAULT
+    mode = str(getattr(_cfg, "TOPUP_AMOUNTS_MODE", TOPUP_MODE_DEFAULT) or "").strip().lower()
+    return mode if mode in ("tariffs", "manual") else TOPUP_MODE_DEFAULT
+
+
+def _manual_amounts() -> list[int]:
+    """Суммы ручного режима из config.py, иначе дефолт 300/500/700."""
+    try:
+        from settings import config as _cfg
+        raw = getattr(_cfg, "TOPUP_MANUAL_AMOUNTS", None)
+    except Exception:
+        raw = None
+    if raw is None:
+        raw = TOPUP_MANUAL_DEFAULT
+    values = raw.values() if isinstance(raw, dict) else raw
+    amounts = [int(v) for v in values if int(v) > 0]
+    return amounts or [int(v) for v in TOPUP_MANUAL_DEFAULT]
+
+
+async def topup_min_amount(db_session, floor: int = 0) -> int:
+    """Нижняя граница своей суммы: не меньше самого дешёвого тарифа.
+
+    Раньше минимум задавала только касса (10-50 рублей), и клиент мог
+    пополнить на 50 рублей при цене месяца 229 - деньги зависали на балансе,
+    купить на них было нечего. Решение Насти 15.10.2026: жёсткий лимит не
+    ниже минимальной суммы тарифа.
+
+    `floor` - минимум кассы; берём большее из двух, чтобы не опуститься ниже
+    её собственного порога.
+    """
+    try:
+        tariffs = await get_active_tariffs_by_group_code(db_session, TOPUP_TARIFF_GROUP)
+        prices = [int(t.price_rub) for t in tariffs if t.price_rub and int(t.price_rub) > 0]
+    except Exception as exc:
+        logger.warning(f"[Topup] Минимум из тарифов не прочитался: {exc}")
+        prices = []
+    return max(int(floor or 0), min(prices) if prices else 0) or int(floor or 0)
+
 
 async def _topup_amounts(db_session) -> list[int]:
     """Суммы кнопок пополнения: базовые цены тарифов, по возрастанию срока.
@@ -31,6 +88,8 @@ async def _topup_amounts(db_session) -> list[int]:
     пополнения клиент остаётся вообще без способа заплатить, и это хуже
     неактуальных сумм.
     """
+    if _topup_mode() == "manual":
+        return _manual_amounts()
     try:
         tariffs = await get_active_tariffs_by_group_code(db_session, TOPUP_TARIFF_GROUP)
     except Exception as exc:
