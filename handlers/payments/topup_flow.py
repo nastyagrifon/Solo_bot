@@ -27,6 +27,7 @@ from handlers.payments.keyboards import (
     parse_amount_from_callback,
     pay_keyboard,
     payment_options_for_user,
+    topup_min_amount,
 )
 from handlers.utils import edit_or_send_message
 from logger import logger
@@ -269,7 +270,13 @@ def register_topup_flow(
             if user_amount <= 0:
                 raise ValueError
 
-            min_value = 1 if currency == "USD" else min_amount(method_name, method)
+            # Своя сумма не может быть ниже самого дешёвого тарифа: иначе
+            # деньги зависают на балансе, купить на них нечего (решение Насти
+            # 15.10.2026). Минимум кассы остаётся нижней границей для валюты.
+            if currency == "USD":
+                min_value = 1
+            else:
+                min_value = await topup_min_amount(session, min_amount(method_name, method))
             if user_amount < min_value:
                 symbol = "$" if currency == "USD" else "₽"
                 await edit_or_send_message(
