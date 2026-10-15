@@ -16,7 +16,7 @@ REPO_URL = "https://github.com/nastyagrifon/Solo_bot"
 REMOTE_TTL_SEC = 3600
 
 _remote_checked_at = 0.0
-_remote_note = ""
+_remote_cache = ""
 
 
 def _repo_dir() -> str | None:
@@ -73,10 +73,10 @@ def _local_info(cwd: str) -> tuple[str, str, str]:
 
 def _remote_note(cwd: str, branch: str, local_hash: str) -> str:
     """Отстали ли мы от origin. Результат помнится REMOTE_TTL_SEC."""
-    global _remote_checked_at, _remote_note
+    global _remote_checked_at, _remote_cache
     now = time.time()
     if now - _remote_checked_at < REMOTE_TTL_SEC:
-        return _remote_note
+        return _remote_cache
 
     _remote_checked_at = now
     try:
@@ -84,19 +84,19 @@ def _remote_note(cwd: str, branch: str, local_hash: str) -> str:
         remote_hash = line.split()[0] if line else ""
     except Exception as exc:
         logger.warning("[Git] origin не ответил: {}", exc)
-        _remote_note = ""
-        return _remote_note
+        _remote_cache = ""
+        return _remote_cache
 
     if not remote_hash:
-        _remote_note = ""
+        _remote_cache = ""
     elif remote_hash == local_hash:
-        _remote_note = " · актуально"
+        _remote_cache = " · актуально"
     else:
-        _remote_note = (
+        _remote_cache = (
             f' · <a href="{REPO_URL}/commit/{remote_hash}">на origin новее</a>,'
             " обновить: <code>slotctl install dev</code> → <code>slotctl switch</code>"
         )
-    return _remote_note
+    return _remote_cache
 
 
 def get_git_commit_number() -> str:
