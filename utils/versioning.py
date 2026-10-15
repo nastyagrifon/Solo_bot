@@ -37,24 +37,32 @@ def _repo_dir() -> str | None:
     return cwd if os.path.exists(os.path.join(cwd, ".git")) else None
 
 
-def _git(cwd: str, *args: str, timeout: int = 10) -> str:
+def _git(cwd: str, *args: str, timeout: int = 10, tz: str = "") -> str:
     """git в каталоге репозитория.
 
     Через `-C`, без GIT_DIR и GIT_WORK_TREE в окружении: при worktree эти
     переменные указывают не туда, где лежит рабочая копия слота, и ломают
     команды, которые сами по себе работают.
     """
+    env = {**os.environ, "TZ": tz} if tz else None
     return (
-        subprocess.check_output(["git", "-C", cwd, *args], stderr=subprocess.DEVNULL, timeout=timeout)
+        subprocess.check_output(
+            ["git", "-C", cwd, *args], stderr=subprocess.DEVNULL, timeout=timeout, env=env
+        )
         .decode()
         .strip()
     )
 
 
+#: Пояс, в котором даты читают люди. Сервер живёт в UTC, и коммит,
+#: сделанный ночью по Москве, выглядел «вчерашним».
+HUMAN_TZ = "Europe/Moscow"
+
+
 def _commit_date(cwd: str) -> str:
-    """Дата коммита слота: «16.10 22:51». Пусто, если git не ответил."""
+    """Дата коммита слота по Москве: «16.10 02:05». Пусто, если git не ответил."""
     try:
-        return _git(cwd, "log", "-1", "--format=%cd", "--date=format:%d.%m %H:%M")
+        return _git(cwd, "log", "-1", "--format=%cd", "--date=format-local:%d.%m %H:%M", tz=HUMAN_TZ)
     except Exception:
         return ""
 
