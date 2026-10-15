@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-REPO="Vladless/Solo_bot"
+# Наш форк: ставить надо его, а не апстрим — у вендора нет наших фиксов,
+# img/ и модулей. 16.10.2026.
+REPO="nastyagrifon/Solo_bot"
 BRANCH="main"
 INSTALL_DIR="/root/solobot"
 CLI="cli_launcher.py"
