@@ -144,7 +144,7 @@ def _screen_text(state: dict, markup=None) -> str:
             "ставим версию в НЕАКТИВНЫЙ слот: slotctl install dev",
             "переключаемся без простоя: slotctl switch",
             "откат — тем же slotctl switch обратно",
-            "дамп базы перед выкладкой: pg_dump -Fc -d <база>",
+            "перед выкладкой — дамп базы: pg_dump -Fc -d имя_базы",
         ),
         section(
             "🚫 Чего здесь нет",
