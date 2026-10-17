@@ -1183,13 +1183,39 @@ async def send_monthly_stats_report(session: AsyncSession):
     HasPermission(PERM_STATS),
 )
 async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) -> None:
-    """Сводка по кнопке: вызывать её словом в чат - костыль, слово к тому же
-    перехватывает обработчик неизвестных сообщений."""
+    """Сводка в тот чат, откуда позвали.
+
+    Кнопки с этим действием на экранах нет: зовут командой /send-now либо
+    внешним вызовом. Обработчик оставлен, чтобы действие можно было подвесить
+    на кнопку, когда понадобится.
+    """
     await callback.answer("Собираю сводку")
     await send_daily_stats_report(
         session,
         chat_id=callback.message.chat.id,
         thread_id=callback.message.message_thread_id,
+    )
+
+
+#: Telegram считает командой только `/[A-Za-z0-9_]+`, поэтому `/send-now`
+#: доходит как `/send` с аргументом `-now` - фильтром Command его не поймать.
+#: Ловим текст целиком и принимаем оба написания.
+_SEND_NOW_ALIASES = ("/send-now", "/send_now")
+
+
+@router.message(
+    F.text.func(lambda t: bool(t) and t.strip().split("@")[0].lower() in _SEND_NOW_ALIASES),
+    IsAdminFilter(),
+)
+async def send_daily_report_command(message: Message, session: AsyncSession) -> None:
+    """Скрытая команда: сводка приходит в тот же чат, где её позвали.
+
+    В списке команд бота её нет намеренно - это проверочный ход для админа.
+    """
+    await send_daily_stats_report(
+        session,
+        chat_id=message.chat.id,
+        thread_id=message.message_thread_id,
     )
 
 
