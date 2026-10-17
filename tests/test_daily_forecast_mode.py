@@ -1,7 +1,7 @@
-"""База прогноза в сводке за день: доход дня против среднего за 14 дней.
+"""Прогноз в сводке за день: выручка дня против скользящих окон.
 
 Логика лежит в ``handlers/admin/stats/forecast.py`` отдельно от обработчика,
-поэтому гоняется без aiogram и без базы.
+поэтому гоняется без aiogram и без базы. Разбор методик - в FORECAST.md.
 Запуск из корня проекта: ``venv/bin/python -m unittest discover -s tests -v``
 """
 
@@ -19,50 +19,69 @@ _SPEC = importlib.util.spec_from_file_location(
 _forecast = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_forecast)
 
-forecast_base = _forecast.forecast_base
+forecast = _forecast.forecast
 LABEL_DAY = _forecast.LABEL_DAY
-LABEL_AVG = _forecast.LABEL_AVG
+LABEL_ROLLING = _forecast.LABEL_ROLLING
 
-DAY = 13629.0        # доход аномального дня 15.10.2026
-AVG14 = 5194.0       # среднее по той же серии за 14 дней
+DAY = 100.0
+#: Ровный ряд в 30 дней: сумма недели 700, сумма месяца 3000 - считается в уме.
+FLAT = [100.0] * 30
 
 
-class ForecastBase(unittest.TestCase):
-    def test_flag_off_takes_day_revenue(self):
-        base, label = forecast_base(False, DAY, AVG14)
-        self.assertEqual(base, DAY)
+class LegacyMode(unittest.TestCase):
+    def test_takes_day_revenue(self):
+        week, month, label = forecast(False, DAY, FLAT)
+        self.assertEqual(week, 700.0)
+        self.assertEqual(month, 3000.0)
         self.assertEqual(label, LABEL_DAY)
 
-    def test_flag_on_takes_series_average(self):
-        base, label = forecast_base(True, DAY, AVG14)
-        self.assertEqual(base, AVG14)
-        self.assertEqual(label, LABEL_AVG)
+    def test_ignores_series(self):
+        """Режим по умолчанию смотрит только на день, ряд не влияет."""
+        week, month, _ = forecast(False, DAY, [1.0] * 30)
+        self.assertEqual((week, month), (700.0, 3000.0))
 
     def test_missing_flag_keeps_old_behaviour(self):
-        """Настройки нет - поведение существующих установок не меняется."""
         for value in (None, "", 0, [], {}):
             with self.subTest(value=value):
-                base, label = forecast_base(value, DAY, AVG14)
-                self.assertEqual(base, DAY)
-                self.assertEqual(label, LABEL_DAY)
+                week, month, label = forecast(value, DAY, FLAT)
+                self.assertEqual((week, month, label), (700.0, 3000.0, LABEL_DAY))
 
-    def test_truthy_values_enable_average(self):
-        for value in (1, "1", "yes", True):
-            with self.subTest(value=value):
-                base, _ = forecast_base(value, DAY, AVG14)
-                self.assertEqual(base, AVG14)
 
-    def test_month_forecast_difference(self):
-        """Ровно та разница, из-за которой режим и понадобился."""
-        legacy, _ = forecast_base(False, DAY, AVG14)
-        avg, _ = forecast_base(True, DAY, AVG14)
-        self.assertEqual(round(legacy * 30), 408870)
-        self.assertEqual(round(avg * 30), 155820)
-        self.assertEqual(round(legacy * 7), 95403)
-        self.assertEqual(round(avg * 7), 36358)
+class RollingMode(unittest.TestCase):
+    def test_windows_are_independent(self):
+        """Неделя по семи дням, месяц по тридцати - окна разной длины."""
+        series = [10.0] * 23 + [100.0] * 7      # последняя неделя богаче
+        week, month, label = forecast(True, 0.0, series)
+        self.assertEqual(week, 700.0)
+        self.assertEqual(month, 230.0 + 700.0)
+        self.assertEqual(label, LABEL_ROLLING)
 
+    def test_day_revenue_not_used(self):
+        """Аномальный день не сдвигает прогноз - в этом и смысл режима."""
+        week, month, _ = forecast(True, 99999.0, FLAT)
+        self.assertEqual((week, month), (700.0, 3000.0))
+
+    def test_short_history_scaled_not_truncated(self):
+        """Пять дней истории: месяц достраивается средним, а не обрезается."""
+        week, month, _ = forecast(True, 0.0, [100.0] * 5)
+        self.assertEqual(week, 700.0)
+        self.assertEqual(month, 3000.0)
+
+    def test_empty_series(self):
+        week, month, _ = forecast(True, 500.0, [])
+        self.assertEqual((week, month), (0.0, 0.0))
+
+    def test_longer_series_uses_only_windows(self):
+        """Ряд длиннее месяца: в расчёт идут только последние дни."""
+        series = [1.0] * 100 + [100.0] * 30
+        week, month, _ = forecast(True, 0.0, series)
+        self.assertEqual(week, 700.0)
+        self.assertEqual(month, 3000.0)
+
+
+class Labels(unittest.TestCase):
     def test_labels_differ(self):
-        self.assertNotEqual(LABEL_DAY, LABEL_AVG)
+        self.assertNotEqual(LABEL_DAY, LABEL_ROLLING)
 
 
 if __name__ == "__main__":
