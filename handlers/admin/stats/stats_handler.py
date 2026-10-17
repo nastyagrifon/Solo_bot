@@ -1146,6 +1146,18 @@ async def send_monthly_stats_report(session: AsyncSession):
         logger.error(f"[Stats] Ошибка при отправке месячного отчёта: {e}")
 
 
+@router.callback_query(
+    AdminPanelCallback.filter(F.action == "stats_daily_report"),
+    IsAdminFilter(),
+    HasPermission(PERM_STATS),
+)
+async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Сводка по кнопке: вызывать её словом в чат - костыль, слово к тому же
+    перехватывает обработчик неизвестных сообщений."""
+    await callback.answer("Собираю сводку")
+    await send_daily_stats_report(session)
+
+
 @router.message(F.text == "Сводка", IsAdminFilter())
 async def test_stats_command(message: Message, session: AsyncSession):
     await send_daily_stats_report(session)
