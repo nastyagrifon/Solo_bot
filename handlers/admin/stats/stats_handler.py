@@ -59,7 +59,7 @@ from utils.csv_export import (
     export_users_csv,
 )
 
-from .forecast import FORECAST_AVG_MODE, forecast_base
+from .forecast import FORECAST_AVG_MODE, MONTH_DAYS, forecast
 from ..panel.headers import align_screen, card, menu_text, menu_title, note, quote, section
 from ..panel.keyboard import AdminPanelCallback, build_admin_back_kb
 from .keyboard import (
@@ -1022,7 +1022,13 @@ async def send_daily_stats_report(
         active_total = await count_active_keys(session)
         total_users = await count_total_users(session)
 
-        labels, users_series, revenue_series = await _collect_daily_series(session, moscow_tz, report_date, 14)
+        labels, users_series, revenue_series = await _collect_daily_series(
+            session, moscow_tz, report_date, MONTH_DAYS
+        )
+        # Прогноз месяца считается по всей серии, а график и блок «За 14 дней»
+        # остаются на двух неделях - поэтому полную серию запоминаем до обрезки.
+        month_series = list(revenue_series)
+        labels, users_series, revenue_series = labels[-14:], users_series[-14:], revenue_series[-14:]
         panels = [
             {"name": "Доход, руб/день", "color": (63, 185, 80), "values": revenue_series},
             {
@@ -1036,8 +1042,8 @@ async def send_daily_stats_report(
         n = len(revenue_series) or 1
         avg_users = round(sum(users_series) / n, 1)
         avg_revenue = sum(revenue_series) / n
-        forecast_value, forecast_label = forecast_base(
-            MODES_CONFIG.get(FORECAST_AVG_MODE, False), revenue, avg_revenue
+        forecast_week, forecast_month, forecast_label = forecast(
+            MODES_CONFIG.get(FORECAST_AVG_MODE, False), revenue, month_series
         )
         best_idx = max(range(len(revenue_series)), key=lambda i: revenue_series[i]) if revenue_series else 0
         best_label = labels[best_idx] if labels else "—"
@@ -1076,8 +1082,8 @@ async def send_daily_stats_report(
                 ),
                 section(
                     f"🔮 Прогноз ({forecast_label})",
-                    f"Неделя: {_fmt_num(forecast_value * 7)} ₽",
-                    f"Месяц: {_fmt_num(forecast_value * 30)} ₽",
+                    f"Неделя: {_fmt_num(forecast_week)} ₽",
+                    f"Месяц: {_fmt_num(forecast_month)} ₽",
                 ),
                 section("⏱ Собрано", f"{update_time} МСК"),
             ),
