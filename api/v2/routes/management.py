@@ -426,6 +426,8 @@ async def send_broadcast_schedule_now(
 
 @router.post("/stats/daily-report/send-now")
 async def send_daily_stats_report_now(
+    chat_id: int | None = Query(None, description="Куда отправить; по умолчанию админам в личку"),
+    thread_id: int | None = Query(None, description="Тема форума внутри чата"),
     identity=Depends(verify_identity_admin_short),
     session: AsyncSession = Depends(get_session),
 ):
@@ -438,7 +440,7 @@ async def send_daily_stats_report_now(
 
     await _admin_rate_limit(identity, "daily_report_now", max_calls=5, window_sec=300)
     try:
-        await send_daily_stats_report(session)
+        await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
     except Exception as exc:
         logger.error("[Stats] send-now failed: {}", exc)
         raise HTTPException(status_code=500, detail="Ошибка при отправке сводки") from exc

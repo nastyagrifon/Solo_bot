@@ -937,11 +937,38 @@ async def _collect_daily_series(session, moscow_tz, last_day: date, days: int):
     return labels, users, revenue
 
 
-async def _send_report_to_admins(session: AsyncSession, text: str, chart) -> None:
+async def _send_report_to_admins(
+    session: AsyncSession,
+    text: str,
+    chart,
+    chat_id: int | None = None,
+    thread_id: int | None = None,
+) -> None:
+    """Отчёт админам в личку, либо в один заданный чат.
+
+    Адресат нужен, чтобы сводку можно было позвать в тот чат, откуда её
+    попросили: иначе проверить формат негде - в личку бот пишет только тем,
+    кто сам начинал с ним разговор.
+    """
     from database.models import Admin
 
-    moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
     photo_bytes = chart.getvalue() if chart is not None else None
+    if chat_id is not None:
+        try:
+            if photo_bytes is not None:
+                await bot.send_photo(
+                    chat_id,
+                    photo=BufferedInputFile(photo_bytes, filename="stats.png"),
+                    caption=text,
+                    message_thread_id=thread_id,
+                )
+            else:
+                await bot.send_message(chat_id, text, message_thread_id=thread_id)
+        except Exception as e:
+            logger.warning(f"[Stats] Не удалось отправить отчёт в чат {chat_id}: {e}")
+        return
+
+    moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
     for admin_id in ADMIN_ID:
         if admin_id in moderator_ids:
             continue
@@ -958,7 +985,11 @@ async def _send_report_to_admins(session: AsyncSession, text: str, chart) -> Non
             logger.warning(f"[Stats] Не удалось отправить отчёт admin={admin_id}: {e}")
 
 
-async def send_daily_stats_report(session: AsyncSession):
+async def send_daily_stats_report(
+    session: AsyncSession,
+    chat_id: int | None = None,
+    thread_id: int | None = None,
+):
     try:
         from handlers.admin.stats.report_charts import render_stats_chart
 
@@ -1052,7 +1083,7 @@ async def send_daily_stats_report(session: AsyncSession):
             ),
         )
 
-        await _send_report_to_admins(session, text, chart)
+        await _send_report_to_admins(session, text, chart, chat_id, thread_id)
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке статистики: {e}")
@@ -1155,7 +1186,11 @@ async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) 
     """Сводка по кнопке: вызывать её словом в чат - костыль, слово к тому же
     перехватывает обработчик неизвестных сообщений."""
     await callback.answer("Собираю сводку")
-    await send_daily_stats_report(session)
+    await send_daily_stats_report(
+        session,
+        chat_id=callback.message.chat.id,
+        thread_id=callback.message.message_thread_id,
+    )
 
 
 @router.message(F.text == "Сводка", IsAdminFilter())
