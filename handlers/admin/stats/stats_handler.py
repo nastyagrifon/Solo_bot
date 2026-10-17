@@ -46,6 +46,7 @@ from database import (
     sum_payments_since,
     sum_total_payments,
 )
+from core.bootstrap import MODES_CONFIG
 from filters.admin import HasPermission, IsAdminFilter
 from filters.permissions import PERM_STATS
 from hooks.hooks import run_hooks
@@ -58,6 +59,7 @@ from utils.csv_export import (
     export_users_csv,
 )
 
+from .forecast import FORECAST_AVG_MODE, forecast_base
 from ..panel.headers import align_screen, card, menu_text, menu_title, note, quote, section
 from ..panel.keyboard import AdminPanelCallback, build_admin_back_kb
 from .keyboard import (
@@ -1003,6 +1005,9 @@ async def send_daily_stats_report(session: AsyncSession):
         n = len(revenue_series) or 1
         avg_users = round(sum(users_series) / n, 1)
         avg_revenue = sum(revenue_series) / n
+        forecast_value, forecast_label = forecast_base(
+            MODES_CONFIG.get(FORECAST_AVG_MODE, False), revenue, avg_revenue
+        )
         best_idx = max(range(len(revenue_series)), key=lambda i: revenue_series[i]) if revenue_series else 0
         best_label = labels[best_idx] if labels else "—"
         best_revenue = revenue_series[best_idx] if revenue_series else 0
@@ -1039,9 +1044,9 @@ async def send_daily_stats_report(session: AsyncSession):
                     f"Неделя: {_fmt_num(week_users)} и {_fmt_num(week_revenue)} ₽",
                 ),
                 section(
-                    "🔮 Прогноз",
-                    f"Неделя: {_fmt_num(revenue * 7)} ₽",
-                    f"Месяц: {_fmt_num(revenue * 30)} ₽",
+                    f"🔮 Прогноз ({forecast_label})",
+                    f"Неделя: {_fmt_num(forecast_value * 7)} ₽",
+                    f"Месяц: {_fmt_num(forecast_value * 30)} ₽",
                 ),
                 section("⏱ Собрано", f"{update_time} МСК"),
             ),
