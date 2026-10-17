@@ -423,3 +423,23 @@ async def send_broadcast_schedule_now(
     else:
         item = await mark_scheduled_broadcast_failed(session, broadcast_id, result.get("message", "Broadcast failed"))
     return {"success": bool(result.get("success")), "item": scheduled_broadcast_to_dict(item), "result": result}
+
+@router.post("/stats/daily-report/send-now")
+async def send_daily_stats_report_now(
+    identity=Depends(verify_identity_admin_short),
+    session: AsyncSession = Depends(get_session),
+):
+    """Собрать и отправить сводку за день немедленно.
+
+    Нужна, чтобы проверять сводку не дожидаясь ночного запуска и не набирая
+    слово в чат: текстовый вызов перехватывает обработчик неизвестных сообщений.
+    """
+    from handlers.admin.stats.stats_handler import send_daily_stats_report
+
+    await _admin_rate_limit(identity, "daily_report_now", max_calls=5, window_sec=300)
+    try:
+        await send_daily_stats_report(session)
+    except Exception as exc:
+        logger.error("[Stats] send-now failed: {}", exc)
+        raise HTTPException(status_code=500, detail="Ошибка при отправке сводки") from exc
+    return {"success": True}
