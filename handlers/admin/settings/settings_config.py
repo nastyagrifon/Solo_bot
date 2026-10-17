@@ -90,7 +90,7 @@ MODES_TITLES: Final[dict[str, str]] = {
     "TRIAL_TIME_DISABLED": "Отключить триал",
     "WEB_TRIAL_DISABLED": "Отключить триал на сайте",
     "SUPPORT_TRIAGE_ENABLED": "Опросник поддержки",
-    "DAILY_FORECAST_AVG_ENABLED": "Прогноз по среднему",
+    "DAILY_FORECAST_AVG_ENABLED": "Сводка: прогноз по среднему",
     "SUPPORT_TICKETS_ENABLED": "Система тикетов",
     "SUPPORT_SHADOW_MODE": "Тикеты без кнопок",
     "PROTECT_CONTENT_ENABLED": "Защита контента",

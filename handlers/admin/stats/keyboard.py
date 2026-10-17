@@ -71,6 +71,12 @@ def build_stats_kb(index: int) -> InlineKeyboardMarkup:
         ),
         InlineKeyboardButton(text="📊 Графики", callback_data=AdminPanelCallback(action="stats_charts").pack()),
     )
+    builder.row(
+        InlineKeyboardButton(
+            text="🗓 Сводка за день",
+            callback_data=AdminPanelCallback(action="stats_daily_report").pack(),
+        )
+    )
     if index in _STATS_SEGMENT_EXPORT:
         export_text, export_action = _STATS_SEGMENT_EXPORT[index]
         builder.row(
