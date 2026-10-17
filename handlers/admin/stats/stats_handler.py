@@ -46,6 +46,7 @@ from database import (
     sum_payments_since,
     sum_total_payments,
 )
+from core.bootstrap import MODES_CONFIG
 from filters.admin import HasPermission, IsAdminFilter
 from filters.permissions import PERM_STATS
 from hooks.hooks import run_hooks
@@ -58,6 +59,7 @@ from utils.csv_export import (
     export_users_csv,
 )
 
+from .forecast import FORECAST_AVG_MODE, MONTH_DAYS, forecast
 from ..panel.headers import align_screen, card, menu_text, menu_title, note, quote, section
 from ..panel.keyboard import AdminPanelCallback, build_admin_back_kb
 from .keyboard import (
@@ -935,11 +937,38 @@ async def _collect_daily_series(session, moscow_tz, last_day: date, days: int):
     return labels, users, revenue
 
 
-async def _send_report_to_admins(session: AsyncSession, text: str, chart) -> None:
+async def _send_report_to_admins(
+    session: AsyncSession,
+    text: str,
+    chart,
+    chat_id: int | None = None,
+    thread_id: int | None = None,
+) -> None:
+    """Отчёт админам в личку, либо в один заданный чат.
+
+    Адресат нужен, чтобы сводку можно было позвать в тот чат, откуда её
+    попросили: иначе проверить формат негде - в личку бот пишет только тем,
+    кто сам начинал с ним разговор.
+    """
     from database.models import Admin
 
-    moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
     photo_bytes = chart.getvalue() if chart is not None else None
+    if chat_id is not None:
+        try:
+            if photo_bytes is not None:
+                await bot.send_photo(
+                    chat_id,
+                    photo=BufferedInputFile(photo_bytes, filename="stats.png"),
+                    caption=text,
+                    message_thread_id=thread_id,
+                )
+            else:
+                await bot.send_message(chat_id, text, message_thread_id=thread_id)
+        except Exception as e:
+            logger.warning(f"[Stats] Не удалось отправить отчёт в чат {chat_id}: {e}")
+        return
+
+    moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
     for admin_id in ADMIN_ID:
         if admin_id in moderator_ids:
             continue
@@ -956,7 +985,11 @@ async def _send_report_to_admins(session: AsyncSession, text: str, chart) -> Non
             logger.warning(f"[Stats] Не удалось отправить отчёт admin={admin_id}: {e}")
 
 
-async def send_daily_stats_report(session: AsyncSession):
+async def send_daily_stats_report(
+    session: AsyncSession,
+    chat_id: int | None = None,
+    thread_id: int | None = None,
+):
     try:
         from handlers.admin.stats.report_charts import render_stats_chart
 
@@ -989,7 +1022,13 @@ async def send_daily_stats_report(session: AsyncSession):
         active_total = await count_active_keys(session)
         total_users = await count_total_users(session)
 
-        labels, users_series, revenue_series = await _collect_daily_series(session, moscow_tz, report_date, 14)
+        labels, users_series, revenue_series = await _collect_daily_series(
+            session, moscow_tz, report_date, MONTH_DAYS
+        )
+        # Прогноз месяца считается по всей серии, а график и блок «За 14 дней»
+        # остаются на двух неделях - поэтому полную серию запоминаем до обрезки.
+        month_series = list(revenue_series)
+        labels, users_series, revenue_series = labels[-14:], users_series[-14:], revenue_series[-14:]
         panels = [
             {"name": "Доход, руб/день", "color": (63, 185, 80), "values": revenue_series},
             {
@@ -1003,6 +1042,9 @@ async def send_daily_stats_report(session: AsyncSession):
         n = len(revenue_series) or 1
         avg_users = round(sum(users_series) / n, 1)
         avg_revenue = sum(revenue_series) / n
+        forecast_week, forecast_month, forecast_label = forecast(
+            MODES_CONFIG.get(FORECAST_AVG_MODE, False), revenue, month_series
+        )
         best_idx = max(range(len(revenue_series)), key=lambda i: revenue_series[i]) if revenue_series else 0
         best_label = labels[best_idx] if labels else "—"
         best_revenue = revenue_series[best_idx] if revenue_series else 0
@@ -1039,15 +1081,15 @@ async def send_daily_stats_report(session: AsyncSession):
                     f"Неделя: {_fmt_num(week_users)} и {_fmt_num(week_revenue)} ₽",
                 ),
                 section(
-                    "🔮 Прогноз",
-                    f"Неделя: {_fmt_num(revenue * 7)} ₽",
-                    f"Месяц: {_fmt_num(revenue * 30)} ₽",
+                    f"🔮 Прогноз ({forecast_label})",
+                    f"Неделя: {_fmt_num(forecast_week)} ₽",
+                    f"Месяц: {_fmt_num(forecast_month)} ₽",
                 ),
                 section("⏱ Собрано", f"{update_time} МСК"),
             ),
         )
 
-        await _send_report_to_admins(session, text, chart)
+        await _send_report_to_admins(session, text, chart, chat_id, thread_id)
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке статистики: {e}")
@@ -1139,6 +1181,48 @@ async def send_monthly_stats_report(session: AsyncSession):
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке месячного отчёта: {e}")
+
+
+@router.callback_query(
+    AdminPanelCallback.filter(F.action == "stats_daily_report"),
+    IsAdminFilter(),
+    HasPermission(PERM_STATS),
+)
+async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Сводка в тот чат, откуда позвали.
+
+    Кнопки с этим действием на экранах нет: зовут командой /send-now либо
+    внешним вызовом. Обработчик оставлен, чтобы действие можно было подвесить
+    на кнопку, когда понадобится.
+    """
+    await callback.answer("Собираю сводку")
+    await send_daily_stats_report(
+        session,
+        chat_id=callback.message.chat.id,
+        thread_id=callback.message.message_thread_id,
+    )
+
+
+#: Telegram считает командой только `/[A-Za-z0-9_]+`, поэтому `/send-now`
+#: доходит как `/send` с аргументом `-now` - фильтром Command его не поймать.
+#: Ловим текст целиком и принимаем оба написания.
+_SEND_NOW_ALIASES = ("/send-now", "/send_now")
+
+
+@router.message(
+    F.text.func(lambda t: bool(t) and t.strip().split("@")[0].lower() in _SEND_NOW_ALIASES),
+    IsAdminFilter(),
+)
+async def send_daily_report_command(message: Message, session: AsyncSession) -> None:
+    """Скрытая команда: сводка приходит в тот же чат, где её позвали.
+
+    В списке команд бота её нет намеренно - это проверочный ход для админа.
+    """
+    await send_daily_stats_report(
+        session,
+        chat_id=message.chat.id,
+        thread_id=message.message_thread_id,
+    )
 
 
 @router.message(F.text == "Сводка", IsAdminFilter())
