@@ -306,7 +306,11 @@ async def get_key_details(session: AsyncSession, email: str) -> dict | None:
         "alias": key.alias,
         "expiry_date": expiry_date.strftime("%d %B %Y года %H:%M"),
         "days_left_message": days_left_message,
-        "link": key.key or key.remnawave_link,
+        # Ссылка подписки первой: поле `key` легаси и у части ключей
+        # хранит прямую vless-ссылку. Она не годится ни для кнопки
+        # WebApp (Telegram принимает только https), ни для показа
+        # клиенту вместо подписки.
+        "link": key.remnawave_link or key.key,
         "cluster_name": key.server_id,
         "location_name": key.server_id,
         "tariff_id": key.tariff_id,
