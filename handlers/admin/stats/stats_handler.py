@@ -950,8 +950,6 @@ async def _send_report_to_admins(
     попросили: иначе проверить формат негде - в личку бот пишет только тем,
     кто сам начинал с ним разговор.
     """
-    from database.models import Admin
-
     photo_bytes = chart.getvalue() if chart is not None else None
     if chat_id is not None:
         try:
@@ -967,6 +965,8 @@ async def _send_report_to_admins(
         except Exception as e:
             logger.warning(f"[Stats] Не удалось отправить отчёт в чат {chat_id}: {e}")
         return
+
+    from database.models import Admin
 
     moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
     for admin_id in ADMIN_ID:
@@ -989,7 +989,12 @@ async def send_daily_stats_report(
     session: AsyncSession,
     chat_id: int | None = None,
     thread_id: int | None = None,
-):
+) -> bool:
+    """Собирает и отправляет сводку. Возвращает False, если не собралась.
+
+    Ночной запуск результат игнорирует, а вызов руками обязан сказать
+    человеку, что сводки не будет.
+    """
     try:
         from handlers.admin.stats.report_charts import render_stats_chart
 
@@ -1022,6 +1027,9 @@ async def send_daily_stats_report(
         active_total = await count_active_keys(session)
         total_users = await count_total_users(session)
 
+        # MONTH_DAYS задаёт и горизонт прогноза, и глубину выборки: серия
+        # собирается поденно, по два запроса на день. Увеличишь окно - во
+        # столько же раз вырастет число запросов на одну сводку.
         labels, users_series, revenue_series = await _collect_daily_series(
             session, moscow_tz, report_date, MONTH_DAYS
         )
@@ -1090,9 +1098,11 @@ async def send_daily_stats_report(
         )
 
         await _send_report_to_admins(session, text, chart, chat_id, thread_id)
+        return True
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке статистики: {e}")
+        return False
 
 
 _MONTH_NAMES_RU = (
@@ -1209,20 +1219,82 @@ async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) 
 _SEND_NOW_ALIASES = ("/send-now", "/send_now")
 
 
+#: Сколько раз подряд можно позвать сводку руками. Одна сводка - это шесть
+#: десятков запросов к базе (серия собирается поденно), поэтому ограничитель
+#: тот же, что у ручки API.
+_SEND_NOW_MAX_CALLS = 5
+_SEND_NOW_WINDOW_SEC = 300
+
+
+async def _send_now_allowed(user_id: int) -> bool:
+    """Не частит ли админ. При недоступном кэше не мешаем работать."""
+    try:
+        from core.redis_cache import cache_incr_checked
+
+        count, cache_ok = await cache_incr_checked(
+            f"stats_send_now:{user_id}", _SEND_NOW_WINDOW_SEC
+        )
+    except Exception as err:                                         # noqa: BLE001
+        logger.warning("[Stats] Ограничитель сводки недоступен: {}", err)
+        return True
+    if not cache_ok:
+        return True
+    return count <= _SEND_NOW_MAX_CALLS
+
+
+def is_send_now_text(text: str | None) -> bool:
+    """Это вызов сводки? Принимаем оба написания и упоминание бота."""
+    if not text:
+        return False
+    return text.strip().split("@")[0].lower() in _SEND_NOW_ALIASES
+
+
+def send_now_target(
+    chat_type: str, chat_id: int, user_id: int, thread_id: int | None
+) -> tuple[int, int | None, bool]:
+    """Куда отправить сводку: (чат, тема, в_личку_вместо_группы).
+
+    В группу не отправляем даже по просьбе админа: цифры выручки увидят все
+    участники, а опечатка в выборе чата стоит слишком дорого.
+    """
+    if chat_type == "private":
+        return chat_id, thread_id, False
+    return user_id, None, True
+
+
 @router.message(
-    F.text.func(lambda t: bool(t) and t.strip().split("@")[0].lower() in _SEND_NOW_ALIASES),
+    F.text.func(is_send_now_text),
     IsAdminFilter(),
 )
 async def send_daily_report_command(message: Message, session: AsyncSession) -> None:
-    """Скрытая команда: сводка приходит в тот же чат, где её позвали.
+    """Скрытая команда: сводка в личку админу, в приватном чате - на месте.
 
     В списке команд бота её нет намеренно - это проверочный ход для админа.
+
+    В группу сводку не отправляем даже по просьбе админа: там цифры выручки
+    увидят все участники, а одна опечатка в выборе чата стоит слишком дорого.
     """
-    await send_daily_stats_report(
-        session,
-        chat_id=message.chat.id,
-        thread_id=message.message_thread_id,
+    if not await _send_now_allowed(message.from_user.id):
+        await message.answer("Слишком часто. Сводка собирается заново не чаще пяти раз за пять минут.")
+        return
+
+    chat_id, thread_id, moved_to_dm = send_now_target(
+        message.chat.type or "private",
+        message.chat.id,
+        message.from_user.id,
+        message.message_thread_id,
     )
+    if moved_to_dm:
+        await message.answer("Сводка с цифрами выручки ушла в личку - в группе её видят все.")
+
+    try:
+        sent = await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
+    except Exception as err:                                         # noqa: BLE001
+        logger.error("[Stats] Сводка по команде не собралась: {}", err)
+        sent = False
+    if not sent:
+        # Молчать нельзя: человек нажмёт ещё раз и добавит нагрузки.
+        await message.answer("Сводка не собралась, подробности в журнале.")
 
 
 @router.message(F.text == "Сводка", IsAdminFilter())
