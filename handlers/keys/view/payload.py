@@ -470,9 +470,10 @@ async def _build_single_subscription_text(
             exp = datetime.fromtimestamp(key.expiry_time / 1000, tz=moscow_tz)
             expiry_date = exp.strftime(f"%d {get_russian_month(exp)} %Y года, %H:%M (МСК)")
 
+    # Тот же порядок, что в `get_key_details`: подписка важнее легаси.
     key_link = (
-        getattr(key, "key", None)
-        or getattr(key, "remnawave_link", None)
+        getattr(key, "remnawave_link", None)
+        or getattr(key, "key", None)
         or (key_record.get("link") if key_record else None)
         or "Неизвестно"
     )
