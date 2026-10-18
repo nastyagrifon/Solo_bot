@@ -21,7 +21,10 @@ _SOURCE = SRC.read_text(encoding="utf-8")
 
 
 def _extract(name: str) -> str:
+    """Исходник одной функции по имени, вместе с `async` если он есть."""
     start = _SOURCE.index(f"def {name}(")
+    if _SOURCE[max(0, start - 6):start] == "async ":
+        start -= 6
     rest = _SOURCE[start:]
     end = rest.index("\n\n\n")
     return rest[:end]
@@ -68,6 +71,58 @@ class Target(unittest.TestCase):
                 chat_id, _, moved = send_now_target(chat_type, -42, 999, None)
                 self.assertEqual(chat_id, 999)
                 self.assertTrue(moved)
+
+
+class SingleChatDelivery(unittest.TestCase):
+    """Отправка в один чат обязана сообщать о неудаче.
+
+    Самый частый сбой - бот не может написать первым в личку тому, кто не
+    открывал с ним диалог. Если считать это успехом, человек ищет сводку,
+    которой нет.
+    """
+
+    def run_send(self, fail: bool):
+        import asyncio
+
+        sent = []
+
+        class Bot:
+            async def send_message(self, chat_id, text, message_thread_id=None):
+                if fail:
+                    raise RuntimeError("bot can't initiate conversation")
+                sent.append(chat_id)
+
+            async def send_photo(self, *a, **k):
+                if fail:
+                    raise RuntimeError("bot can't initiate conversation")
+                sent.append(a[0] if a else k.get("chat_id"))
+
+        ns = {
+            "bot": Bot(),
+            "BufferedInputFile": lambda *a, **k: None,
+            "select": lambda *a, **k: None,
+            "logger": types.SimpleNamespace(
+                **{lvl: (lambda *a, **k: None) for lvl in
+                   ("debug", "info", "warning", "error", "exception", "critical")}),
+            "AsyncSession": object,
+            "ADMIN_ID": [],
+            "annotations": None,
+        }
+        exec(_extract("_send_report_to_admins"), ns)                 # noqa: S102
+        result = asyncio.run(
+            ns["_send_report_to_admins"](None, "текст", None, chat_id=42, thread_id=None)
+        )
+        return result, sent
+
+    def test_success_returns_true(self):
+        ok, sent = self.run_send(fail=False)
+        self.assertTrue(ok)
+        self.assertEqual(sent, [42])
+
+    def test_failure_returns_false(self):
+        ok, sent = self.run_send(fail=True)
+        self.assertFalse(ok, "неудачная отправка не должна выглядеть успехом")
+        self.assertEqual(sent, [])
 
 
 if __name__ == "__main__":
