@@ -943,7 +943,7 @@ async def _send_report_to_admins(
     chart,
     chat_id: int | None = None,
     thread_id: int | None = None,
-) -> None:
+) -> bool:
     """Отчёт админам в личку, либо в один заданный чат.
 
     Адресат нужен, чтобы сводку можно было позвать в тот чат, откуда её
@@ -963,8 +963,11 @@ async def _send_report_to_admins(
             else:
                 await bot.send_message(chat_id, text, message_thread_id=thread_id)
         except Exception as e:
+            # Самый частый случай - бот не может написать первым в личку тому,
+            # кто не открывал с ним диалог. Молча считать это успехом нельзя.
             logger.warning(f"[Stats] Не удалось отправить отчёт в чат {chat_id}: {e}")
-        return
+            return False
+        return True
 
     from database.models import Admin
 
@@ -983,6 +986,7 @@ async def _send_report_to_admins(
                 await bot.send_message(admin_id, text)
         except Exception as e:
             logger.warning(f"[Stats] Не удалось отправить отчёт admin={admin_id}: {e}")
+    return True
 
 
 async def send_daily_stats_report(
@@ -1097,8 +1101,7 @@ async def send_daily_stats_report(
             ),
         )
 
-        await _send_report_to_admins(session, text, chart, chat_id, thread_id)
-        return True
+        return await _send_report_to_admins(session, text, chart, chat_id, thread_id)
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке статистики: {e}")
@@ -1270,9 +1273,7 @@ async def send_daily_report_command(message: Message, session: AsyncSession) -> 
     """Скрытая команда: сводка в личку админу, в приватном чате - на месте.
 
     В списке команд бота её нет намеренно - это проверочный ход для админа.
-
-    В группу сводку не отправляем даже по просьбе админа: там цифры выручки
-    увидят все участники, а одна опечатка в выборе чата стоит слишком дорого.
+    Почему не в группу - см. `send_now_target`.
     """
     if not await _send_now_allowed(message.from_user.id):
         await message.answer("Слишком часто. Сводка собирается заново не чаще пяти раз за пять минут.")
@@ -1284,17 +1285,21 @@ async def send_daily_report_command(message: Message, session: AsyncSession) -> 
         message.from_user.id,
         message.message_thread_id,
     )
-    if moved_to_dm:
-        await message.answer("Сводка с цифрами выручки ушла в личку - в группе её видят все.")
-
     try:
         sent = await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
     except Exception as err:                                         # noqa: BLE001
         logger.error("[Stats] Сводка по команде не собралась: {}", err)
         sent = False
+
+    # Говорим после отправки, а не до: обещание «ушла в личку» до самой
+    # отправки осталось бы в группе даже тогда, когда она не дошла.
     if not sent:
-        # Молчать нельзя: человек нажмёт ещё раз и добавит нагрузки.
-        await message.answer("Сводка не собралась, подробности в журнале.")
+        await message.answer(
+            "Сводка не ушла. Если звал из группы - открой диалог с ботом: "
+            "первым он написать не может. Подробности в журнале."
+        )
+    elif moved_to_dm:
+        await message.answer("Сводка с цифрами выручки ушла в личку - в группе её видят все.")
 
 
 @router.message(F.text == "Сводка", IsAdminFilter())
