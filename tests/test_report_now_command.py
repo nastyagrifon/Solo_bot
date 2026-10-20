@@ -7,6 +7,7 @@
 
 import importlib.util
 import pathlib
+import re
 import sys
 import types
 import unittest
@@ -30,37 +31,52 @@ def _extract(name: str) -> str:
     return rest[:end]
 
 
-_NS: dict = {"_SEND_NOW_ALIASES": ("/send-now", "/send_now")}
-exec(_extract("is_send_now_text"), _NS)          # noqa: S102
-exec(_extract("send_now_target"), _NS)           # noqa: S102
-is_send_now_text = _NS["is_send_now_text"]
-send_now_target = _NS["send_now_target"]
+_ALIASES = tuple(
+    re.findall(r'"(/[a-z_-]+)"',
+               re.search(r"_REPORT_NOW_ALIASES = \(([^)]*)\)", _SOURCE).group(1))
+)
+
+_NS: dict = {"_REPORT_NOW_ALIASES": _ALIASES}
+exec(_extract("is_report_now_text"), _NS)          # noqa: S102
+exec(_extract("report_now_target"), _NS)           # noqa: S102
+is_report_now_text = _NS["is_report_now_text"]
+report_now_target = _NS["report_now_target"]
 
 
 class Recognition(unittest.TestCase):
     def test_both_spellings(self):
-        self.assertTrue(is_send_now_text("/send-now"))
-        self.assertTrue(is_send_now_text("/send_now"))
+        self.assertTrue(is_report_now_text("/report-now"))
+        self.assertTrue(is_report_now_text("/report_now"))
+
+    def test_old_names_still_work(self):
+        """Прежнее имя не отбираем у тех, кто им пользуется."""
+        self.assertTrue(is_report_now_text("/send-now"))
+        self.assertTrue(is_report_now_text("/send_now"))
+
+    def test_aliases_taken_from_code(self):
+        """Список берётся из кода: иначе тест разойдётся с рабочим."""
+        self.assertIn("/report-now", _ALIASES)
+        self.assertGreaterEqual(len(_ALIASES), 2)
 
     def test_case_spaces_and_mention(self):
-        for text in (" /SEND-NOW ", "/send-now@some_bot", "/Send_Now"):
+        for text in (" /SEND-NOW ", "/report-now@some_bot", "/Send_Now"):
             with self.subTest(text=text):
-                self.assertTrue(is_send_now_text(text))
+                self.assertTrue(is_report_now_text(text))
 
     def test_not_a_command(self):
-        for text in ("/send", "/send-now позже", "сводка", "", None, "/sendnow"):
+        for text in ("/send", "/report-now позже", "сводка", "", None, "/sendnow"):
             with self.subTest(text=text):
-                self.assertFalse(is_send_now_text(text))
+                self.assertFalse(is_report_now_text(text))
 
 
 class Target(unittest.TestCase):
     def test_private_chat_gets_report_in_place(self):
-        chat_id, thread_id, moved = send_now_target("private", 111, 111, 7)
+        chat_id, thread_id, moved = report_now_target("private", 111, 111, 7)
         self.assertEqual((chat_id, thread_id, moved), (111, 7, False))
 
     def test_group_report_goes_to_dm(self):
         """Выручку в группе видят все, поэтому туда не отправляем."""
-        chat_id, thread_id, moved = send_now_target("supergroup", -1001234, 555, 42)
+        chat_id, thread_id, moved = report_now_target("supergroup", -1001234, 555, 42)
         self.assertEqual(chat_id, 555)
         self.assertIsNone(thread_id)
         self.assertTrue(moved)
@@ -68,7 +84,7 @@ class Target(unittest.TestCase):
     def test_any_non_private_type_goes_to_dm(self):
         for chat_type in ("group", "supergroup", "channel", ""):
             with self.subTest(chat_type=chat_type):
-                chat_id, _, moved = send_now_target(chat_type, -42, 999, None)
+                chat_id, _, moved = report_now_target(chat_type, -42, 999, None)
                 self.assertEqual(chat_id, 999)
                 self.assertTrue(moved)
 
