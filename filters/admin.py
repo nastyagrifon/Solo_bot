@@ -8,7 +8,7 @@ from database.db import async_session_maker
 from database.models import Admin
 from settings.config import ADMIN_ID
 
-from .permissions import normalize_permissions
+from .permissions import SUPERADMIN_ROLE, normalize_permissions, normalize_role
 
 
 _ADMIN_CACHE: dict[int, tuple[float, bool, bool, frozenset[str]]] = {}
@@ -43,18 +43,16 @@ async def _resolve_admin(user_id: int) -> tuple[bool, bool, frozenset[str]]:
         async with async_session_maker() as session:
             admin = (await session.execute(select(Admin).where(Admin.tg_id == user_id))).scalar_one_or_none()
             admin_ids = (ADMIN_ID,) if isinstance(ADMIN_ID, int) else ADMIN_ID
-            admin_role = (getattr(admin, "role", None) or "").strip().lower() if admin else ""
             if user_id in admin_ids:
                 is_admin = True
                 is_super = True
                 perms = frozenset()
-            elif admin is not None and admin_role == "designer":
-                is_admin = False
-                is_super = False
-                perms = frozenset()
             elif admin is not None:
+                # Суперадмин — ровно одна роль. Прежде считалось «любая, кроме
+                # moderator», поэтому опечатка в поле или новая роль открывали
+                # полный доступ.
                 is_admin = True
-                is_super = admin_role != "moderator"
+                is_super = normalize_role(admin.role) == SUPERADMIN_ROLE
                 perms = frozenset(normalize_permissions(admin.permissions))
             else:
                 is_admin = False

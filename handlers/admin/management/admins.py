@@ -14,8 +14,11 @@ from filters.admin import HasPermission, invalidate_admin_cache
 from filters.permissions import (
     ALL_PERMISSIONS,
     PERMISSION_LABELS,
+    ALL_ROLES,
     PERM_ADMINS,
+    SUPERADMIN_ROLE,
     normalize_permissions,
+    permissions_for_role,
 )
 
 from ..panel.headers import menu_text, quote, section
@@ -84,7 +87,7 @@ async def create_admin_with_role(callback: CallbackQuery, callback_data: AdminPa
     try:
         _, tg_id_str, role = callback_data.action.split("|")
         tg_id = int(tg_id_str)
-        if role not in ("moderator", "designer"):
+        if role not in ALL_ROLES or role == SUPERADMIN_ROLE:
             raise ValueError
     except Exception:
         await callback.message.edit_text(
@@ -101,10 +104,17 @@ async def create_admin_with_role(callback: CallbackQuery, callback_data: AdminPa
         )
         return
 
-    session.add(Admin(tg_id=tg_id, role=role, description="Добавлен вручную", permissions=[]))
+    preset = list(permissions_for_role(role))
+    session.add(Admin(tg_id=tg_id, role=role, description="Добавлен вручную",
+                      permissions=preset))
     invalidate_admin_cache(tg_id)
+    granted = ", ".join(PERMISSION_LABELS[p] for p in preset) or "ничего"
     await callback.message.edit_text(
-        menu_text("Админы", f"✅ Админ <code>{tg_id}</code> добавлен с ролью <b>{role}</b>."),
+        menu_text(
+            "Админы",
+            f"✅ Админ <code>{tg_id}</code> добавлен с ролью <b>{role}</b>.\n"
+            f"Права по роли: {granted}.",
+        ),
         reply_markup=build_admin_back_kb_to_admins(),
     )
 
@@ -168,7 +178,7 @@ async def set_admin_role(callback: CallbackQuery, callback_data: AdminPanelCallb
     try:
         _, tg_id_str, role = callback_data.action.split("|")
         tg_id = int(tg_id_str)
-        if role not in ("superadmin", "moderator", "designer"):
+        if role not in ALL_ROLES:
             raise ValueError
     except Exception:
         await callback.message.edit_text(menu_text("Админы", "❌ Неверный формат."))

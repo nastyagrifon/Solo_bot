@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 from sqlalchemy import text
@@ -1223,6 +1224,39 @@ async def _migration_v56_drop_low_cardinality_indexes(conn: AsyncConnection) -> 
             logger.debug(f"[schema_upgrade] v56: снят {index_name}")
 
 
+async def _migration_v57_admin_role_presets(conn: AsyncConnection) -> None:
+    """Раздать права по роли тем, у кого их нет, и переименовать moderator.
+
+    До этого админ создавался с пустым `permissions`: роль была, а кнопки
+    молчали, потому что право проверяется фильтром роутера. Роль `moderator`
+    по смыслу и есть суппорт.
+    """
+    if not await _table_exists(conn, "admins"):
+        return
+
+    from filters.permissions import ROLE_ALIASES, permissions_for_role
+
+    for old, new in ROLE_ALIASES.items():
+        await conn.execute(
+            text("UPDATE admins SET role = :new WHERE lower(role) = :old"),
+            {"new": new, "old": old},
+        )
+
+    rows = await conn.execute(
+        text("SELECT tg_id, role FROM admins "
+             "WHERE permissions IS NULL OR permissions = '[]'::jsonb")
+    )
+    for tg_id, role in rows.fetchall():
+        preset = list(permissions_for_role(role or ""))
+        if not preset:
+            continue
+        await conn.execute(
+            text("UPDATE admins SET permissions = CAST(:perms AS jsonb) "
+                 "WHERE tg_id = :tg_id"),
+            {"perms": json.dumps(preset), "tg_id": tg_id},
+        )
+
+
 _MIGRATIONS = [
     (1, "Добавление users.id", _migration_v1_add_users_id),
     (2, "Добавление user_id колонок", _migration_v2_add_user_id_columns),
@@ -1243,6 +1277,7 @@ _MIGRATIONS = [
     (53, "Очистка самореферальных связей", _migration_v53_drop_self_referrals),
     (55, "Снятие дублирующих индексов users/audit_events", _migration_v55_drop_duplicate_indexes),
     (56, "Снятие индексов audit_events по низкой кардинальности", _migration_v56_drop_low_cardinality_indexes),
+    (57, "Права админов по роли", _migration_v57_admin_role_presets),
 ]
 
 
