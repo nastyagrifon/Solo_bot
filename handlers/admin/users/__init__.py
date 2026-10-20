@@ -32,3 +32,9 @@ router.include_router(users_keys.router)
 router.include_router(users_bans.router)
 router.include_router(users_tariffs.router)
 router.include_router(users_gifts.router)
+
+from .acl import install as _install_acl
+
+# Рубеж правки: право `users` пустило в карточку, внутри неё правка подписки
+# требует `users_write`, а деньги — `balance`.
+_install_acl(router)

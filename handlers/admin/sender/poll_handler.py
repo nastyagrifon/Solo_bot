@@ -6,7 +6,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.polls import close_poll, create_poll, delete_poll, get_poll, get_poll_stats, list_polls
-from filters.admin import IsAdminFilter
+from filters.admin import HasPermission, IsAdminFilter
+from filters.permissions import PERM_BROADCASTING
 from logger import logger
 from middlewares.session import release_session_early
 
@@ -87,7 +88,7 @@ async def _render_menu(session: AsyncSession):
     return text, build_polls_menu_kb(polls)
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "menu"), IsAdminFilter())
+@router.callback_query(AdminPollCallback.filter(F.action == "menu"), IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def open_polls_menu(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await state.clear()
     text, kb = await _render_menu(session)
@@ -95,7 +96,7 @@ async def open_polls_menu(callback: CallbackQuery, state: FSMContext, session: A
     await callback.answer()
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "create"), IsAdminFilter())
+@router.callback_query(AdminPollCallback.filter(F.action == "create"), IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def poll_create(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminPoll.waiting_for_question)
     await callback.message.edit_text(
@@ -105,7 +106,7 @@ async def poll_create(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(AdminPoll.waiting_for_question, IsAdminFilter())
+@router.message(AdminPoll.waiting_for_question, IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def poll_question_input(message: Message, state: FSMContext) -> None:
     question = (message.text or "").strip()
     if not question:
@@ -128,7 +129,7 @@ async def poll_question_input(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(AdminPoll.waiting_for_options, IsAdminFilter())
+@router.message(AdminPoll.waiting_for_options, IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def poll_options_input(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     options = [line.strip() for line in raw.splitlines() if line.strip()]
@@ -151,7 +152,7 @@ async def poll_options_input(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "anon"), AdminPoll.preview, IsAdminFilter())
+@router.callback_query(AdminPollCallback.filter(F.action == "anon"), AdminPoll.preview, IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def poll_toggle_anon(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     new_val = not data.get("is_anonymous", False)
@@ -163,7 +164,7 @@ async def poll_toggle_anon(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "back_preview"), AdminPoll.preview, IsAdminFilter())
+@router.callback_query(AdminPollCallback.filter(F.action == "back_preview"), AdminPoll.preview, IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def poll_back_preview(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     is_anon = data.get("is_anonymous", False)
@@ -174,7 +175,7 @@ async def poll_back_preview(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "audience"), AdminPoll.preview, IsAdminFilter())
+@router.callback_query(AdminPollCallback.filter(F.action == "audience"), AdminPoll.preview, IsAdminFilter(), HasPermission(PERM_BROADCASTING))
 async def poll_audience(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         menu_text("Опросы", "📤 Кому отправить опрос?"),
@@ -184,7 +185,7 @@ async def poll_audience(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(
-    AdminPollCallback.filter(F.action == "aud"), AdminPoll.preview, IsAdminFilter(), flags={"popup": True}
+    AdminPollCallback.filter(F.action == "aud"), AdminPoll.preview, IsAdminFilter(), HasPermission(PERM_BROADCASTING), flags={"popup": True}
 )
 async def poll_send(
     callback: CallbackQuery, callback_data: AdminPollCallback, state: FSMContext, session: AsyncSession
@@ -270,7 +271,7 @@ async def poll_send(
     )
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "view"), IsAdminFilter(), flags={"popup": True})
+@router.callback_query(AdminPollCallback.filter(F.action == "view"), IsAdminFilter(), HasPermission(PERM_BROADCASTING), flags={"popup": True})
 async def poll_view(callback: CallbackQuery, callback_data: AdminPollCallback, session: AsyncSession) -> None:
     poll = await get_poll(session, callback_data.poll_id)
     if poll is None:
@@ -284,7 +285,7 @@ async def poll_view(callback: CallbackQuery, callback_data: AdminPollCallback, s
     await callback.answer()
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "close"), IsAdminFilter(), flags={"popup": True})
+@router.callback_query(AdminPollCallback.filter(F.action == "close"), IsAdminFilter(), HasPermission(PERM_BROADCASTING), flags={"popup": True})
 async def poll_close(callback: CallbackQuery, callback_data: AdminPollCallback, session: AsyncSession) -> None:
     poll = await get_poll(session, callback_data.poll_id)
     if poll is None:
@@ -301,7 +302,7 @@ async def poll_close(callback: CallbackQuery, callback_data: AdminPollCallback, 
     await callback.answer(menu_text("Опросы", "Опрос закрыт — новые голоса не учитываются"))
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "del_ask"), IsAdminFilter(), flags={"popup": True})
+@router.callback_query(AdminPollCallback.filter(F.action == "del_ask"), IsAdminFilter(), HasPermission(PERM_BROADCASTING), flags={"popup": True})
 async def poll_delete_ask(callback: CallbackQuery, callback_data: AdminPollCallback, session: AsyncSession) -> None:
     poll = await get_poll(session, callback_data.poll_id)
     if poll is None:
@@ -322,7 +323,7 @@ async def poll_delete_ask(callback: CallbackQuery, callback_data: AdminPollCallb
     await callback.answer()
 
 
-@router.callback_query(AdminPollCallback.filter(F.action == "del"), IsAdminFilter(), flags={"popup": True})
+@router.callback_query(AdminPollCallback.filter(F.action == "del"), IsAdminFilter(), HasPermission(PERM_BROADCASTING), flags={"popup": True})
 async def poll_delete(callback: CallbackQuery, callback_data: AdminPollCallback, session: AsyncSession) -> None:
     poll = await get_poll(session, callback_data.poll_id)
     if poll is None:

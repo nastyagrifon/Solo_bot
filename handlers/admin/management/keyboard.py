@@ -165,10 +165,26 @@ def build_admin_permissions_kb(tg_id: int, current: set[str]) -> InlineKeyboardM
     return builder.as_markup()
 
 
+# Подписи ролей. Набор прав по роли живёт в filters.permissions.ROLE_PRESETS.
+ROLE_TITLES: dict[str, str] = {
+    "superadmin": "👑 superadmin",
+    "admin": "🛠 admin",
+    "support": "🎧 support",
+    "tester": "🧪 tester",
+    "marketer": "📣 marketer",
+    "staff": "👔 staff",
+    "designer": "🎨 designer",
+}
+
+
 def build_new_admin_role_kb(tg_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🛡 moderator", callback_data=AdminPanelCallback(action=f"add_role|{tg_id}|moderator").pack())
-    builder.button(text="🎨 designer", callback_data=AdminPanelCallback(action=f"add_role|{tg_id}|designer").pack())
+    # Суперадмина с этого экрана не выдаём: роль меняется отдельным действием.
+    for role, title in ROLE_TITLES.items():
+        if role == "superadmin":
+            continue
+        builder.button(text=title,
+                       callback_data=AdminPanelCallback(action=f"add_role|{tg_id}|{role}").pack())
     builder.adjust(2)
     builder.row(InlineKeyboardButton(text=BACK, callback_data=AdminPanelCallback(action="admins").pack()))
     return builder.as_markup()
@@ -176,9 +192,9 @@ def build_new_admin_role_kb(tg_id: int) -> InlineKeyboardMarkup:
 
 def build_role_selection_kb(tg_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="👑 superadmin", callback_data=AdminPanelCallback(action=f"set_role|{tg_id}|superadmin").pack())
-    builder.button(text="🛡 moderator", callback_data=AdminPanelCallback(action=f"set_role|{tg_id}|moderator").pack())
-    builder.button(text="🎨 designer", callback_data=AdminPanelCallback(action=f"set_role|{tg_id}|designer").pack())
+    for role, title in ROLE_TITLES.items():
+        builder.button(text=title,
+                       callback_data=AdminPanelCallback(action=f"set_role|{tg_id}|{role}").pack())
     builder.adjust(2)
     builder.row(InlineKeyboardButton(text=BACK, callback_data=AdminPanelCallback(action=f"admin_menu|{tg_id}").pack()))
     return builder.as_markup()

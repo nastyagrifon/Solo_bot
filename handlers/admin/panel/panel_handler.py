@@ -52,7 +52,8 @@ async def handle_admin_callback_query(callback_query: CallbackQuery, state: FSMC
     _, is_super, perms = await get_admin_context(callback_query.from_user.id)
     version_text = await run_io(get_version, is_super) if is_super else None
 
-    markup = await build_panel_kb(admin_role=role, permissions=perms)
+    markup = await build_panel_kb(admin_role=role, permissions=perms,
+                                  is_superadmin=is_super)
     await _send_panel(callback_query.message, version_text, markup, edit=True)
 
 
@@ -71,5 +72,6 @@ async def handle_admin_message(message: Message, state: FSMContext, session: Asy
     _, is_super, perms = await get_admin_context(message.from_user.id)
     version_text = await run_io(get_version, is_super) if is_super else None
 
-    markup = await build_panel_kb(admin_role=role, permissions=perms)
+    markup = await build_panel_kb(admin_role=role, permissions=perms,
+                                  is_superadmin=is_super)
     await _send_panel(message, version_text, markup, edit=False)
