@@ -171,6 +171,7 @@ ROLE_TITLES: dict[str, str] = {
     "admin": "🛠 admin",
     "support": "🎧 support",
     "tester": "🧪 tester",
+    "marketer": "📣 marketer",
     "staff": "👔 staff",
     "designer": "🎨 designer",
 }

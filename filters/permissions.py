@@ -62,6 +62,10 @@ ROLE_PRESETS: dict[str, tuple[str, ...]] = {
                 PERM_STATS),
     # Тестировщик правит подписки и ключи, но денег не касается.
     "tester": (PERM_USERS, PERM_USERS_WRITE, PERM_STATS),
+    # Маркетолог: купоны и акции, аналитика и рассылки. Карточку клиента
+    # только смотрит, деньги не трогает.
+    "marketer": (PERM_USERS, PERM_COUPONS, PERM_GIFTS, PERM_ADS, PERM_STATS,
+                 PERM_BROADCASTING),
     # Сотрудник только смотрит.
     "staff": (PERM_USERS, PERM_STATS),
     "designer": (PERM_USERS, PERM_EMOJI),
