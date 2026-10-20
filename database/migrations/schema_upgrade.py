@@ -1230,13 +1230,35 @@ async def _migration_v57_admin_role_presets(conn: AsyncConnection) -> None:
     До этого админ создавался с пустым `permissions`: роль была, а кнопки
     молчали, потому что право проверяется фильтром роутера. Роль `moderator`
     по смыслу и есть суппорт.
+
+    Наборы вписаны здесь СНИМКОМ, а не берутся из `filters.permissions`:
+    перенос обязан давать один и тот же результат на любой установке, а
+    прикладной список ролей будет меняться. Если он изменится, этот снимок
+    останется как есть — на то и тест, который следит за расхождением.
     """
+    # Снимок наборов прав на момент переноса.
+    presets = {
+        "superadmin": ["users", "users_write", "balance", "bulk", "tariffs",
+                       "clusters", "broadcasting", "coupons", "gifts", "stats",
+                       "ads", "modules", "settings", "management", "admins",
+                       "emoji"],
+        "admin": ["users", "users_write", "balance", "bulk", "tariffs",
+                  "clusters", "broadcasting", "coupons", "gifts", "stats",
+                  "ads", "emoji"],
+        "support": ["users", "users_write", "balance", "gifts", "stats"],
+        "tester": ["users", "users_write", "stats"],
+        "marketer": ["users", "coupons", "gifts", "ads", "stats",
+                     "broadcasting"],
+        "staff": ["users", "stats"],
+        "designer": ["users", "emoji"],
+    }
+    # Прежние имена ролей на момент переноса.
+    renames = {"moderator": "support"}
+
     if not await _table_exists(conn, "admins"):
         return
 
-    from filters.permissions import ROLE_ALIASES, permissions_for_role
-
-    for old, new in ROLE_ALIASES.items():
+    for old, new in renames.items():
         await conn.execute(
             text("UPDATE admins SET role = :new WHERE lower(role) = :old"),
             {"new": new, "old": old},
@@ -1247,7 +1269,7 @@ async def _migration_v57_admin_role_presets(conn: AsyncConnection) -> None:
              "WHERE permissions IS NULL OR permissions = '[]'::jsonb")
     )
     for tg_id, role in rows.fetchall():
-        preset = list(permissions_for_role(role or ""))
+        preset = presets.get((role or "").strip().lower())
         if not preset:
             continue
         await conn.execute(

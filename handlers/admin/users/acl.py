@@ -55,6 +55,11 @@ async def users_acl(handler, event, data):
 
     user = getattr(event, "from_user", None)
     if user is None:
+        # Импорт внутри: правила прав проверяются тестом без установленного
+        # бота, а логгер ядра тянет loguru.
+        from logger import logger
+
+        logger.warning("[ACL] событие в карточке клиента без автора — пропускаю")
         return None
 
     _, is_super, perms = await get_admin_context(user.id)
