@@ -67,9 +67,17 @@ _ADMIN_MENU: tuple[tuple[tuple[str, str, tuple[str, ...]], ...], ...] = (
 async def build_panel_kb(
     admin_role: str,
     permissions: Iterable[str] | None = None,
+    is_superadmin: bool | None = None,
 ) -> InlineKeyboardMarkup:
+    """Меню по правам. `is_superadmin` — готовый ответ от `get_admin_context`.
+
+    Своего суждения о роли мало: админ из `ADMIN_ID` суперадмин по
+    окружению, и прав в контексте у него нет вовсе. Пока меню решало само по
+    строке роли, такой админ с любой иной ролью получал экран без ядровых
+    кнопок — права пустые, а признак «супер» до меню не доходил.
+    """
     builder = InlineKeyboardBuilder()
-    is_super = admin_role == "superadmin"
+    is_super = (admin_role == "superadmin") if is_superadmin is None else is_superadmin
     perm_set = frozenset(permissions or ())
 
     def can(perm: str) -> bool:
