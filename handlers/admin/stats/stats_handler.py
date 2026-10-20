@@ -1216,43 +1216,47 @@ async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) 
     )
 
 
-#: Telegram считает командой только `/[A-Za-z0-9_]+`, поэтому `/send-now`
-#: доходит как `/send` с аргументом `-now` - фильтром Command его не поймать.
-#: Ловим текст целиком и принимаем оба написания.
-_SEND_NOW_ALIASES = ("/send-now", "/send_now")
+#: Telegram считает командой только `/[A-Za-z0-9_]+`, поэтому `/report-now`
+#: доходит как `/report` с аргументом `-now` - фильтром Command его не
+#: поймать. Ловим текст целиком и принимаем оба написания.
+#:
+#: Команда зовёт СВОДКУ, поэтому и называется по делу. Прежнее `/send-now`
+#: говорило про отправку, а не про отчёт; оставлено, чтобы не отбирать
+#: привычное имя у тех, кто уже им пользуется.
+_REPORT_NOW_ALIASES = ("/report-now", "/report_now", "/send-now", "/send_now")
 
 
 #: Сколько раз подряд можно позвать сводку руками. Одна сводка - это шесть
 #: десятков запросов к базе (серия собирается поденно), поэтому ограничитель
 #: тот же, что у ручки API.
-_SEND_NOW_MAX_CALLS = 5
-_SEND_NOW_WINDOW_SEC = 300
+_REPORT_NOW_MAX_CALLS = 5
+_REPORT_NOW_WINDOW_SEC = 300
 
 
-async def _send_now_allowed(user_id: int) -> bool:
+async def _report_now_allowed(user_id: int) -> bool:
     """Не частит ли админ. При недоступном кэше не мешаем работать."""
     try:
         from core.redis_cache import cache_incr_checked
 
         count, cache_ok = await cache_incr_checked(
-            f"stats_send_now:{user_id}", _SEND_NOW_WINDOW_SEC
+            f"stats_report_now:{user_id}", _REPORT_NOW_WINDOW_SEC
         )
     except Exception as err:                                         # noqa: BLE001
         logger.warning("[Stats] Ограничитель сводки недоступен: {}", err)
         return True
     if not cache_ok:
         return True
-    return count <= _SEND_NOW_MAX_CALLS
+    return count <= _REPORT_NOW_MAX_CALLS
 
 
-def is_send_now_text(text: str | None) -> bool:
+def is_report_now_text(text: str | None) -> bool:
     """Это вызов сводки? Принимаем оба написания и упоминание бота."""
     if not text:
         return False
-    return text.strip().split("@")[0].lower() in _SEND_NOW_ALIASES
+    return text.strip().split("@")[0].lower() in _REPORT_NOW_ALIASES
 
 
-def send_now_target(
+def report_now_target(
     chat_type: str, chat_id: int, user_id: int, thread_id: int | None
 ) -> tuple[int, int | None, bool]:
     """Куда отправить сводку: (чат, тема, в_личку_вместо_группы).
@@ -1266,20 +1270,20 @@ def send_now_target(
 
 
 @router.message(
-    F.text.func(is_send_now_text),
+    F.text.func(is_report_now_text),
     IsAdminFilter(),
 )
-async def send_daily_report_command(message: Message, session: AsyncSession) -> None:
+async def report_now_command(message: Message, session: AsyncSession) -> None:
     """Скрытая команда: сводка в личку админу, в приватном чате - на месте.
 
     В списке команд бота её нет намеренно - это проверочный ход для админа.
-    Почему не в группу - см. `send_now_target`.
+    Почему не в группу - см. `report_now_target`.
     """
-    if not await _send_now_allowed(message.from_user.id):
+    if not await _report_now_allowed(message.from_user.id):
         await message.answer("Слишком часто. Сводка собирается заново не чаще пяти раз за пять минут.")
         return
 
-    chat_id, thread_id, moved_to_dm = send_now_target(
+    chat_id, thread_id, moved_to_dm = report_now_target(
         message.chat.type or "private",
         message.chat.id,
         message.from_user.id,
