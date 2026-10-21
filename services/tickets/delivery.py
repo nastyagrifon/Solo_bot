@@ -37,22 +37,32 @@ def support_bot_instance():
         return None
 
 
-async def _taken_by_hook(session: AsyncSession, ticket: Ticket) -> bool:
-    """Отдать обращение подписчикам. True — доставку забрали, ядру молчать.
+async def _taken_by_owner(session: AsyncSession, ticket: Ticket) -> bool:
+    """Отдать обращение владельцу намерения. True — ядру молчать.
 
-    Хук, а не прямая зависимость от модуля: ядро про модуль знать не должно,
-    а модуль может быть выключен или упасть — тогда ядро доставляет само.
+    Владелец объявляется ОДИН раз при загрузке (`core.intents`), а не
+    вычисляется по ответу хука на каждом событии: молчащий обработчик было не
+    отличить от отсутствующего, и ядро зря собирало переписку с вложениями.
+
+    Намерение свободно — доставляем сами. Это же возвращает доставку ядру,
+    когда модуль выключен или не поднялся.
     """
+    from core.intents import TICKETS_DELIVERY, owner_of
+
+    owner = owner_of(TICKETS_DELIVERY)
+    if not owner:
+        return False
+
     try:
         from hooks.hooks import run_hooks
 
-        results = await run_hooks("web_ticket_created", session=session, ticket=ticket)
+        await run_hooks("web_ticket_created", session=session, ticket=ticket)
     except Exception as e:                                       # noqa: BLE001
-        logger.error(f"[Tickets] хук web_ticket_created упал: {e}")
+        # Владелец упал на этом обращении. Доставляем сами: лучше топик на
+        # обращение, чем молчание в адрес оператора.
+        logger.error(f"[Tickets] владелец «{owner}» не взял обращение: {e}")
         return False
-    if not results:
-        return False
-    return any(r is True for r in (results if isinstance(results, list) else [results]))
+    return True
 
 
 async def notify_agents_new_ticket(session: AsyncSession, *, ticket: Ticket) -> None:
@@ -60,11 +70,10 @@ async def notify_agents_new_ticket(session: AsyncSession, *, ticket: Ticket) -> 
     cat = f" · {ticket.category}" if ticket.category else ""
     rows = [int(t) for t in (await session.execute(select(Admin.tg_id))).scalars().all() if t]
 
-    # Обращение из кабинета может забрать модуль поддержки: у него свои топики
-    # на КЛИЕНТА, автосообщения и карточки, и заводить рядом второй топик на
-    # обращение значило бы вести одного человека в двух местах. Обработчик,
-    # вернувший True, берёт доставку на себя — тогда ядро молчит.
-    if await _taken_by_hook(session, ticket):
+    # Доставку может вести модуль поддержки: у него топики на КЛИЕНТА,
+    # автосообщения и карточки, и второй топик на обращение рядом означал бы
+    # одного человека в двух местах. Он объявляет намерение при загрузке.
+    if await _taken_by_owner(session, ticket):
         return
 
     from .forum import ensure_topic, forum_enabled
