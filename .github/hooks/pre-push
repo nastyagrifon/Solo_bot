@@ -13,7 +13,19 @@ echo "pre-push: разбор ruff"
 if command -v ruff >/dev/null 2>&1; then
     # Исключения те же, что в pre-commit проекта: главный модуль
     # обфусцирован, утилиты оплаты скомпилированы.
-    ruff check . --config pyproject.toml --exclude main.py,handlers/payments
+    #
+    # --isolated, потому что конфига ruff в репозитории нет: pyproject.toml,
+    # на который ссылается pre-commit, отсутствует. Там это незаметно, хук
+    # заканчивается `exit 0`; здесь стоит `set -e`, и вызов валил отправку.
+    #
+    # Набор узкий намеренно: синтаксис, неопределённые имена, ошибки в
+    # f-строках и сравнениях. Полный набор даёт на этой базе 2815 замечаний,
+    # ворота из них не сделать. handlers/utils.py:F821 — ложное: имя стоит в
+    # строковой аннотации, а импортируется внутри функции.
+    ruff check . --isolated \
+        --select E9,F63,F7,F82 \
+        --exclude main.py,handlers/payments \
+        --extend-per-file-ignores "handlers/utils.py:F821"
 else
     echo "    ruff не установлен — пропускаю"
 fi
