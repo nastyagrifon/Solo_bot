@@ -3,6 +3,7 @@ from .delivery import (
     notify_agents_new_ticket,
     notify_client_of_reply,
     notify_client_ticket_closed,
+    notify_owner_status_changed,
     support_persona,
 )
 from .forum import (
@@ -58,6 +59,7 @@ __all__ = [
     "mark_read",
     "notify_client_of_reply",
     "notify_client_ticket_closed",
+    "notify_owner_status_changed",
     "notify_agents_new_ticket",
     "support_persona",
     "TicketRateLimited",
