@@ -78,6 +78,21 @@ ROLE_ALIASES: dict[str, str] = {"moderator": "support"}
 # Единственная роль, которой права не проверяются.
 SUPERADMIN_ROLE = "superadmin"
 
+# Роли, которые работают с клиентами и ведут бота. Остальным админские экраны
+# модулей не нужны: `staff` и `designer` смотрят, `tester` и `marketer`
+# заняты своим.
+WORKING_ROLES: tuple[str, ...] = ("superadmin", "admin", "support")
+
+# Модуль -> право, которым закрыт его АДМИНСКИЙ экран. Кого здесь нет, тому
+# хватает рабочей роли: карта вслепую на все модули закрыла бы доступ тем,
+# кто им пользуется. Дополнять по факту.
+MODULE_PERMISSIONS: dict[str, str] = {
+    "advanced_sender": PERM_BROADCASTING,
+    "notifications_lv": PERM_BROADCASTING,
+    "module_manager": PERM_MODULES,
+    "modctl": PERM_MODULES,
+}
+
 ALL_ROLES: tuple[str, ...] = tuple(ROLE_PRESETS.keys())
 
 

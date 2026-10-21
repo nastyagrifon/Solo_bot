@@ -5,6 +5,7 @@ from pathlib import Path
 
 from aiogram import Router
 
+from filters import module_acl
 from logger import logger
 
 from .modules_manager import _register_legacy_webhook, manager
@@ -41,6 +42,9 @@ def load_modules_from_folder(folder: str = "modules") -> list[Router]:
             router = getattr(mod, "router", None)
             if isinstance(router, Router):
                 modules_hub.include_router(router)
+                # Админские экраны модуля закрываем ролью: сами модули
+                # проверяют только факт записи в `admins`.
+                module_acl.install(router, name)
                 manager.adopt(name, router)
                 routers.append(router)
                 logger.info(f"[Modules] Загружен модуль: {module_path}")
