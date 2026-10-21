@@ -1,4 +1,5 @@
 from .delivery import (
+    deliver_client_message,
     notify_agents_new_ticket,
     notify_client_of_reply,
     notify_client_ticket_closed,
@@ -61,6 +62,7 @@ __all__ = [
     "support_persona",
     "TicketRateLimited",
     "delete_stale",
+    "deliver_client_message",
     "delete_ticket",
     "set_rating",
     "set_tags",
