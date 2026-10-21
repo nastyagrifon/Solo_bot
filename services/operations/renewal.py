@@ -118,7 +118,11 @@ async def renew_on_remnawave(
     if updated:
         logger.info(f"{PANEL_REMNA} Подписка {client_id} успешно продлена")
         return True
-    logger.debug(f"{PANEL_REMNA} Не удалось продлить {client_id}. Автосоздание отключено.")
+    logger.error(
+        f"{PANEL_REMNA} Подписка НЕ продлена в панели: client_id={client_id} email={email} "
+        f"tg_id={tg_id} server={server_ref} expire={expire_iso}. Автосоздание отключено — "
+        "если юзера в панели нет, срок в боте уедет вперёд, а доступ останется мёртвым."
+    )
     return False
 
 
