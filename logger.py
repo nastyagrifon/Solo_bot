@@ -195,7 +195,7 @@ logger.add(
     level=0,
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} | {extra[module_tag]} {message}",
     rotation=LOG_ROTATION_TIME,
-    retention=timedelta(days=3),
+    retention=timedelta(days=14),
     filter=_file_filter,
 )
 
