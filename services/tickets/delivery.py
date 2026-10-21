@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Admin, Identity, Ticket, TicketMessage
 from database.web_notifications import create_notification
+from logger import logger
 from settings import config
 
 from .events import publish_client_ticket_changed
@@ -36,10 +37,35 @@ def support_bot_instance():
         return None
 
 
+async def _taken_by_hook(session: AsyncSession, ticket: Ticket) -> bool:
+    """Отдать обращение подписчикам. True — доставку забрали, ядру молчать.
+
+    Хук, а не прямая зависимость от модуля: ядро про модуль знать не должно,
+    а модуль может быть выключен или упасть — тогда ядро доставляет само.
+    """
+    try:
+        from hooks.hooks import run_hooks
+
+        results = await run_hooks("web_ticket_created", session=session, ticket=ticket)
+    except Exception as e:                                       # noqa: BLE001
+        logger.error(f"[Tickets] хук web_ticket_created упал: {e}")
+        return False
+    if not results:
+        return False
+    return any(r is True for r in (results if isinstance(results, list) else [results]))
+
+
 async def notify_agents_new_ticket(session: AsyncSession, *, ticket: Ticket) -> None:
     short = ticket.id.split("-")[0][:8]
     cat = f" · {ticket.category}" if ticket.category else ""
     rows = [int(t) for t in (await session.execute(select(Admin.tg_id))).scalars().all() if t]
+
+    # Обращение из кабинета может забрать модуль поддержки: у него свои топики
+    # на КЛИЕНТА, автосообщения и карточки, и заводить рядом второй топик на
+    # обращение значило бы вести одного человека в двух местах. Обработчик,
+    # вернувший True, берёт доставку на себя — тогда ядро молчит.
+    if await _taken_by_hook(session, ticket):
+        return
 
     from .forum import ensure_topic, forum_enabled
 
