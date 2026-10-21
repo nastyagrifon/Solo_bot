@@ -489,6 +489,12 @@ async def agent_patch(
             raise HTTPException(status_code=400, detail="Недопустимый статус")
         if svc.forum_enabled() and payload.status in (svc.CLOSED, svc.OPEN):
             await svc.set_topic_state(ticket, closed=payload.status == svc.CLOSED)
+        if payload.status in (svc.CLOSED, svc.OPEN):
+            # Владелец доставки ведёт тикет в своём чате: статус должен
+            # совпадать, иначе в одном месте разговор окончен, а в другом нет.
+            await svc.notify_owner_status_changed(
+                session, ticket=ticket, status=payload.status
+            )
         if payload.status == svc.CLOSED and not was_closed:
             await svc.notify_client_ticket_closed(session, ticket=ticket)
     if payload.unassign:

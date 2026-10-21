@@ -147,6 +147,27 @@ async def deliver_client_message(
         await post_client_message(ticket, body, attachments)
 
 
+async def notify_owner_status_changed(
+    session: AsyncSession, *, ticket: Ticket, status: str
+) -> None:
+    """Сказать владельцу доставки, что статус обращения сменился.
+
+    Оператор закрывает обращение в кабинете — тикет в чате должен закрыться
+    тоже, иначе в одном месте разговор окончен, а в другом нет.
+    """
+    from core.intents import TICKETS_DELIVERY, owner_of
+
+    if not owner_of(TICKETS_DELIVERY):
+        return
+    try:
+        from hooks.hooks import run_hooks
+
+        await run_hooks("web_ticket_status", session=session, ticket=ticket,
+                        status=status)
+    except Exception as e:                                       # noqa: BLE001
+        logger.error(f"[Tickets] владелец не принял смену статуса: {e}")
+
+
 async def notify_client_ticket_closed(session: AsyncSession, *, ticket: Ticket) -> None:
     if ticket.rating is not None:
         return
