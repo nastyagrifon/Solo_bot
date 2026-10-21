@@ -111,6 +111,42 @@ async def notify_agents_new_ticket(session: AsyncSession, *, ticket: Ticket) -> 
     await _webpush_agents(session, [t for t in rows if t > 0], f"Новое обращение {short}", f"Категория{cat or ': —'}")
 
 
+async def deliver_client_message(
+    session: AsyncSession, *, ticket: Ticket, body: str, attachments: list | None = None
+) -> None:
+    """Сообщение клиента из кабинета — операторам.
+
+    Первое обращение доставляет `notify_agents_new_ticket`, а дальше клиент
+    пишет в то же обращение, и эти сообщения тоже должны доехать: без них
+    оператор видит начало разговора и больше ничего.
+
+    Владелец намерения тот же, что у создания: кто ведёт обращение, тот ведёт
+    и переписку по нему.
+    """
+    from core.intents import TICKETS_DELIVERY, owner_of
+
+    owner = owner_of(TICKETS_DELIVERY)
+    if owner:
+        try:
+            from hooks.hooks import run_hooks
+
+            await run_hooks(
+                "web_ticket_message",
+                session=session,
+                ticket=ticket,
+                body=body,
+                attachments=list(attachments or []),
+            )
+            return
+        except Exception as e:                                   # noqa: BLE001
+            logger.error(f"[Tickets] владелец «{owner}» не взял сообщение: {e}")
+
+    from .forum import forum_enabled, post_client_message
+
+    if forum_enabled():
+        await post_client_message(ticket, body, attachments)
+
+
 async def notify_client_ticket_closed(session: AsyncSession, *, ticket: Ticket) -> None:
     if ticket.rating is not None:
         return

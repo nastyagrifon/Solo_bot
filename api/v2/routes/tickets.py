@@ -265,10 +265,13 @@ async def my_ticket_reply(
     msg = await svc.add_message(
         session, ticket_id=ticket_id, author="client", body=body[:MAX_BODY], attachments=attachments
     )
-    if svc.forum_enabled():
-        ticket = await svc.get_ticket(session, ticket_id)
-        if ticket is not None:
-            await svc.post_client_message(ticket, body[:MAX_BODY], attachments)
+    ticket = await svc.get_ticket(session, ticket_id)
+    if ticket is not None:
+        # Доставку ведёт владелец намерения, а если он не заявлен — форум
+        # ядра, как раньше.
+        await svc.deliver_client_message(
+            session, ticket=ticket, body=body[:MAX_BODY], attachments=attachments
+        )
     return _msg_dict(msg)
 
 
