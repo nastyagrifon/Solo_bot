@@ -937,6 +937,34 @@ async def _collect_daily_series(session, moscow_tz, last_day: date, days: int):
     return labels, users, revenue
 
 
+def stats_report_target() -> tuple[int | None, int | None]:
+    """Куда шлём сводки по расписанию: (чат, тема) из настроек.
+
+    Пусто - прежнее поведение, каждому админу в личку. Ключа может не быть
+    вовсе: settings/config.py у каждой установки свой.
+    """
+    from utils.backup import parse_destination
+
+    try:
+        from settings import config as _cfg
+
+        raw = str(getattr(_cfg, "STATS_REPORT_DESTINATION", "") or "")
+    except Exception:                                                # noqa: BLE001
+        return None, None
+    if not raw.strip():
+        return None, None
+    # Разбор держим в try: битая настройка не должна валить задачу крона,
+    # а должна уводить сводку в личку и объяснять причину в журнале.
+    try:
+        chat_raw, thread_id = parse_destination(raw)
+        if not chat_raw:
+            return None, None
+        return int(chat_raw), thread_id
+    except (ValueError, TypeError) as e:
+        logger.warning(f"[Stats] STATS_REPORT_DESTINATION не разобран ({raw!r}): {e}; шлём в личку")
+        return None, None
+
+
 async def _send_report_to_admins(
     session: AsyncSession,
     text: str,
@@ -962,6 +990,11 @@ async def _send_report_to_admins(
                 )
             else:
                 await bot.send_message(chat_id, text, message_thread_id=thread_id)
+            logger.info(
+                f"[Stats] Отчёт отправлен в чат {chat_id}"
+                + (f", тема {thread_id}" if thread_id else "")
+                + (" с графиком" if photo_bytes is not None else " без графика")
+            )
         except Exception as e:
             # Самый частый случай - бот не может написать первым в личку тому,
             # кто не открывал с ним диалог. Молча считать это успехом нельзя.
@@ -972,6 +1005,7 @@ async def _send_report_to_admins(
     from database.models import Admin
 
     moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
+    dostavleno = 0
     for admin_id in ADMIN_ID:
         if admin_id in moderator_ids:
             continue
@@ -984,8 +1018,11 @@ async def _send_report_to_admins(
                 )
             else:
                 await bot.send_message(admin_id, text)
+            dostavleno += 1
         except Exception as e:
             logger.warning(f"[Stats] Не удалось отправить отчёт admin={admin_id}: {e}")
+    # Успех тоже пишем: иначе пустой журнал не отличить от «не отправлялось».
+    logger.info(f"[Stats] Отчёт отправлен в личку {dostavleno} из {len(ADMIN_ID)} админам")
     return True
 
 
@@ -1120,7 +1157,11 @@ def _month_window(year: int, month: int) -> tuple[date, date]:
     return start, end
 
 
-async def send_monthly_stats_report(session: AsyncSession):
+async def send_monthly_stats_report(
+    session: AsyncSession,
+    chat_id: int | None = None,
+    thread_id: int | None = None,
+) -> bool:
     try:
         from handlers.admin.stats.report_charts import render_stats_chart
 
@@ -1190,7 +1231,7 @@ async def send_monthly_stats_report(session: AsyncSession):
             ),
         )
 
-        await _send_report_to_admins(session, text, chart)
+        return await _send_report_to_admins(session, text, chart, chat_id, thread_id)
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке месячного отчёта: {e}")
@@ -1223,7 +1264,19 @@ async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) 
 #: Команда зовёт СВОДКУ, поэтому и называется по делу. Прежнее `/send-now`
 #: говорило про отправку, а не про отчёт; оставлено, чтобы не отбирать
 #: привычное имя у тех, кто уже им пользуется.
-_REPORT_NOW_ALIASES = ("/report-now", "/report_now", "/send-now", "/send_now")
+#: Текст вызова -> период сводки. Слово «Сводка» без уточнения - за день:
+#: так эта команда и работала с самого начала.
+_REPORT_NOW_ALIASES = {
+    "/report-now": "day",
+    "/report_now": "day",
+    "/send-now": "day",
+    "/send_now": "day",
+    "сводка": "day",
+    "/report-month": "month",
+    "/report_month": "month",
+    "сводка месяца": "month",
+    "сводка за месяц": "month",
+}
 
 
 #: Сколько раз подряд можно позвать сводку руками. Одна сводка - это шесть
@@ -1249,21 +1302,34 @@ async def _report_now_allowed(user_id: int) -> bool:
     return count <= _REPORT_NOW_MAX_CALLS
 
 
-def is_report_now_text(text: str | None) -> bool:
-    """Это вызов сводки? Принимаем оба написания и упоминание бота."""
+def report_now_period(text: str | None) -> str | None:
+    """Какую сводку просят: "day", "month" или None, если это не вызов.
+
+    Принимаем оба написания команды и упоминание бота в виде `/report-now@имя_бота`.
+    """
     if not text:
-        return False
-    return text.strip().split("@")[0].lower() in _REPORT_NOW_ALIASES
+        return None
+    return _REPORT_NOW_ALIASES.get(text.strip().split("@")[0].lower())
+
+
+def is_report_now_text(text: str | None) -> bool:
+    """Это вызов сводки? Оставлено для фильтра aiogram, ждущего bool."""
+    return report_now_period(text) is not None
 
 
 def report_now_target(
     chat_type: str, chat_id: int, user_id: int, thread_id: int | None
 ) -> tuple[int, int | None, bool]:
-    """Куда отправить сводку: (чат, тема, в_личку_вместо_группы).
+    """Куда отправить сводку по команде: (чат, тема, ушла_не_сюда).
 
-    В группу не отправляем даже по просьбе админа: цифры выручки увидят все
-    участники, а опечатка в выборе чата стоит слишком дорого.
+    Адресат из настроек сильнее места вызова: сводка уходит в заданный чат и
+    тему, откуда бы её ни позвали, - именно это и защищает цифры от случайного
+    чата. Настройки нет: в приватном отвечаем на месте, из группы уводим в
+    личку автору, потому что участники группы видеть выручку не должны.
     """
+    target_chat, target_thread = stats_report_target()
+    if target_chat is not None:
+        return target_chat, target_thread, (target_chat, target_thread) != (chat_id, thread_id)
     if chat_type == "private":
         return chat_id, thread_id, False
     return user_id, None, True
@@ -1274,38 +1340,38 @@ def report_now_target(
     IsAdminFilter(),
 )
 async def report_now_command(message: Message, session: AsyncSession) -> None:
-    """Скрытая команда: сводка в личку админу, в приватном чате - на месте.
+    """Сводка по требованию: «Сводка» и «Сводка месяца», `/report-now`,
+    `/report-month`.
 
-    В списке команд бота её нет намеренно - это проверочный ход для админа.
-    Почему не в группу - см. `report_now_target`.
+    В списке команд бота их нет намеренно - это проверочный ход для админа.
+    Куда уйдёт - см. `report_now_target`.
     """
     if not await _report_now_allowed(message.from_user.id):
         await message.answer("Слишком часто. Сводка собирается заново не чаще пяти раз за пять минут.")
         return
 
-    chat_id, thread_id, moved_to_dm = report_now_target(
+    period = report_now_period(message.text)
+    sobrat = send_monthly_stats_report if period == "month" else send_daily_stats_report
+    imya = "Сводка за месяц" if period == "month" else "Сводка за день"
+
+    chat_id, thread_id, moved_away = report_now_target(
         message.chat.type or "private",
         message.chat.id,
         message.from_user.id,
         message.message_thread_id,
     )
     try:
-        sent = await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
+        sent = await sobrat(session, chat_id=chat_id, thread_id=thread_id)
     except Exception as err:                                         # noqa: BLE001
-        logger.error("[Stats] Сводка по команде не собралась: {}", err)
+        logger.error("[Stats] {} по команде не собралась: {}", imya, err)
         sent = False
 
     # Говорим после отправки, а не до: обещание «ушла в личку» до самой
     # отправки осталось бы в группе даже тогда, когда она не дошла.
     if not sent:
         await message.answer(
-            "Сводка не ушла. Если звал из группы - открой диалог с ботом: "
+            f"{imya} не ушла. Если звал из группы - открой диалог с ботом: "
             "первым он написать не может. Подробности в журнале."
         )
-    elif moved_to_dm:
-        await message.answer("Сводка с цифрами выручки ушла в личку - в группе её видят все.")
-
-
-@router.message(F.text == "Сводка", IsAdminFilter())
-async def test_stats_command(message: Message, session: AsyncSession):
-    await send_daily_stats_report(session)
+    elif moved_away:
+        await message.answer(f"{imya} ушла в чат, заданный настройками, - здесь её не публикуем.")
