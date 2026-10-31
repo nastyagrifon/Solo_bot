@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import re
 import uuid
 
@@ -1078,6 +1079,36 @@ class CustomElementBuildUpdate(BaseModel):
     worker_id: str | None = None
 
 
+def _plugin_builder_token() -> str:
+    try:
+        from core.settings.web_config import WEB_CONFIG
+
+        token = str((WEB_CONFIG or {}).get("PLUGIN_BUILDER_TOKEN") or "").strip()
+        if token:
+            return token
+    except Exception:
+        pass
+    try:
+        from settings.config import PLUGIN_BUILDER_TOKEN
+
+        return str(PLUGIN_BUILDER_TOKEN or "").strip()
+    except Exception:
+        return ""
+
+
+async def verify_custom_element_builder(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    expected_token = _plugin_builder_token()
+    authorization = request.headers.get("authorization", "")
+    match = re.fullmatch(r"Bearer\s+(.+)", authorization.strip(), re.IGNORECASE)
+    supplied_token = match.group(1).strip() if match else ""
+    if expected_token and supplied_token and hmac.compare_digest(supplied_token.encode(), expected_token.encode()):
+        return None
+    return await verify_identity_designer(request, session)
+
+
 def _build_to_dict(b: WebCustomElementBuild) -> dict:
     return {
         "id": b.id,
@@ -1108,7 +1139,7 @@ def _build_to_dict(b: WebCustomElementBuild) -> dict:
 @router.get("/custom-element-builds")
 async def list_custom_element_builds(
     session: AsyncSession = Depends(get_session),
-    _identity=Depends(verify_identity_designer),
+    _identity=Depends(verify_custom_element_builder),
 ):
     result = await session.execute(select(WebCustomElementBuild).order_by(WebCustomElementBuild.created_at.desc()))
     builds = result.scalars().all()
@@ -1120,7 +1151,7 @@ async def list_custom_element_builds(
 async def create_custom_element_build(
     body: CustomElementBuildCreate,
     session: AsyncSession = Depends(get_session),
-    _identity=Depends(verify_identity_designer),
+    _identity=Depends(verify_custom_element_builder),
 ):
     build = WebCustomElementBuild(
         id=str(uuid.uuid4()),
@@ -1145,7 +1176,7 @@ async def create_custom_element_build(
 async def get_custom_element_build(
     build_id: str,
     session: AsyncSession = Depends(get_session),
-    _identity=Depends(verify_identity_designer),
+    _identity=Depends(verify_custom_element_builder),
 ):
     build = await session.get(WebCustomElementBuild, build_id)
     if not build:
@@ -1159,7 +1190,7 @@ async def update_custom_element_build(
     build_id: str,
     body: CustomElementBuildUpdate,
     session: AsyncSession = Depends(get_session),
-    _identity=Depends(verify_identity_designer),
+    _identity=Depends(verify_custom_element_builder),
 ):
     build = await session.get(WebCustomElementBuild, build_id)
     if not build:
@@ -1184,7 +1215,7 @@ async def update_custom_element_build(
 async def delete_custom_element_build(
     build_id: str,
     session: AsyncSession = Depends(get_session),
-    _identity=Depends(verify_identity_designer),
+    _identity=Depends(verify_custom_element_builder),
 ):
     build = await session.get(WebCustomElementBuild, build_id)
     if not build:
@@ -3088,20 +3119,7 @@ def _is_api_log(entry: dict) -> bool:
 
 
 def _site_log_token() -> str:
-    try:
-        from core.settings.web_config import WEB_CONFIG
-
-        tok = str((WEB_CONFIG or {}).get("PLUGIN_BUILDER_TOKEN") or "").strip()
-        if tok:
-            return tok
-    except Exception:
-        pass
-    try:
-        from settings.config import PLUGIN_BUILDER_TOKEN
-
-        return str(PLUGIN_BUILDER_TOKEN or "").strip()
-    except Exception:
-        return ""
+    return _plugin_builder_token()
 
 
 async def _fetch_site_log_lines(max_lines: int) -> tuple[list[str], bool, str | None]:
