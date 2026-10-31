@@ -937,6 +937,34 @@ async def _collect_daily_series(session, moscow_tz, last_day: date, days: int):
     return labels, users, revenue
 
 
+def stats_report_target() -> tuple[int | None, int | None]:
+    """Куда шлём сводки по расписанию: (чат, тема) из настроек.
+
+    Пусто - прежнее поведение, каждому админу в личку. Ключа может не быть
+    вовсе: settings/config.py у каждой установки свой.
+    """
+    from utils.backup import parse_destination
+
+    try:
+        from settings import config as _cfg
+
+        raw = str(getattr(_cfg, "STATS_REPORT_DESTINATION", "") or "")
+    except Exception:                                                # noqa: BLE001
+        return None, None
+    if not raw.strip():
+        return None, None
+    # Разбор держим в try: битая настройка не должна валить задачу крона,
+    # а должна уводить сводку в личку и объяснять причину в журнале.
+    try:
+        chat_raw, thread_id = parse_destination(raw)
+        if not chat_raw:
+            return None, None
+        return int(chat_raw), thread_id
+    except (ValueError, TypeError) as e:
+        logger.warning(f"[Stats] STATS_REPORT_DESTINATION не разобран ({raw!r}): {e}; шлём в личку")
+        return None, None
+
+
 async def _send_report_to_admins(
     session: AsyncSession,
     text: str,
@@ -962,6 +990,11 @@ async def _send_report_to_admins(
                 )
             else:
                 await bot.send_message(chat_id, text, message_thread_id=thread_id)
+            logger.info(
+                f"[Stats] Отчёт отправлен в чат {chat_id}"
+                + (f", тема {thread_id}" if thread_id else "")
+                + (" с графиком" if photo_bytes is not None else " без графика")
+            )
         except Exception as e:
             # Самый частый случай - бот не может написать первым в личку тому,
             # кто не открывал с ним диалог. Молча считать это успехом нельзя.
@@ -972,6 +1005,7 @@ async def _send_report_to_admins(
     from database.models import Admin
 
     moderator_ids = set((await session.execute(select(Admin.tg_id).where(Admin.role == "moderator"))).scalars().all())
+    dostavleno = 0
     for admin_id in ADMIN_ID:
         if admin_id in moderator_ids:
             continue
@@ -984,8 +1018,11 @@ async def _send_report_to_admins(
                 )
             else:
                 await bot.send_message(admin_id, text)
+            dostavleno += 1
         except Exception as e:
             logger.warning(f"[Stats] Не удалось отправить отчёт admin={admin_id}: {e}")
+    # Успех тоже пишем: иначе пустой журнал не отличить от «не отправлялось».
+    logger.info(f"[Stats] Отчёт отправлен в личку {dostavleno} из {len(ADMIN_ID)} админам")
     return True
 
 
@@ -1120,7 +1157,11 @@ def _month_window(year: int, month: int) -> tuple[date, date]:
     return start, end
 
 
-async def send_monthly_stats_report(session: AsyncSession):
+async def send_monthly_stats_report(
+    session: AsyncSession,
+    chat_id: int | None = None,
+    thread_id: int | None = None,
+):
     try:
         from handlers.admin.stats.report_charts import render_stats_chart
 
@@ -1190,7 +1231,7 @@ async def send_monthly_stats_report(session: AsyncSession):
             ),
         )
 
-        await _send_report_to_admins(session, text, chart)
+        await _send_report_to_admins(session, text, chart, chat_id, thread_id)
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке месячного отчёта: {e}")

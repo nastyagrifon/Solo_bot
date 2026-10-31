@@ -46,15 +46,23 @@ def _s3_configured() -> bool:
     return bool(BACKUP_S3_ENDPOINT and BACKUP_S3_ACCESS_KEY and BACKUP_S3_SECRET_KEY and BACKUP_S3_BUCKET)
 
 
-def _parse_destination() -> tuple[str | None, int | None]:
-    """Парсит BACKUP_DESTINATION в (chat_id, thread_id)."""
-    raw = BACKUP_DESTINATION.strip()
+def parse_destination(raw: str) -> tuple[str | None, int | None]:
+    """Парсит строку «чат» или «чат:тема» в (chat_id, thread_id).
+
+    Формат общий для всех адресатов в настройках, поэтому и разбор один:
+    второе место - адресат сводок (STATS_REPORT_DESTINATION).
+    """
+    raw = (raw or "").strip()
     if not raw:
         return None, None
     parts = raw.split(":", 1)
     chat_id = parts[0]
     thread_id = int(parts[1]) if len(parts) > 1 and parts[1].strip() else None
     return chat_id, thread_id
+
+
+def _parse_destination() -> tuple[str | None, int | None]:
+    return parse_destination(BACKUP_DESTINATION)
 
 
 def _find_docker_postgres_container() -> str | None:
