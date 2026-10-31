@@ -1161,7 +1161,7 @@ async def send_monthly_stats_report(
     session: AsyncSession,
     chat_id: int | None = None,
     thread_id: int | None = None,
-):
+) -> bool:
     try:
         from handlers.admin.stats.report_charts import render_stats_chart
 
@@ -1231,7 +1231,7 @@ async def send_monthly_stats_report(
             ),
         )
 
-        await _send_report_to_admins(session, text, chart, chat_id, thread_id)
+        return await _send_report_to_admins(session, text, chart, chat_id, thread_id)
 
     except Exception as e:
         logger.error(f"[Stats] Ошибка при отправке месячного отчёта: {e}")
@@ -1264,7 +1264,19 @@ async def send_daily_report_now(callback: CallbackQuery, session: AsyncSession) 
 #: Команда зовёт СВОДКУ, поэтому и называется по делу. Прежнее `/send-now`
 #: говорило про отправку, а не про отчёт; оставлено, чтобы не отбирать
 #: привычное имя у тех, кто уже им пользуется.
-_REPORT_NOW_ALIASES = ("/report-now", "/report_now", "/send-now", "/send_now")
+#: Текст вызова -> период сводки. Слово «Сводка» без уточнения - за день:
+#: так эта команда и работала с самого начала.
+_REPORT_NOW_ALIASES = {
+    "/report-now": "day",
+    "/report_now": "day",
+    "/send-now": "day",
+    "/send_now": "day",
+    "сводка": "day",
+    "/report-month": "month",
+    "/report_month": "month",
+    "сводка месяца": "month",
+    "сводка за месяц": "month",
+}
 
 
 #: Сколько раз подряд можно позвать сводку руками. Одна сводка - это шесть
@@ -1290,11 +1302,19 @@ async def _report_now_allowed(user_id: int) -> bool:
     return count <= _REPORT_NOW_MAX_CALLS
 
 
-def is_report_now_text(text: str | None) -> bool:
-    """Это вызов сводки? Принимаем оба написания и упоминание бота."""
+def report_now_period(text: str | None) -> str | None:
+    """Какую сводку просят: "day", "month" или None, если это не вызов.
+
+    Принимаем оба написания команды и упоминание бота в виде `/report-now@имя_бота`.
+    """
     if not text:
-        return False
-    return text.strip().split("@")[0].lower() in _REPORT_NOW_ALIASES
+        return None
+    return _REPORT_NOW_ALIASES.get(text.strip().split("@")[0].lower())
+
+
+def is_report_now_text(text: str | None) -> bool:
+    """Это вызов сводки? Оставлено для фильтра aiogram, ждущего bool."""
+    return report_now_period(text) is not None
 
 
 def report_now_target(
@@ -1320,14 +1340,19 @@ def report_now_target(
     IsAdminFilter(),
 )
 async def report_now_command(message: Message, session: AsyncSession) -> None:
-    """Скрытая команда: сводка в личку админу, в приватном чате - на месте.
+    """Сводка по требованию: «Сводка» и «Сводка месяца», `/report-now`,
+    `/report-month`.
 
-    В списке команд бота её нет намеренно - это проверочный ход для админа.
-    Почему не в группу - см. `report_now_target`.
+    В списке команд бота их нет намеренно - это проверочный ход для админа.
+    Куда уйдёт - см. `report_now_target`.
     """
     if not await _report_now_allowed(message.from_user.id):
         await message.answer("Слишком часто. Сводка собирается заново не чаще пяти раз за пять минут.")
         return
+
+    period = report_now_period(message.text)
+    sobrat = send_monthly_stats_report if period == "month" else send_daily_stats_report
+    imya = "Сводка за месяц" if period == "month" else "Сводка за день"
 
     chat_id, thread_id, moved_away = report_now_target(
         message.chat.type or "private",
@@ -1336,23 +1361,17 @@ async def report_now_command(message: Message, session: AsyncSession) -> None:
         message.message_thread_id,
     )
     try:
-        sent = await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
+        sent = await sobrat(session, chat_id=chat_id, thread_id=thread_id)
     except Exception as err:                                         # noqa: BLE001
-        logger.error("[Stats] Сводка по команде не собралась: {}", err)
+        logger.error("[Stats] {} по команде не собралась: {}", imya, err)
         sent = False
 
     # Говорим после отправки, а не до: обещание «ушла в личку» до самой
     # отправки осталось бы в группе даже тогда, когда она не дошла.
     if not sent:
         await message.answer(
-            "Сводка не ушла. Если звал из группы - открой диалог с ботом: "
+            f"{imya} не ушла. Если звал из группы - открой диалог с ботом: "
             "первым он написать не может. Подробности в журнале."
         )
     elif moved_away:
-        await message.answer("Сводка ушла в чат, заданный настройками, - здесь её не публикуем.")
-
-
-@router.message(F.text == "Сводка", IsAdminFilter())
-async def test_stats_command(message: Message, session: AsyncSession):
-    chat_id, thread_id = stats_report_target()
-    await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
+        await message.answer(f"{imya} ушла в чат, заданный настройками, - здесь её не публикуем.")
