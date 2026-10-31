@@ -1300,11 +1300,16 @@ def is_report_now_text(text: str | None) -> bool:
 def report_now_target(
     chat_type: str, chat_id: int, user_id: int, thread_id: int | None
 ) -> tuple[int, int | None, bool]:
-    """Куда отправить сводку: (чат, тема, в_личку_вместо_группы).
+    """Куда отправить сводку по команде: (чат, тема, ушла_не_сюда).
 
-    В группу не отправляем даже по просьбе админа: цифры выручки увидят все
-    участники, а опечатка в выборе чата стоит слишком дорого.
+    Адресат из настроек сильнее места вызова: сводка уходит в заданный чат и
+    тему, откуда бы её ни позвали, - именно это и защищает цифры от случайного
+    чата. Настройки нет: в приватном отвечаем на месте, из группы уводим в
+    личку автору, потому что участники группы видеть выручку не должны.
     """
+    target_chat, target_thread = stats_report_target()
+    if target_chat is not None:
+        return target_chat, target_thread, (target_chat, target_thread) != (chat_id, thread_id)
     if chat_type == "private":
         return chat_id, thread_id, False
     return user_id, None, True
@@ -1324,7 +1329,7 @@ async def report_now_command(message: Message, session: AsyncSession) -> None:
         await message.answer("Слишком часто. Сводка собирается заново не чаще пяти раз за пять минут.")
         return
 
-    chat_id, thread_id, moved_to_dm = report_now_target(
+    chat_id, thread_id, moved_away = report_now_target(
         message.chat.type or "private",
         message.chat.id,
         message.from_user.id,
@@ -1343,10 +1348,11 @@ async def report_now_command(message: Message, session: AsyncSession) -> None:
             "Сводка не ушла. Если звал из группы - открой диалог с ботом: "
             "первым он написать не может. Подробности в журнале."
         )
-    elif moved_to_dm:
-        await message.answer("Сводка с цифрами выручки ушла в личку - в группе её видят все.")
+    elif moved_away:
+        await message.answer("Сводка ушла в чат, заданный настройками, - здесь её не публикуем.")
 
 
 @router.message(F.text == "Сводка", IsAdminFilter())
 async def test_stats_command(message: Message, session: AsyncSession):
-    await send_daily_stats_report(session)
+    chat_id, thread_id = stats_report_target()
+    await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
