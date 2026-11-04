@@ -424,24 +424,42 @@ async def send_broadcast_schedule_now(
         item = await mark_scheduled_broadcast_failed(session, broadcast_id, result.get("message", "Broadcast failed"))
     return {"success": bool(result.get("success")), "item": scheduled_broadcast_to_dict(item), "result": result}
 
-@router.post("/stats/daily-report/send-now")
-async def send_daily_stats_report_now(
-    chat_id: int | None = Query(None, description="Куда отправить; по умолчанию админам в личку"),
+@router.post("/stats/report/send-now")
+@router.post("/stats/daily-report/send-now")  # прежний путь, оставлен рабочим
+async def send_stats_report_now(
+    period: str = Query("day", description="Какая сводка: day или month"),
+    chat_id: int | None = Query(None, description="Куда отправить; по умолчанию адресат из настроек, иначе админам в личку"),
     thread_id: int | None = Query(None, description="Тема форума внутри чата"),
     identity=Depends(verify_identity_admin_short),
     session: AsyncSession = Depends(get_session),
 ):
-    """Собрать и отправить сводку за день немедленно.
+    """Собрать и отправить сводку немедленно: за день или за месяц.
 
     Нужна, чтобы проверять сводку не дожидаясь ночного запуска и не набирая
     слово в чат: текстовый вызов перехватывает обработчик неизвестных сообщений.
-    """
-    from handlers.admin.stats.stats_handler import send_daily_stats_report
 
-    await _admin_rate_limit(identity, "daily_report_now", max_calls=5, window_sec=300)
+    Адресата можно не указывать - тогда берётся заданный настройками, а при
+    пустой настройке сводка уходит админам в личку.
+    """
+    from handlers.admin.stats.stats_handler import (
+        send_daily_stats_report,
+        send_monthly_stats_report,
+        stats_report_target,
+    )
+
+    if period not in ("day", "month"):
+        raise HTTPException(status_code=400, detail="period: day или month")
+    await _admin_rate_limit(identity, "stats_report_now", max_calls=5, window_sec=300)
+    if chat_id is None:
+        chat_id, thread_id = stats_report_target()
+    sobrat = send_monthly_stats_report if period == "month" else send_daily_stats_report
     try:
-        await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
+        sent = await sobrat(session, chat_id=chat_id, thread_id=thread_id)
     except Exception as exc:
-        logger.error("[Stats] send-now failed: {}", exc)
+        logger.error("[Stats] send-now failed ({}): {}", period, exc)
         raise HTTPException(status_code=500, detail="Ошибка при отправке сводки") from exc
-    return {"success": True}
+    # Отправка могла не пройти без исключения - например бот не вправе писать
+    # в указанный чат. Отвечать success в этом случае нельзя.
+    if not sent:
+        raise HTTPException(status_code=502, detail="Сводка собрана, но не отправлена; смотри журнал")
+    return {"success": True, "period": period}

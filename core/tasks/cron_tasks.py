@@ -43,17 +43,19 @@ async def scheduled_audit_drain_if_long() -> None:
 
 
 async def scheduled_stats_report() -> None:
-    from handlers.admin.stats.stats_handler import send_daily_stats_report
+    from handlers.admin.stats.stats_handler import send_daily_stats_report, stats_report_target
 
+    chat_id, thread_id = stats_report_target()
     async with async_session_maker() as session:
-        await send_daily_stats_report(session)
+        await send_daily_stats_report(session, chat_id=chat_id, thread_id=thread_id)
 
 
 async def scheduled_monthly_stats_report() -> None:
-    from handlers.admin.stats.stats_handler import send_monthly_stats_report
+    from handlers.admin.stats.stats_handler import send_monthly_stats_report, stats_report_target
 
+    chat_id, thread_id = stats_report_target()
     async with async_session_maker() as session:
-        await send_monthly_stats_report(session)
+        await send_monthly_stats_report(session, chat_id=chat_id, thread_id=thread_id)
 
 
 async def sweep_stale_payments_job() -> None:
