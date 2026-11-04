@@ -1,0 +1,62 @@
+#!/bin/sh
+# Проверки перед отправкой ветки.
+#
+# Повод: у сборки нет машинных проверок на стороне площадки, и всё держалось
+# на памяти того, кто правит. За двое суток так утекли четыре дефекта, включая
+# тест, которого не оказалось в репозитории: каталог tests перечислен в
+# .gitignore, и обычный `git add` его не берёт.
+#
+# Поставить: ln -sf ../../.github/hooks/pre-push .git/hooks/pre-push
+set -e
+
+echo "pre-push: разбор ruff"
+if command -v ruff >/dev/null 2>&1; then
+    # Исключения те же, что в pre-commit проекта: главный модуль
+    # обфусцирован, утилиты оплаты скомпилированы.
+    #
+    # --isolated, потому что конфига ruff в репозитории нет: pyproject.toml,
+    # на который ссылается pre-commit, отсутствует. Там это незаметно, хук
+    # заканчивается `exit 0`; здесь стоит `set -e`, и вызов валил отправку.
+    #
+    # Набор узкий намеренно: синтаксис, неопределённые имена, ошибки в
+    # f-строках и сравнениях. Полный набор даёт на этой базе 2815 замечаний,
+    # ворота из них не сделать. handlers/utils.py:F821 — ложное: имя стоит в
+    # строковой аннотации, а импортируется внутри функции.
+    ruff check . --isolated \
+        --select E9,F63,F7,F82 \
+        --exclude main.py,handlers/payments \
+        --extend-per-file-ignores "handlers/utils.py:F821"
+else
+    echo "    ruff не установлен — пропускаю"
+fi
+
+echo "pre-push: тесты, которые идут без установленного бота"
+green=0
+for f in tests/test_*.py; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f" .py)
+    if python3 -I -m unittest discover -s tests -p "$name.py" >/tmp/prepush.out 2>&1; then
+        green=$((green + 1))
+    elif grep -qE "ModuleNotFoundError: No module named '(aiogram|aiohttp|loguru|sqlalchemy)'" /tmp/prepush.out; then
+        :        # набору нужен установленный бот, на dev он тоже не идёт
+    else
+        echo "    FAIL $name"
+        cat /tmp/prepush.out
+        exit 1
+    fi
+done
+echo "    зелёных наборов: $green"
+[ "$green" -gt 0 ] || { echo "    ни один набор не прошёл" >&2; exit 1; }
+
+echo "pre-push: тесты должны быть в репозитории"
+missing=0
+for f in tests/test_*.py; do
+    [ -f "$f" ] || continue
+    if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+        echo "    на диске есть, в репозитории нет: $f (нужен git add -f)"
+        missing=1
+    fi
+done
+[ "$missing" -eq 0 ] || exit 1
+
+echo "pre-push: порядок"

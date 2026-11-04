@@ -14,6 +14,9 @@ import pathlib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Реестру безразлично, кто заявил намерение, поэтому заявители здесь условные.
+OWNER = "module_a"
+OTHER = "module_b"
 DELIVERY = (ROOT / "services" / "tickets" / "delivery.py").read_text(encoding="utf-8")
 
 
@@ -37,28 +40,28 @@ class Registry(unittest.TestCase):
         self.assertFalse(self.intents.taken(self.name))
 
     def test_claim_makes_owner(self):
-        self.assertTrue(self.intents.claim(self.name, "techsupport"))
-        self.assertEqual(self.intents.owner_of(self.name), "techsupport")
+        self.assertTrue(self.intents.claim(self.name, OWNER))
+        self.assertEqual(self.intents.owner_of(self.name), OWNER)
         self.assertTrue(self.intents.taken(self.name))
 
     def test_second_claimant_is_refused(self):
         """Два модуля с одним намерением — ошибка настройки, а не гонка."""
-        self.intents.claim(self.name, "techsupport")
-        self.assertFalse(self.intents.claim(self.name, "other"))
-        self.assertEqual(self.intents.owner_of(self.name), "techsupport")
+        self.intents.claim(self.name, OWNER)
+        self.assertFalse(self.intents.claim(self.name, OTHER))
+        self.assertEqual(self.intents.owner_of(self.name), OWNER)
 
     def test_same_owner_can_reclaim(self):
         """Повторная загрузка модуля не должна ломать владение."""
-        self.intents.claim(self.name, "techsupport")
-        self.assertTrue(self.intents.claim(self.name, "techsupport"))
+        self.intents.claim(self.name, OWNER)
+        self.assertTrue(self.intents.claim(self.name, OWNER))
 
     def test_unknown_intent_is_refused(self):
-        self.assertFalse(self.intents.claim("что-то.левое", "techsupport"))
+        self.assertFalse(self.intents.claim("что-то.левое", OWNER))
 
     def test_release_only_by_owner(self):
-        self.intents.claim(self.name, "techsupport")
-        self.assertFalse(self.intents.release(self.name, "other"))
-        self.assertTrue(self.intents.release(self.name, "techsupport"))
+        self.intents.claim(self.name, OWNER)
+        self.assertFalse(self.intents.release(self.name, OTHER))
+        self.assertTrue(self.intents.release(self.name, OWNER))
         self.assertIsNone(self.intents.owner_of(self.name))
 
 
