@@ -3,7 +3,7 @@ import secrets
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.client_origin import client_campaign, client_origin
@@ -547,12 +547,64 @@ async def merge_billing_user_into_telegram(session: AsyncSession, identity_id: s
     await _transfer_user_data(session, src_uid, dst_uid, dst_tg, identity_id)
 
 
+async def _profile_has_no_purchases(session: AsyncSession, ident: Identity) -> bool:
+    """True, если у профиля нет ни оплаченных платежей, ни выданных ключей.
+
+    Покупкой считаем платёж со статусом success: заведённый и неоплаченный
+    счёт денежного следа не оставляет. Ключ считаем любой — это выданный
+    доступ, даже если он уже истёк.
+    """
+    from database.models import Key, Payment
+
+    user = (await session.execute(select(User).where(User.identity_id == ident.id))).scalars().first()
+    tg = int(ident.tg_id) if ident.tg_id is not None else None
+
+    uslovija = []
+    if user is not None:
+        uslovija.append(Payment.user_id == user.id)
+    if tg is not None:
+        uslovija.append(Payment.tg_id == tg)
+    if uslovija:
+        oplat = await session.scalar(
+            select(func.count()).select_from(Payment).where(Payment.status == "success", or_(*uslovija))
+        )
+        if oplat:
+            return False
+
+    if tg is not None:
+        klyuchi = await session.scalar(select(func.count()).select_from(Key).where(Key.tg_id == tg))
+        if klyuchi:
+            return False
+
+    return True
+
+
+async def can_merge_identities(session: AsyncSession, ours: Identity, theirs: Identity, *, by: str) -> bool:
+    """Можно ли слить два профиля. ``by`` — что совпало: "email" или "tg".
+
+    Прежнее правило: сливаем, когда у занимающей стороны второго
+    идентификатора нет либо он совпадает с нашим. Добавлен случай разных
+    владельцев — слияние разрешено, если покупок нет хотя бы у одной
+    стороны: переносить поверх чужого оплаченного тогда нечего. Платили оба
+    — отказ, такой случай разбирается руками через поддержку.
+    """
+    if by == "email":
+        our_tg, their_tg = ours.tg_id, theirs.tg_id
+        if their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg)):
+            return True
+    else:
+        our_email = str(ours.email).strip().lower() if ours.email else None
+        their_email = str(theirs.email).strip().lower() if theirs.email else None
+        if their_email is None or (our_email is not None and their_email == our_email):
+            return True
+    return await _profile_has_no_purchases(session, ours) or await _profile_has_no_purchases(session, theirs)
+
+
 async def attach_email(session: AsyncSession, identity_id: str, email: str) -> Identity | None:
     """Привязывает email к идентичности.
 
-    Если email уже занят другой identity — пытаемся смёржить.
-    Условия мёрджа: у занимающей identity нет tg_id ИЛИ tg_id совпадает с нашим.
-    Иначе — возврат None (email принадлежит другому человеку, не отдаём).
+    Если email уже занят другой identity — пытаемся смёржить по правилу
+    ``can_merge_identities``. Правило отказало — возврат None.
     """
     identity = await get_identity_by_id(session, identity_id)
     if not identity:
@@ -562,10 +614,7 @@ async def attach_email(session: AsyncSession, identity_id: str, email: str) -> I
         return identity
     existing = await get_identity_by_email(session, email_clean)
     if existing and existing.id != identity_id:
-        our_tg = identity.tg_id
-        their_tg = existing.tg_id
-        can_merge = their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg))
-        if not can_merge:
+        if not await can_merge_identities(session, identity, existing, by="email"):
             return None
 
         src_user = (await session.execute(select(User).where(User.identity_id == existing.id))).scalars().first()
@@ -598,19 +647,15 @@ async def attach_email(session: AsyncSession, identity_id: str, email: str) -> I
 async def attach_telegram(session: AsyncSession, identity_id: str, tg_id: int) -> Identity | None:
     """Привязывает Telegram (tg_id) к идентичности и связывает User с identity.
 
-    Если tg_id уже висит на другой identity — пытаемся смёржить.
-    Условия мёрджа: у занимающей identity нет email ИЛИ email совпадает с нашим.
-    Иначе — возврат None (TG принадлежит другому человеку).
+    Если tg_id уже висит на другой identity — пытаемся смёржить по правилу
+    ``can_merge_identities``. Правило отказало — возврат None.
     """
     identity = await get_identity_by_id(session, identity_id)
     if not identity:
         return None
     existing = await get_identity_by_tg_id(session, tg_id)
     if existing and existing.id != identity_id:
-        our_email = str(identity.email).strip().lower() if identity.email else None
-        their_email = str(existing.email).strip().lower() if existing.email else None
-        can_merge = their_email is None or (our_email is not None and their_email == our_email)
-        if not can_merge:
+        if not await can_merge_identities(session, identity, existing, by="tg"):
             return None
         existing.email = None
         existing.tg_id = None
