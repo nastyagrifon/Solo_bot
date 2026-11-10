@@ -20,6 +20,56 @@ class VerifyEmailRequest(BaseModel):
     code: str = PydanticField(..., min_length=1, max_length=10)
 
 
+class SetEmailRequest(BaseModel):
+    email: str = PydanticField(..., min_length=3, max_length=255)
+
+
+@router.post("/set-email")
+async def set_email(
+    body: SetEmailRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    identity=Depends(verify_identity_token),
+):
+    """Указать или сменить email без подтверждения.
+
+    Адрес сохраняется сразу и помечается неподтверждённым: человек видит его
+    в профиле с красной плашкой и подтверждает отдельным шагом. Смена уже
+    подтверждённого адреса тоже снимает подтверждение — подтверждён не адрес
+    вообще, а конкретный адрес.
+    """
+    from sqlalchemy import update
+
+    from database.identities import get_identity_by_email
+    from database.models import Identity as IdentityModel
+    from utils.disposable_emails import is_disposable_email
+    from utils.web_email_codes import normalize_email
+
+    email_norm = normalize_email(body.email)
+    if not email_norm:
+        raise HTTPException(status_code=400, detail="Укажите корректный email")
+    if is_disposable_email(email_norm):
+        raise HTTPException(status_code=400, detail="Одноразовые email-адреса не поддерживаются")
+
+    tekushchiy = (identity.email or "").strip().lower()
+    if tekushchiy == email_norm:
+        return {"ok": True, "email": email_norm, "email_verified": bool(getattr(identity, "email_verified", False))}
+
+    chuzhoy = await get_identity_by_email(session, email_norm)
+    if chuzhoy is not None and chuzhoy.id != identity.id:
+        # Занятость адреса не расписываем: ответ один и тот же, кем бы он ни
+        # был занят. Разбор таких случаев идёт через поддержку.
+        raise HTTPException(
+            status_code=409,
+            detail="Не удалось указать этот адрес. Напишите в поддержку — разберёмся.",
+        )
+
+    await session.execute(
+        update(IdentityModel).where(IdentityModel.id == identity.id).values(email=email_norm, email_verified=False)
+    )
+    return {"ok": True, "email": email_norm, "email_verified": False}
+
+
 @router.post("/send-verify-code")
 async def send_email_verify_code(
     request: Request,

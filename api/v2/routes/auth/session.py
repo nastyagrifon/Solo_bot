@@ -311,6 +311,7 @@ async def auth_summary(
     return AccountSummaryResponse(
         identity_id=identity.id,
         email=identity.email,
+        email_verified=bool(getattr(identity, "email_verified", False)),
         tg_id=identity.tg_id,
         tg_username=tg_profile.get("username"),
         tg_first_name=tg_profile.get("first_name"),

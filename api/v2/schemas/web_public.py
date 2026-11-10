@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class AccountSummaryResponse(BaseModel):
     identity_id: str
     email: str | None = None
+    email_verified: bool = False
     tg_id: int | None = None
     tg_username: str | None = None
     tg_first_name: str | None = None
