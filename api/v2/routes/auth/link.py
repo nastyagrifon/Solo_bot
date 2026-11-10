@@ -48,19 +48,11 @@ async def link_email_send_code(
             status_code=503,
             detail="Сервис временно недоступен. Попробуйте позже.",
         )
-    existing = await idb.get_identity_by_email(session, email_norm)
-    if existing and existing.id != identity.id:
-        our_tg = identity.tg_id
-        their_tg = existing.tg_id
-        can_merge = their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg))
-        if not can_merge:
-            # Не говорим, занят ли адрес и кем: иначе перебором узнаётся,
-            # какие почты зарегистрированы (user enumeration). Человеку
-            # сообщаем только то, что делать дальше.
-            raise HTTPException(
-                status_code=409,
-                detail="Не удалось привязать этот адрес. Напишите в поддержку — разберёмся.",
-            )
+    # Занятость чужого адреса здесь не проверяем намеренно. Любой ответ,
+    # отличный от обычного, выдавал бы перебором список зарегистрированных
+    # почт - различался и текст, и код статуса. Решает привязку confirm:
+    # до него доходит только тот, кто получил письмо и ввёл код, то есть
+    # владелец ящика, и ему уже можно сказать правду.
     ip = _client_ip(request)
     if not await email_link_code.try_consume_ip_budget(ip):
         raise HTTPException(
@@ -121,7 +113,10 @@ async def link_email_confirm(
         raise HTTPException(status_code=401, detail="Неверный код или срок действия истёк")
     result = await idb.attach_email(session, identity.id, email_norm)
     if not result:
-        # Та же причина, что и в send-code: не раскрываем, занят адрес или нет.
+        # Сюда доходит владелец ящика - код он взял из письма, так что
+        # отказ ему не утечка. Причину не расписываем: случаев несколько
+        # (занят другим профилем, покупки у обоих), и разбор всё равно
+        # руками через поддержку.
         raise HTTPException(
             status_code=409,
             detail="Не удалось привязать этот адрес. Напишите в поддержку — разберёмся.",

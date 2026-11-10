@@ -579,12 +579,32 @@ async def _profile_has_no_purchases(session: AsyncSession, ident: Identity) -> b
     return True
 
 
+async def can_merge_identities(session: AsyncSession, ours: Identity, theirs: Identity, *, by: str) -> bool:
+    """Можно ли слить два профиля. ``by`` — что совпало: "email" или "tg".
+
+    Прежнее правило: сливаем, когда у занимающей стороны второго
+    идентификатора нет либо он совпадает с нашим. Добавлен случай разных
+    владельцев — слияние разрешено, если покупок нет хотя бы у одной
+    стороны: переносить поверх чужого оплаченного тогда нечего. Платили оба
+    — отказ, такой случай разбирается руками через поддержку.
+    """
+    if by == "email":
+        our_tg, their_tg = ours.tg_id, theirs.tg_id
+        if their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg)):
+            return True
+    else:
+        our_email = str(ours.email).strip().lower() if ours.email else None
+        their_email = str(theirs.email).strip().lower() if theirs.email else None
+        if their_email is None or (our_email is not None and their_email == our_email):
+            return True
+    return await _profile_has_no_purchases(session, ours) or await _profile_has_no_purchases(session, theirs)
+
+
 async def attach_email(session: AsyncSession, identity_id: str, email: str) -> Identity | None:
     """Привязывает email к идентичности.
 
-    Если email уже занят другой identity — пытаемся смёржить.
-    Условия мёрджа: у занимающей identity нет tg_id ИЛИ tg_id совпадает с нашим.
-    Иначе — возврат None (email принадлежит другому человеку, не отдаём).
+    Если email уже занят другой identity — пытаемся смёржить по правилу
+    ``can_merge_identities``. Правило отказало — возврат None.
     """
     identity = await get_identity_by_id(session, identity_id)
     if not identity:
@@ -594,20 +614,8 @@ async def attach_email(session: AsyncSession, identity_id: str, email: str) -> I
         return identity
     existing = await get_identity_by_email(session, email_clean)
     if existing and existing.id != identity_id:
-        our_tg = identity.tg_id
-        their_tg = existing.tg_id
-        can_merge = their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg))
-        if not can_merge:
-            # Когда у профилей разные Telegram, сливать можно, если покупки
-            # есть не больше чем у одного из них: переносить поверх чужого
-            # оплаченного тогда нечего. Платили оба — случай разбирается
-            # руками через поддержку, автоматика к деньгам не прикасается.
-            if await _profile_has_no_purchases(session, existing) or await _profile_has_no_purchases(
-                session, identity
-            ):
-                can_merge = True
-            else:
-                return None
+        if not await can_merge_identities(session, identity, existing, by="email"):
+            return None
 
         src_user = (await session.execute(select(User).where(User.identity_id == existing.id))).scalars().first()
         dst_uid = await ensure_billing_user_for_identity(session, identity)
@@ -639,19 +647,15 @@ async def attach_email(session: AsyncSession, identity_id: str, email: str) -> I
 async def attach_telegram(session: AsyncSession, identity_id: str, tg_id: int) -> Identity | None:
     """Привязывает Telegram (tg_id) к идентичности и связывает User с identity.
 
-    Если tg_id уже висит на другой identity — пытаемся смёржить.
-    Условия мёрджа: у занимающей identity нет email ИЛИ email совпадает с нашим.
-    Иначе — возврат None (TG принадлежит другому человеку).
+    Если tg_id уже висит на другой identity — пытаемся смёржить по правилу
+    ``can_merge_identities``. Правило отказало — возврат None.
     """
     identity = await get_identity_by_id(session, identity_id)
     if not identity:
         return None
     existing = await get_identity_by_tg_id(session, tg_id)
     if existing and existing.id != identity_id:
-        our_email = str(identity.email).strip().lower() if identity.email else None
-        their_email = str(existing.email).strip().lower() if existing.email else None
-        can_merge = their_email is None or (our_email is not None and their_email == our_email)
-        if not can_merge:
+        if not await can_merge_identities(session, identity, existing, by="tg"):
             return None
         existing.email = None
         existing.tg_id = None
