@@ -98,16 +98,16 @@ async def cleanup_expired_gifts_job() -> None:
 
 
 async def autoclose_stale_tickets_job() -> None:
-    from services.tickets import delete_stale
+    from services.tickets import close_stale
 
     async with async_session_maker() as session:
         try:
-            count = await delete_stale(session, answered_days=2, closed_days=1)
+            count = await close_stale(session, answered_days=2)
             await session.commit()
             if count:
-                logger.info("[TicketsCleanup] Удалено протухших обращений (с темами): {}", count)
+                logger.info("[TicketsCleanup] Автозакрыто обращений без ответа клиента: {}", count)
         except Exception as error:
-            logger.error("[TicketsCleanup] Ошибка очистки обращений: {}", error)
+            logger.error("[TicketsCleanup] Ошибка автозакрытия обращений: {}", error)
 
 
 WEB_ANALYTICS_RETENTION_DAYS = 90

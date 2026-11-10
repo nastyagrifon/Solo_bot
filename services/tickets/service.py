@@ -259,23 +259,27 @@ async def delete_ticket(session: AsyncSession, ticket_id: str) -> bool:
     return True
 
 
-async def delete_stale(session: AsyncSession, *, answered_days: int = 2, closed_days: int = 1) -> int:
-    """Гигиена: удаляет протухшие тикеты вместе с их форум-темами.
+async def close_stale(session: AsyncSession, *, answered_days: int = 2) -> int:
+    """Гигиена: закрывает обращения, на которые клиент не вернулся.
 
-    - «Отвечен» без ответа клиента дольше answered_days → удалить.
-    - «Закрыт» без реакции клиента дольше closed_days → удалить.
-    Сообщения удаляются каскадно (FK ondelete=CASCADE)."""
+    «Отвечен» без ответа клиента дольше answered_days → `closed`.
+
+    Прежде эта функция УДАЛЯЛА такие обращения — вместе с перепиской
+    (каскад по messages) и темой форума. За сутки-двое из базы исчезала
+    история клиента: в кабинете у него пропадало обращение целиком, а у
+    поддержки — тема с разбором. Из тридцати связок обращение-тема
+    тринадцать указывали в пустоту.
+
+    Тему форума больше не трогаем: она живёт на клиента и переживает
+    отдельное обращение, а закрывает её тот, кто ей владеет.
+    """
     now = _now()
     answered_cut = now - timedelta(days=answered_days)
-    closed_cut = now - timedelta(days=closed_days)
     tickets = list(
         (
             await session.execute(
                 select(Ticket).where(
-                    or_(
-                        and_(Ticket.status == ANSWERED, Ticket.last_message_at < answered_cut),
-                        and_(Ticket.status == CLOSED, Ticket.updated_at < closed_cut),
-                    )
+                    and_(Ticket.status == ANSWERED, Ticket.last_message_at < answered_cut)
                 )
             )
         )
@@ -284,12 +288,11 @@ async def delete_stale(session: AsyncSession, *, answered_days: int = 2, closed_
     )
     if not tickets:
         return 0
-    from .forum import delete_topic
-
     for t in tickets:
-        await delete_topic(t)
-        await session.delete(t)
+        t.status = CLOSED
+        t.updated_at = now
     await session.flush()
+    await publish_tickets_changed()
     return len(tickets)
 
 
