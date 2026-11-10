@@ -3,7 +3,7 @@ import secrets
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.client_origin import client_campaign, client_origin
@@ -547,6 +547,38 @@ async def merge_billing_user_into_telegram(session: AsyncSession, identity_id: s
     await _transfer_user_data(session, src_uid, dst_uid, dst_tg, identity_id)
 
 
+async def _profile_has_no_purchases(session: AsyncSession, ident: Identity) -> bool:
+    """True, если у профиля нет ни оплаченных платежей, ни выданных ключей.
+
+    Покупкой считаем платёж со статусом success: заведённый и неоплаченный
+    счёт денежного следа не оставляет. Ключ считаем любой — это выданный
+    доступ, даже если он уже истёк.
+    """
+    from database.models import Key, Payment
+
+    user = (await session.execute(select(User).where(User.identity_id == ident.id))).scalars().first()
+    tg = int(ident.tg_id) if ident.tg_id is not None else None
+
+    uslovija = []
+    if user is not None:
+        uslovija.append(Payment.user_id == user.id)
+    if tg is not None:
+        uslovija.append(Payment.tg_id == tg)
+    if uslovija:
+        oplat = await session.scalar(
+            select(func.count()).select_from(Payment).where(Payment.status == "success", or_(*uslovija))
+        )
+        if oplat:
+            return False
+
+    if tg is not None:
+        klyuchi = await session.scalar(select(func.count()).select_from(Key).where(Key.tg_id == tg))
+        if klyuchi:
+            return False
+
+    return True
+
+
 async def attach_email(session: AsyncSession, identity_id: str, email: str) -> Identity | None:
     """Привязывает email к идентичности.
 
@@ -566,7 +598,16 @@ async def attach_email(session: AsyncSession, identity_id: str, email: str) -> I
         their_tg = existing.tg_id
         can_merge = their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg))
         if not can_merge:
-            return None
+            # Когда у профилей разные Telegram, сливать можно, если покупки
+            # есть не больше чем у одного из них: переносить поверх чужого
+            # оплаченного тогда нечего. Платили оба — случай разбирается
+            # руками через поддержку, автоматика к деньгам не прикасается.
+            if await _profile_has_no_purchases(session, existing) or await _profile_has_no_purchases(
+                session, identity
+            ):
+                can_merge = True
+            else:
+                return None
 
         src_user = (await session.execute(select(User).where(User.identity_id == existing.id))).scalars().first()
         dst_uid = await ensure_billing_user_for_identity(session, identity)

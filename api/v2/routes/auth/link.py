@@ -37,7 +37,7 @@ async def link_email_send_code(
     if not email_norm:
         raise HTTPException(status_code=400, detail="Укажите корректный email")
     if identity.email and str(identity.email).strip().lower() == email_norm:
-        raise HTTPException(status_code=409, detail="Этот email уже привязан к аккаунту")
+        raise HTTPException(status_code=409, detail="Этот адрес уже привязан к вашему профилю")
     if not smtp_configured():
         raise HTTPException(
             status_code=503,
@@ -54,9 +54,12 @@ async def link_email_send_code(
         their_tg = existing.tg_id
         can_merge = their_tg is None or (our_tg is not None and int(their_tg) == int(our_tg))
         if not can_merge:
+            # Не говорим, занят ли адрес и кем: иначе перебором узнаётся,
+            # какие почты зарегистрированы (user enumeration). Человеку
+            # сообщаем только то, что делать дальше.
             raise HTTPException(
                 status_code=409,
-                detail="Этот email уже привязан к другому аккаунту",
+                detail="Не удалось привязать этот адрес. Напишите в поддержку — разберёмся.",
             )
     ip = _client_ip(request)
     if not await email_link_code.try_consume_ip_budget(ip):
@@ -118,9 +121,10 @@ async def link_email_confirm(
         raise HTTPException(status_code=401, detail="Неверный код или срок действия истёк")
     result = await idb.attach_email(session, identity.id, email_norm)
     if not result:
+        # Та же причина, что и в send-code: не раскрываем, занят адрес или нет.
         raise HTTPException(
             status_code=409,
-            detail="Этот email уже привязан к другой идентичности",
+            detail="Не удалось привязать этот адрес. Напишите в поддержку — разберёмся.",
         )
     await bind_identity_actor(request, session, result)
     set_is_admin_cookie(response, result, request)
