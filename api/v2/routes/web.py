@@ -47,13 +47,14 @@ from logger import logger
 
 
 UPLOAD_DIR = Path("static/web_uploads")
-ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm"})
+ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".mp4", ".webm"})
 MAX_FILE_SIZE = 100 * 1024 * 1024
 _IMAGE_RESIZE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
 
 EXTENSION_CONTENT_TYPES: dict[str, frozenset[str]] = {
+    ".ico": frozenset({"image/x-icon", "image/vnd.microsoft.icon", "application/octet-stream"}),
     ".png": frozenset({"image/png"}),
     ".jpg": frozenset({"image/jpeg"}),
     ".jpeg": frozenset({"image/jpeg"}),
@@ -188,6 +189,116 @@ def _sanitize_svg(data: bytes) -> bytes:
 router = APIRouter(tags=["Web"])
 
 
+_ADMIN_ACTION_PHRASES = {
+    "page.create": "создал страницу",
+    "page.update": "сохранил страницу",
+    "page.delete": "удалил страницу",
+    "page.theme.update": "сохранил тему страницы",
+    "page.theme.patch": "изменил настройки темы страницы",
+    "page.title.update": "переименовал страницу",
+    "variant.create": "создал вариант страницы",
+    "variant.update": "сохранил вариант страницы",
+    "variant.delete": "удалил вариант страницы",
+    "design.install_default": "поставил оформление по умолчанию",
+    "design.install_pack": "поставил оформление набора",
+    "design.create_pack": "создал свой набор",
+    "design.delete_pack": "удалил набор",
+    "design.capture_pack": "снял слепок оформления набора",
+    "design.import_pack_file": "импортировал набор файлом",
+    "design.import_pack_zip": "импортировал набор архивом",
+    "design.pack_settings": "изменил настройки набора",
+    "design.rollback": "откатил оформление",
+    "design.showcase": "переключил режим витрины",
+    "blocks.import_pack": "импортировал блоки набора",
+    "notify.rules.update": "изменил правила уведомлений",
+    "analytics.reset": "сбросил аналитику сайта",
+    "pwa_icon.set": "сменил иконку приложения",
+}
+
+
+def _custom_element_blueprint_changes(before, after) -> list[dict]:
+    def safe_value(value, limit: int) -> str:
+        return re.sub(r"[^a-zA-Z0-9._-]", "_", str(value or "").strip())[:limit]
+
+    def index(items) -> dict[str, dict]:
+        if not isinstance(items, list):
+            return {}
+        result = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug.strip():
+                continue
+            blueprint_id = item.get("id")
+            key = str(blueprint_id or slug).strip()[:128]
+            if key:
+                result[key] = item
+        return result
+
+    old_by_id = index(before)
+    new_by_id = index(after)
+    changes: list[dict] = []
+    for key in sorted(old_by_id.keys() | new_by_id.keys()):
+        old = old_by_id.get(key)
+        new = new_by_id.get(key)
+        if old == new:
+            continue
+        item = new or old or {}
+        slug = item.get("slug")
+        runtime = item.get("runtime")
+        fields = sorted(
+            safe_value(field, 64)
+            for field in (old or {}).keys() | (new or {}).keys()
+            if (old or {}).get(field) != (new or {}).get(field)
+        )[:50]
+        changes.append({
+            "operation": "created" if old is None else "deleted" if new is None else "updated",
+            "slug": safe_value(slug, 64),
+            "runtime": safe_value(runtime, 40),
+            "fields": fields,
+        })
+    return changes[:100]
+
+
+def _safe_custom_element_log_value(value, limit: int) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", str(value or "").strip())[:limit]
+
+
+def _custom_element_wiring_summary(value) -> dict:
+    wiring = value if isinstance(value, dict) else {}
+    chrome = wiring.get("chrome") if isinstance(wiring.get("chrome"), dict) else {}
+    screens = wiring.get("screens") if isinstance(wiring.get("screens"), list) else []
+    return {
+        "screens": len(screens),
+        "header": _safe_custom_element_log_value(chrome.get("header"), 64),
+        "footer": _safe_custom_element_log_value(chrome.get("footer"), 64),
+    }
+
+
+def _custom_element_block_configs(blocks) -> dict[tuple[str, str], list[tuple[int, dict]]]:
+    configs: dict[tuple[str, str], list[tuple[int, dict]]] = {}
+    for block in blocks:
+        block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+        data = block.get("data") if isinstance(block, dict) else getattr(block, "data", None)
+        if block_type != "customElement" or not isinstance(data, dict):
+            continue
+        slug = data.get("customElementSlug")
+        blueprint_id = data.get("customElementBlueprintId")
+        runtime = data.get("customElementRuntime")
+        identity = str(slug or blueprint_id or "").strip()[:128]
+        if not identity:
+            continue
+        key = (_safe_custom_element_log_value(identity, 64), _safe_custom_element_log_value(runtime, 40))
+        order = block.get("order", 0) if isinstance(block, dict) else getattr(block, "order", 0)
+        try:
+            sort_order = int(order)
+        except (TypeError, ValueError):
+            sort_order = 0
+        configs.setdefault(key, []).append((sort_order, data))
+    return configs
+
+
 async def _audit_web_admin(
     session: AsyncSession,
     identity,
@@ -197,7 +308,14 @@ async def _audit_web_admin(
     entity_id: str | int | None = None,
     metadata: dict | None = None,
 ) -> None:
-    """Пишет действие админа над сайтом в журнал аудита (event_type=web_admin_action)."""
+    """Пишет действие админа над сайтом в журнал аудита (event_type=web_admin_action) и в лог."""
+    target = f" «{entity_id}»" if entity_id not in (None, "") else ""
+    phrase = _ADMIN_ACTION_PHRASES.get(action)
+    who = getattr(identity, "email", None) or getattr(identity, "id", None) or "админ"
+    if phrase:
+        logger.info("[Site:Admin] {} {}{}", who, phrase, target)
+    else:
+        logger.debug("[Site:Admin] {} выполнил действие {}{}", who, action, target)
     try:
         from audit import safe_record_audit_event
 
@@ -286,11 +404,7 @@ async def get_block_locations(
     types: str = Query(..., max_length=512),
     session: AsyncSession = Depends(get_session),
 ):
-    """Где на сайте стоят блоки указанных типов: страница и вкладка кабинета.
-
-    Нужен клиенту, чтобы вести по ссылке в блок, который админ мог поставить куда угодно
-    (например, переписку тикета — в блок поддержки).
-    """
+    """Возвращает страницы и вкладки кабинета, на которых размещены указанные типы блоков."""
     wanted = [item.strip() for item in types.split(",") if item.strip()][:20]
     if not wanted:
         return BlockLocationsResponse(locations=[])
@@ -678,7 +792,7 @@ async def update_web_page_theme(
     current, _ = await _resolve_variant(session, slug, variant)
     cleaned_tokens, replaced = migrate_json_data_uris(body.tokens)
     if replaced:
-        logger.info("[web] theme PUT slug={} replaced {} data: URI(s)", slug, replaced)
+        logger.info("[Site:Design] Тема страницы «{}»: {} картинок перенесено из данных в файлы", slug, replaced)
     current.theme_tokens = cleaned_tokens
     await session.flush()
     await bump_site_revision(session)
@@ -689,6 +803,67 @@ async def update_web_page_theme(
         entity_type="page",
         entity_id=slug,
         metadata={"variant": current.variant_key},
+    )
+    return WebPageThemeResponse(
+        slug=slug,
+        variant_key=current.variant_key,
+        tokens=dict(current.theme_tokens or {}),
+    )
+
+
+@router.patch("/api/web/pages/{slug}/theme", response_model=WebPageThemeResponse)
+async def patch_web_page_theme(
+    slug: str,
+    body: WebPageThemeUpdate,
+    variant: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+    identity=Depends(verify_identity_designer),
+):
+    if not slug or len(slug) > 64 or not _SLUG_RE.match(slug):
+        raise HTTPException(400, "Некорректный slug страницы")
+    current, _ = await _resolve_variant(session, slug, variant)
+    tokens = dict(current.theme_tokens or {})
+    previous_blueprints = tokens.get("customElementBlueprints")
+    previous_wiring = tokens.get("customPackWiring")
+    tokens.update(body.tokens)
+    cleaned_tokens, replaced = migrate_json_data_uris(tokens)
+    blueprint_changes = _custom_element_blueprint_changes(
+        previous_blueprints,
+        cleaned_tokens.get("customElementBlueprints"),
+    )
+    wiring_change = None
+    if "customPackWiring" in body.tokens:
+        previous_summary = _custom_element_wiring_summary(previous_wiring)
+        next_summary = _custom_element_wiring_summary(cleaned_tokens.get("customPackWiring"))
+        if previous_summary != next_summary:
+            wiring_change = {"before": previous_summary, "after": next_summary}
+    if replaced:
+        logger.info("[Site:Design] Тема страницы «{}»: {} картинок перенесено из данных в файлы", slug, replaced)
+    current.theme_tokens = cleaned_tokens
+    await session.flush()
+    await bump_site_revision(session)
+    for change in blueprint_changes:
+        logger.info(
+            "[Site:CustomElement] Blueprint {}: slug={} runtime={} fields={}",
+            change["operation"],
+            change["slug"],
+            change["runtime"] or "unknown",
+            change["fields"],
+        )
+    if wiring_change:
+        logger.info("[Site:CustomElement] Wiring updated: {}", wiring_change["after"])
+    await _audit_web_admin(
+        session,
+        identity,
+        "page.theme.patch",
+        entity_type="page",
+        entity_id=slug,
+        metadata={
+            "variant": current.variant_key,
+            "keys": sorted(body.tokens.keys()),
+            "custom_element_blueprints": blueprint_changes,
+            "custom_element_wiring": wiring_change,
+        },
     )
     return WebPageThemeResponse(
         slug=slug,
@@ -749,7 +924,7 @@ async def update_web_page_title(
         entity_id=slug,
         metadata={"variant": current.variant_key, "set": bool(title)},
     )
-    return {"slug": slug, "title": title or None}
+    return {"slug": slug, "title": title or None, "variant_key": current.variant_key}
 
 
 class PwaIconUpdate(BaseModel):
@@ -809,6 +984,43 @@ async def update_web_page(
     identity=Depends(verify_identity_designer),
 ):
     current, _ = await _resolve_variant(session, slug, variant)
+    previous_blocks_result = await session.execute(
+        select(WebPageVariantBlock).where(WebPageVariantBlock.variant_id == current.id)
+    )
+    previous_custom_element_configs = _custom_element_block_configs(previous_blocks_result.scalars().all())
+    next_custom_element_configs = _custom_element_block_configs(body.blocks)
+    previous_custom_elements = {key: len(items) for key, items in previous_custom_element_configs.items()}
+    next_custom_elements = {key: len(items) for key, items in next_custom_element_configs.items()}
+    custom_element_changes = []
+    for key in sorted(previous_custom_elements.keys() | next_custom_elements.keys()):
+        delta = next_custom_elements.get(key, 0) - previous_custom_elements.get(key, 0)
+        if delta == 0:
+            continue
+        custom_element_changes.append({
+            "operation": "placed" if delta > 0 else "removed",
+            "slug": key[0][:64],
+            "runtime": key[1],
+            "count": abs(delta),
+        })
+    for key in sorted(previous_custom_element_configs.keys() & next_custom_element_configs.keys()):
+        previous_items = sorted(previous_custom_element_configs[key], key=lambda item: item[0])
+        next_items = sorted(next_custom_element_configs[key], key=lambda item: item[0])
+        for previous_item, next_item in zip(previous_items, next_items, strict=False):
+            previous_data = previous_item[1]
+            next_data = next_item[1]
+            changed_fields = sorted(
+                _safe_custom_element_log_value(field, 64)
+                for field in previous_data.keys() | next_data.keys()
+                if field.startswith("customElement") and previous_data.get(field) != next_data.get(field)
+            )[:50]
+            if changed_fields:
+                custom_element_changes.append({
+                    "operation": "configured",
+                    "slug": key[0][:64],
+                    "runtime": key[1],
+                    "fields": changed_fields,
+                })
+    custom_element_changes = custom_element_changes[:100]
     await session.execute(delete(WebPageVariantBlock).where(WebPageVariantBlock.variant_id == current.id))
 
     total_replaced = 0
@@ -830,17 +1042,31 @@ async def update_web_page(
         current.theme_tokens = cleaned_theme
 
     if total_replaced:
-        logger.info("[web] page PUT slug={} replaced {} data: URI(s)", slug, total_replaced)
+        logger.info("[Site:Design] Страница «{}»: {} картинок перенесено из данных в файлы", slug, total_replaced)
 
     await session.flush()
     await bump_site_revision(session)
+    for change in custom_element_changes:
+        logger.info(
+            "[Site:CustomElement] Страница {}: {} slug={} runtime={} count={} fields={}",
+            slug,
+            change["operation"],
+            change["slug"],
+            change["runtime"] or "unknown",
+            change.get("count", 1),
+            change.get("fields", []),
+        )
     await _audit_web_admin(
         session,
         identity,
         "page.update",
         entity_type="page",
         entity_id=slug,
-        metadata={"variant": current.variant_key, "blocks": len(body.blocks)},
+        metadata={
+            "variant": current.variant_key,
+            "blocks": len(body.blocks),
+            "custom_element_changes": custom_element_changes,
+        },
     )
     refreshed_variants = await _list_variants(session, slug)
     refreshed_current = next((item for item in refreshed_variants if item.id == current.id), current)
@@ -868,7 +1094,7 @@ async def get_web_page_variants(
     except Exception as exc:
         from logger import logger
 
-        logger.warning("[web] variants resolve failed for slug={}: {}", slug, exc)
+        logger.warning("[Site:Design] Не удалось разобрать варианты страницы «{}»: {}", slug, exc)
         raise HTTPException(status_code=404, detail="Страница или вариант не найдены")
     active = next((item for item in variants if item.is_active), current)
     return WebPageVariantsResponse(
@@ -1011,7 +1237,7 @@ async def upload_media(
     file: UploadFile = File(...),
     identity=Depends(verify_identity_designer),
 ):
-    """Upload image or video for landing blocks and return same-origin URL."""
+    """Загружает изображение или видео для блоков сайта и возвращает локальный адрес."""
     if not file.filename or "." not in file.filename:
         raise HTTPException(400, "Файл должен иметь расширение")
     ext = Path(file.filename).suffix.lower()
@@ -1048,7 +1274,7 @@ async def upload_media(
     await run_io(Path(path).write_bytes, file_data)
     url = f"/api/web/uploads/{name}"
     logger.info(
-        "[WebUpload] admin={} file={} -> {} ({} bytes)",
+        "[Site:Files] Админ {} загрузил файл {} → {} ({} байт)",
         identity.id,
         file.filename,
         name,
@@ -1068,6 +1294,7 @@ class CustomElementBuildCreate(BaseModel):
     sample_props_text: str = ""
     events_text: str = ""
     notes: str = ""
+    upload_meta: dict | None = None
 
 
 class CustomElementBuildUpdate(BaseModel):
@@ -1165,9 +1392,18 @@ async def create_custom_element_build(
         sample_props_text=body.sample_props_text,
         events_text=body.events_text,
         notes=body.notes,
+        upload_meta=body.upload_meta,
         status="queued",
     )
     session.add(build)
+    await session.flush()
+    logger.info(
+        "[Site:CustomElement] Build queued: id={} slug={} runtime={} source_kind={}",
+        build.id,
+        _safe_custom_element_log_value(build.slug, 64),
+        _safe_custom_element_log_value(build.runtime, 40),
+        _safe_custom_element_log_value(build.source_kind, 40),
+    )
     return _build_to_dict(build)
 
 
@@ -1195,6 +1431,7 @@ async def update_custom_element_build(
     build = await session.get(WebCustomElementBuild, build_id)
     if not build:
         raise HTTPException(404, "Build not found")
+    previous_status = build.status
     if body.status is not None:
         build.status = body.status
     if body.summary is not None:
@@ -1207,6 +1444,17 @@ async def update_custom_element_build(
         build.upload_meta = body.upload_meta
     if body.worker_id is not None:
         build.worker_id = body.worker_id
+    await session.flush()
+    if build.status != previous_status:
+        log_method = logger.warning if build.status in {"failed", "error"} else logger.info
+        log_method(
+            "[Site:CustomElement] Build status changed: id={} slug={} runtime={} {} → {}",
+            build.id,
+            _safe_custom_element_log_value(build.slug, 64),
+            _safe_custom_element_log_value(build.runtime, 40),
+            _safe_custom_element_log_value(previous_status, 40),
+            _safe_custom_element_log_value(build.status, 40),
+        )
     return _build_to_dict(build)
 
 
@@ -1221,6 +1469,14 @@ async def delete_custom_element_build(
     if not build:
         raise HTTPException(404, "Build not found")
     await session.delete(build)
+    await session.flush()
+    logger.info(
+        "[Site:CustomElement] Build deleted: id={} slug={} runtime={} status={}",
+        build.id,
+        _safe_custom_element_log_value(build.slug, 64),
+        _safe_custom_element_log_value(build.runtime, 40),
+        _safe_custom_element_log_value(build.status, 40),
+    )
     return {"ok": True}
 
 
@@ -1434,10 +1690,7 @@ async def reset_analytics_page_views(
     session: AsyncSession = Depends(get_session),
     _identity=Depends(verify_identity_designer),
 ):
-    """Очищает накопленные просмотры страниц (тестовые/девелоперские данные).
-
-    Удаляет только web_page_views — реальные регистрации/платежи не трогаются.
-    """
+    """Очищает накопленные просмотры страниц."""
     result = await session.execute(delete(WebPageView))
     await _audit_web_admin(
         session,
@@ -1991,8 +2244,7 @@ _NEW_ERROR_ALERTS_PER_HOUR = 6
 
 
 async def _alert_web_error(name: str, message: str, url: str | None, count: int, is_new: bool) -> None:
-    """Отправляет админам уведомление о новой ошибке сайта или о всплеске по счётчику.
-    Новые ошибки троттлятся глобально, чтобы не заспамить при запуске."""
+    """Уведомляет администраторов о новой ошибке сайта или росте числа повторов."""
     try:
         if is_new:
             try:
@@ -2018,7 +2270,7 @@ async def _alert_web_error(name: str, message: str, url: str | None, count: int,
 
         await send_admin_alert("\n".join(parts))
     except Exception as exc:
-        logger.warning("[WebErrorAlert] не удалось отправить алерт: {}", exc)
+        logger.warning("[Site:Errors] Не удалось отправить админу уведомление об ошибке сайта: {}", exc)
 
 
 @router.post("/api/web/error-reports")
@@ -2219,7 +2471,7 @@ async def install_default_design(
         seeded = await seed_default_site(session, force=True)
         await session.flush()
     except Exception as e:
-        logger.exception("[install_default_design] seed_default_site упал: %s", e)
+        logger.exception("[Site:Design] Установка оформления по умолчанию сорвалась: %s", e)
         raise HTTPException(status_code=500, detail=f"install_default_design: {type(e).__name__}: {e}")
     await bump_site_revision(session)
     await _audit_web_admin(session, _identity, "design.install_default", entity_type="site", entity_id="default")
@@ -2259,7 +2511,6 @@ _PACK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
 _BUILTIN_PACK_IDS = {"core", "default"}
-# Держим ссылки на фоновые сверки выдач, чтобы задача не была собрана GC до завершения.
 _PACK_BG_TASKS: set = set()
 
 _BUILTIN_DESIGN_PACK_IDS = ()
@@ -2267,11 +2518,7 @@ _BUILTIN_DESIGN_PACK_IDS = ()
 
 @router.get("/api/web/packs/available")
 async def list_available_packs_route(fresh: bool = False, _identity=Depends(verify_identity_designer)):
-    """Наборы со своими блоками, доступные этому боту. Стоковые сюда не попадают:
-    их блоки уже в ядре, им нужен только сид, и тот приезжает при установке.
-
-    fresh=1 — сверка с сайтом лицензирования прямо сейчас (минуя TTL): клиент шлёт её при
-    заходе во вкладку наборов, чтобы сразу увидеть только что загруженную версию."""
+    """Возвращает доступные наборы и их версии."""
     import asyncio
 
     from core.rpc import (
@@ -2280,11 +2527,14 @@ async def list_available_packs_route(fresh: bool = False, _identity=Depends(veri
         get_entitled_packs,
         refresh_entitled_packs,
     )
-    from services.web_packs import installed_pack_version
+    from services.web_packs import (
+        available_pack_version,
+        installed_pack_version,
+        is_newer_version,
+        packs_dir,
+        read_manifest,
+    )
 
-    # По умолчанию меню открывается мгновенно и никогда не висит на сетевой сверке: отдаём
-    # кешированный список выдач, а устаревший кеш освежаем в фоне. При fresh=1 админ осознанно
-    # ждёт живую сверку — тогда ходим на сайт лицензирования синхронно (с таймаутом внутри).
     if fresh:
         await refresh_entitled_packs(force=True)
     elif not entitled_packs_are_fresh():
@@ -2311,21 +2561,44 @@ async def list_available_packs_route(fresh: bool = False, _identity=Depends(veri
             "installed": bool(local_version),
             "installedVersion": local_version,
             "version": available_version,
-            "updateAvailable": bool(local_version and available_version and available_version != local_version),
+            "updateAvailable": bool(
+                local_version and available_version and is_newer_version(available_version, local_version)
+            ),
+            "builtin": False,
         })
+
+    default_info = meta.get("default") or {}
+    default_manifest = read_manifest(packs_dir() / "default" / "manifest.json") or {}
+    default_version = str(default_info.get("version") or "").strip()
+    if not default_version:
+        default_version = await available_pack_version("default")
+    default_local_version = installed_pack_version("default")
+    packs.append({
+        "id": "default",
+        "name": str(default_info.get("name") or default_manifest.get("name") or "Стандарт"),
+        "description": str(default_info.get("description") or "Встроенный набор"),
+        "installed": bool(default_local_version),
+        "installedVersion": default_local_version,
+        "version": default_version,
+        "updateAvailable": bool(
+            default_local_version and default_version and is_newer_version(default_version, default_local_version)
+        ),
+        "builtin": True,
+    })
+    packs.sort(key=lambda pack: str(pack.get("name") or pack["id"]).lower())
     return {"packs": packs}
 
 
 @router.post("/api/web/packs/install")
 async def install_pack_route(payload: dict, _identity=Depends(verify_identity_designer)):
-    """Скачивает набор и ставит его. Недоступный набор до установки не доходит."""
+    """Устанавливает или обновляет доступный набор."""
     from core.rpc import refresh_entitled_packs
     from services.web_packs import download_and_install_pack
 
     pack_id = str((payload or {}).get("pack_id") or "").strip()
     if not pack_id:
         raise HTTPException(status_code=400, detail="Не указан набор")
-    if pack_id not in await refresh_entitled_packs():
+    if pack_id != "default" and pack_id not in await refresh_entitled_packs():
         raise HTTPException(status_code=403, detail="Доступ к набору не выдан")
 
     result = await download_and_install_pack(pack_id)
@@ -2340,13 +2613,14 @@ async def uninstall_pack_route(
     session: AsyncSession = Depends(get_session),
     _identity=Depends(verify_identity_designer),
 ):
-    """Удаляет установленный набор. Пока его блоки стоят на страницах, удаление требует подтверждения:
-    без блоков набора страницы покажут заглушку «Неизвестный тип»."""
+    """Удаляет установленный набор с подтверждением, если его блоки используются."""
     from database.web_default_seed import pack_block_usage
     from services.web_packs import list_installed_packs, remove_pack
 
     pack_id = str((payload or {}).get("pack_id") or "").strip()
     force = bool((payload or {}).get("force"))
+    if pack_id in _BUILTIN_PACK_IDS:
+        raise HTTPException(status_code=400, detail="Встроенный набор удалить нельзя")
 
     manifest = next((m for m in list_installed_packs() if str(m.get("id") or "") == pack_id), None)
     usage = {"blocks": 0, "pages": []}
@@ -2462,8 +2736,7 @@ async def design_rollback(
 
 @router.get("/api/web/packs/installed")
 async def list_installed_packs_route():
-    """Манифесты паков, установленных на этом боте — веб-апп грузит по ним блоки.
-    Открыт без авторизации: манифест не секрет, а кабинет читают и гости."""
+    """Возвращает публичные манифесты установленных наборов."""
     from services.web_packs import list_installed_packs
 
     return {"packs": list_installed_packs()}
@@ -2527,7 +2800,7 @@ async def create_custom_pack(
         await capture_and_store_pack_design(session, pack_id, name=name, description=description)
         await session.flush()
     except Exception as e:
-        logger.exception("[create_custom_pack] упал: %s", e)
+        logger.exception("[Site:Packs] Создание своего набора сорвалось: %s", e)
         raise HTTPException(status_code=500, detail=f"create_custom_pack: {type(e).__name__}: {e}")
     await _audit_web_admin(session, _identity, "design.create_pack", entity_type="pack", entity_id=pack_id)
     return {"ok": True, "id": pack_id, "name": name}
@@ -2548,7 +2821,7 @@ async def capture_pack_design(
         site = await capture_and_store_pack_design(session, pack)
         await session.flush()
     except Exception as e:
-        logger.exception("[capture_pack_design] упал: %s", e)
+        logger.exception("[Site:Packs] Снимок оформления набора не сделан: %s", e)
         raise HTTPException(status_code=500, detail=f"capture_pack_design: {type(e).__name__}: {e}")
     await _audit_web_admin(session, _identity, "design.capture_pack", entity_type="pack", entity_id=pack)
     pages_count = sum(1 for k, v in site.items() if not k.startswith("_") and isinstance(v, list))
@@ -2561,8 +2834,7 @@ async def import_blocks_pack(
     session: AsyncSession = Depends(get_session),
     _identity=Depends(verify_identity_designer),
 ):
-    """Добавляет новые блоки в конструктор из файла набора (бандл blueprints
-    пользовательских элементов). Блоки сливаются в глобальную тему (страница landing)."""
+    """Добавляет блоки из файла набора в глобальную тему конструктора."""
     try:
         body = await request.json()
     except Exception:
@@ -2592,9 +2864,14 @@ async def import_blocks_pack(
             by_slug[str(b["slug"])] = b
     added = 0
     for b in valid:
-        slug = str(b["slug"])
-        if slug not in by_slug:
+        slug = str(b["slug"]).strip()
+        previous = by_slug.get(slug)
+        if previous is None:
             added += 1
+        else:
+            replacement = dict(b)
+            replacement["id"] = str(previous.get("id") or "").strip() or slug
+            b = replacement
         by_slug[slug] = b
     tokens["customElementBlueprints"] = list(by_slug.values())
     cleaned_tokens, _replaced = migrate_json_data_uris(tokens)
@@ -2621,9 +2898,14 @@ async def _merge_blueprints_into_landing(session: AsyncSession, blueprints: list
             by_slug[str(b["slug"])] = b
     added = 0
     for b in valid:
-        slug = str(b["slug"])
-        if slug not in by_slug:
+        slug = str(b["slug"]).strip()
+        previous = by_slug.get(slug)
+        if previous is None:
             added += 1
+        else:
+            replacement = dict(b)
+            replacement["id"] = str(previous.get("id") or "").strip() or slug
+            b = replacement
         by_slug[slug] = b
     tokens["customElementBlueprints"] = list(by_slug.values())
     cleaned_tokens, _replaced = migrate_json_data_uris(tokens)
@@ -2633,15 +2915,13 @@ async def _merge_blueprints_into_landing(session: AsyncSession, blueprints: list
 
 
 async def _merge_wiring_into_landing(session: AsyncSession, wiring: dict) -> tuple[int, int]:
-    """Экраны и слоты обвязки из файла набора: экраны добавляются по адресу, слоты — если элемент приехал."""
+    """Добавляет экраны набора, сохраняя шапку и подвал сайта."""
     screens = wiring.get("screens")
     screens = (
         [s for s in screens if isinstance(s, dict) and str(s.get("id") or "").strip()]
         if isinstance(screens, list)
         else []
     )
-    chrome = wiring.get("chrome") if isinstance(wiring.get("chrome"), dict) else {}
-
     current, _ = await _resolve_variant(session, "landing", None)
     tokens = dict(current.theme_tokens or {})
     stored = tokens.get("customPackWiring")
@@ -2658,26 +2938,13 @@ async def _merge_wiring_into_landing(session: AsyncSession, wiring: dict) -> tup
             added += 1
         by_id[key] = item
 
-    known = {
-        str(b.get("slug") or "").strip()
-        for b in (
-            tokens.get("customElementBlueprints") if isinstance(tokens.get("customElementBlueprints"), list) else []
-        )
-        if isinstance(b, dict)
-    }
     slots = stored.get("chrome") if isinstance(stored.get("chrome"), dict) else {}
     next_chrome = {"header": str(slots.get("header") or ""), "footer": str(slots.get("footer") or "")}
-    linked = 0
-    for slot in ("header", "footer"):
-        wanted = str(chrome.get(slot) or "").strip()
-        if wanted and wanted in known:
-            next_chrome[slot] = wanted
-            linked += 1
 
     tokens["customPackWiring"] = {"screens": list(by_id.values()), "chrome": next_chrome}
     current.theme_tokens = tokens
     await session.flush()
-    return added, linked
+    return added, 0
 
 
 def _reject_supplied_pack_blocks(design: dict) -> None:
@@ -2926,8 +3193,7 @@ async def import_pack_file(
     session: AsyncSession = Depends(get_session),
     _identity=Depends(verify_identity_designer),
 ):
-    """Импорт расшариваемого набора из файла: добавляет блоки (blueprints) в конструктор
-    и регистрирует дизайн как устанавливаемый свой набор (кнопка «Установить»)."""
+    """Импортирует блоки и дизайн из файла как устанавливаемый пользовательский набор."""
     from uuid import uuid4
 
     from database.web_default_seed import store_pack_design
@@ -3012,7 +3278,7 @@ async def install_pack_design_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("[install_pack_design] упал: %s", e)
+        logger.exception("[Site:Packs] Установка оформления набора сорвалась: %s", e)
         raise HTTPException(status_code=500, detail=f"install_pack_design: {type(e).__name__}: {e}")
     await bump_site_revision(session)
     await _audit_web_admin(session, _identity, "design.install_pack", entity_type="pack", entity_id=pack)
@@ -3070,6 +3336,7 @@ async def web_admin_audit(
 
 
 _BOT_LOG_PATH = Path("logs/logging.log")
+_SITE_LOG_PATH = Path("logs/site.log")
 _LEVEL_RANK = {"DEBUG": 0, "TRACE": 0, "INFO": 1, "SUCCESS": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
 
 
@@ -3111,11 +3378,16 @@ def _parse_log_line(raw: str) -> dict:
         if token in up:
             level = mapped
             break
-    return {"ts": "", "level": level, "loc": "", "text": raw.strip()}
+    text = raw.strip()
+    stamp = re.match(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+", text)
+    if stamp:
+        return {"ts": stamp.group(1), "level": level, "loc": "", "text": text[stamp.end() :]}
+    return {"ts": "", "level": level, "loc": "", "text": text}
 
 
 def _is_api_log(entry: dict) -> bool:
-    return "[API]" in (entry.get("text") or "") or "log_api_access" in (entry.get("loc") or "")
+    text = entry.get("text") or ""
+    return "[Site" in text or "[API]" in text or "log_api_access" in (entry.get("loc") or "")
 
 
 def _site_log_token() -> str:
@@ -3128,10 +3400,10 @@ async def _fetch_site_log_lines(max_lines: int) -> tuple[list[str], bool, str | 
     base = (get_site_url() or "").rstrip("/")
     token = _site_log_token()
     if not base:
-        logger.warning("[logs] site-log: SITE_URL пуст (Настройки → Сайт), запрос не отправлен")
+        logger.warning("[Site:Logs] Адрес сайта не задан (Настройки → Сайт), логи сайта не запрошены")
         return [], False, "SITE_URL не задан (Настройки → Сайт)."
     if not token:
-        logger.warning("[logs] site-log: PLUGIN_BUILDER_TOKEN пуст (config.py / WEB_CONFIG), запрос не отправлен")
+        logger.warning("[Site:Logs] Токен доступа к сайту не задан (config.py / WEB_CONFIG), логи сайта не запрошены")
         return [], False, "PLUGIN_BUILDER_TOKEN не задан на боте (config.py / WEB_CONFIG)."
     import aiohttp
 
@@ -3143,7 +3415,7 @@ async def _fetch_site_log_lines(max_lines: int) -> tuple[list[str], bool, str | 
                 if resp.status != 200:
                     body = (await resp.text())[:200]
                     logger.warning(
-                        "[logs] site-log: {} вернул HTTP {} (токен len={}); ответ: {}",
+                        "[Site:Logs] Сайт {} ответил кодом {} (длина токена {}); ответ: {}",
                         url,
                         resp.status,
                         len(token),
@@ -3162,7 +3434,7 @@ async def _fetch_site_log_lines(max_lines: int) -> tuple[list[str], bool, str | 
         lines = data.get("lines") if isinstance(data.get("lines"), list) else []
         return [str(line) for line in lines], bool(data.get("available", True)), None
     except Exception as e:
-        logger.warning("[logs] site-log: запрос к {} не удался: {}: {}", url, type(e).__name__, e)
+        logger.warning("[Site:Logs] Запрос логов сайта по адресу {} не удался: {}: {}", url, type(e).__name__, e)
         return [], False, f"Не удалось связаться с веб-аппом ({type(e).__name__}). Проверь SITE_URL."
 
 
@@ -3185,11 +3457,15 @@ async def get_logs(
 ):
     note: str | None = None
     if source == "site":
-        raw_lines, available, note = await _fetch_site_log_lines(min(limit * 3, 6000))
+        browser_lines, browser_available, note = await _fetch_site_log_lines(min(limit * 3, 6000))
+        backend_lines = _tail_lines(_SITE_LOG_PATH, min(limit * 3, 6000))
+        entries = [_parse_log_line(line) for line in (*backend_lines, *browser_lines) if line.strip()]
+        entries.sort(key=lambda e: e["ts"])
+        available = browser_available or _SITE_LOG_PATH.exists()
     else:
         raw_lines = _tail_lines(_BOT_LOG_PATH, min(limit * 6, 6000))
         available = _BOT_LOG_PATH.exists()
-    entries = [_parse_log_line(line) for line in raw_lines if line.strip()]
+        entries = [_parse_log_line(line) for line in raw_lines if line.strip()]
     if source == "api":
         entries = [e for e in entries if _is_api_log(e)]
         if not _api_logging_enabled():
@@ -3222,9 +3498,10 @@ async def get_logs_health(_identity=Depends(verify_identity_designer)):
     out["api"] = {"available": bot_available, **_count([e for e in bot_lines if _is_api_log(e)])}
     out["bot"] = {"available": bot_available, **_count([e for e in bot_lines if not _is_api_log(e)])}
 
-    site_raw, site_available, _site_note = await _fetch_site_log_lines(500)
+    browser_raw, browser_available, _site_note = await _fetch_site_log_lines(500)
+    site_raw = [*_tail_lines(_SITE_LOG_PATH, 500), *browser_raw]
     site_lines = [_parse_log_line(line) for line in site_raw if line.strip()]
-    out["site"] = {"available": site_available, **_count(site_lines)}
+    out["site"] = {"available": browser_available or _SITE_LOG_PATH.exists(), **_count(site_lines)}
     try:
         from utils.versioning import get_version
 
@@ -3236,8 +3513,7 @@ async def get_logs_health(_identity=Depends(verify_identity_designer)):
 
 @router.get("/api/web/node-status")
 async def web_node_status(request: Request, session: AsyncSession = Depends(get_session)):
-    """Статусы серверов для блока в кабинете — только серверы из тарифа юзера (его сквады
-    в Remnawave). Гостю/без подписки отдаём пусто. host:port — для браузерной пробы пинга."""
+    """Возвращает статусы серверов, доступных по подпискам текущего клиента."""
     from api.depends import (
         _identity_from_auth_cache,
         _read_auth_cookie,

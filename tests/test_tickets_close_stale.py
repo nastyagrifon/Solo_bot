@@ -83,6 +83,13 @@ def load_service():
     database.__path__ = []
     sys.modules.setdefault("database", database)
     sys.modules["database.models"] = models
+    users = types.ModuleType("database.users")
+
+    async def get_billing_user_id_for_identity(*a, **k):
+        return None
+
+    users.get_billing_user_id_for_identity = get_billing_user_id_for_identity
+    sys.modules["database.users"] = users
 
     spec = importlib.util.spec_from_file_location(
         "tickets_service_under_test", ROOT / "services" / "tickets" / "service.py")
@@ -90,11 +97,20 @@ def load_service():
     events = types.ModuleType("events_stub")
     sobytiya = []
 
-    async def publish_tickets_changed():
+    async def publish_tickets_changed(*a, **k):
         sobytiya.append("changed")
 
     events.publish_tickets_changed = publish_tickets_changed
     sys.modules["tickets_service_under_test.events"] = events
+    # Очередь доставки вендора сервису нужна только как набор имён.
+    queue = types.ModuleType("queue_stub")
+
+    async def _nichego(*a, **k):
+        return None
+
+    for imya in ("queue_assignment", "queue_message", "queue_new_ticket", "queue_topic_delete", "queue_topic_state"):
+        setattr(queue, imya, _nichego)
+    sys.modules["tickets_service_under_test.queue"] = queue
     # относительный импорт `.events` ищется в пакете, поэтому подменяем его
     module.__package__ = "tickets_service_under_test"
     sys.modules["tickets_service_under_test"] = module
@@ -104,6 +120,7 @@ def load_service():
 
 class FakeTicket:
     def __init__(self, tid, status, last):
+        self.identity_id = None  # сервис вендора шлёт событие по владельцу обращения
         self.id = tid
         self.status = status
         self.last_message_at = last
@@ -154,7 +171,8 @@ class CloseStale(unittest.TestCase):
         self.assertEqual([t.status for t in rows], ["closed", "closed"])
         self.assertEqual(session.udalennye, [], "обращения удалять нельзя")
         self.assertTrue(all(t.updated_at is not None for t in rows))
-        self.assertEqual(self.sobytiya, ["changed"])
+        # Событие теперь адресное, по владельцу обращения: одно на каждое закрытое.
+        self.assertEqual(self.sobytiya, ["changed"] * len(rows))
 
     def test_pustoy_otbor_nichego_ne_delaet(self):
         session = FakeSession([])

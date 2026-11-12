@@ -12,6 +12,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import Response as StarletteResponse
 from starlette.staticfiles import StaticFiles
 
+from api.module_routers import register_module_api_routers
 from audit import ensure_api_context, log_api_access, record_api_access_event_background
 from core.client_origin import ClientOriginMiddleware
 from core.executor import spawn
@@ -103,9 +104,20 @@ class QuietShutdownMiddleware:
         except asyncio.CancelledError:
             if not (shutting_down() or disconnected):
                 raise
-            if started or scope["type"] != "http":
+            if scope["type"] != "http":
+                return
+            if started:
+                await self._finish_started(send)
                 return
             await self._close_unanswered(send)
+
+    @staticmethod
+    async def _finish_started(send) -> None:
+        """Дозакрывает начатый ответ (поток событий): без последнего пустого куска uvicorn считает его незавершённым."""
+        try:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        except Exception as exc:
+            logger.debug("[Site] Начатый ответ закрыть не удалось: {}", exc)
 
     @staticmethod
     async def _close_unanswered(send) -> None:
@@ -118,7 +130,7 @@ class QuietShutdownMiddleware:
             })
             await send({"type": "http.response.body", "body": b""})
         except Exception as exc:
-            logger.debug("[API] оборванный запрос закрыть не удалось: {}", exc)
+            logger.debug("[Site] Оборванный запрос закрыть не удалось: {}", exc)
 
 
 @app.on_event("shutdown")
@@ -161,7 +173,7 @@ async def _generic_exception_handler(request: Request, exc: Exception):
     from audit import ensure_api_context
 
     context = ensure_api_context(request)
-    logger.exception("[API] Unhandled exception at {} {}: {}", request.method, request.url.path, exc)
+    logger.exception("[Site] Необработанная ошибка на {} {}: {}", request.method, request.url.path, exc)
     return ORJSONResponse(
         status_code=500,
         content={"detail": "Внутренняя ошибка сервера", "request_id": context.request_id},
@@ -251,7 +263,9 @@ async def api_access_log_middleware(request: Request, call_next):
     except Exception as exc:
         duration_ms = int((perf_counter() - started) * 1000)
         if API_LOGGING:
-            logger.opt(exception=exc).error(f"[API] {request.method} {request.url.path} → 500 ({type(exc).__name__})")
+            logger.opt(exception=exc).error(
+                f"[Site] Ошибка сервера на {request.method} {request.url.path}: {type(exc).__name__}"
+            )
             log_api_access(
                 request,
                 status_code=500,
@@ -343,7 +357,7 @@ async def health_detailed(
     return checks
 
 
-app.include_router(api_router)
+register_module_api_routers(app, api_router, API_VERSION)
 
 _web_uploads_dir = "static/web_uploads"
 os.makedirs(_web_uploads_dir, exist_ok=True)

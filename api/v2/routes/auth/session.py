@@ -157,6 +157,7 @@ async def revoke_my_session(
     rows = await idsess.list_sessions_for_identity(session, identity.id)
     if current_hash and not any(r.token_hash == current_hash for r in rows):
         clear_auth_cookie(response, request)
+    logger.info("[Site:Auth] Клиент {} отключил одно из своих устройств", identity.id)
     return {"ok": True}
 
 
@@ -171,6 +172,7 @@ async def revoke_other_sessions(
     if not current_hash:
         raise HTTPException(status_code=400, detail="Текущая сессия не определена")
     removed = await idsess.delete_other_sessions(session, identity_id=identity.id, keep_token_hash=current_hash)
+    logger.info("[Site:Auth] Клиент {} отключил остальные устройства: {} шт.", identity.id, removed)
     return {"ok": True, "removed": removed}
 
 
@@ -185,9 +187,10 @@ async def logout(
     if raw and raw.strip():
         try:
             await idsess.delete_session_by_token_hash(session, hash_token(raw.strip()))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[Site:Auth] Сессию при выходе удалить не удалось: {}", exc)
     clear_auth_cookie(response, request)
+    logger.info("[Site:Auth] Выход из аккаунта, сессия закрыта")
     return {"ok": True}
 
 
@@ -262,7 +265,7 @@ async def auth_summary(
             async with session.begin_nested():
                 billing_user_id = await idb.ensure_billing_user_for_identity(session, identity)
         except Exception as exc:
-            logger.warning("[auth_summary] billing_user_id не определён: {}", exc)
+            logger.warning("[Site:Account] Не удалось определить клиента для сводки: {}", exc)
             billing_user_id = None
 
     async def _safe(factory, default):
@@ -270,7 +273,7 @@ async def auth_summary(
             async with session.begin_nested():
                 return await factory()
         except Exception as exc:
-            logger.warning("[auth_summary] пропущена агрегация: {}", exc)
+            logger.warning("[Site:Account] Сводка аккаунта собрана не полностью: {}", exc)
             return default
 
     async def _count(model, *conds) -> int:
@@ -471,7 +474,7 @@ def _esc(value: object) -> str:
 @router.get("/me/payments/{payment_id}/invoice", response_class=HTMLResponse)
 async def get_my_payment_invoice(
     payment_id: int = Path(..., ge=1),
-    request: Request = None,  # type: ignore[assignment]
+    request: Request = None,
     session: AsyncSession = Depends(get_session),
     identity=Depends(verify_identity_token),
 ):

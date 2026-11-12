@@ -1,4 +1,5 @@
 from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,8 +10,21 @@ from services.payments.providers import PROVIDERS_BASE, _get_effective_order
 
 from ..panel.headers import menu_text, quote
 from ..panel.keyboard import AdminPanelCallback
-from .keyboard import PAYMENT_PROVIDER_TITLES, build_providers_order_kb, build_settings_cashboxes_kb
-from .toggle import toggle_setting
+from .keyboard import (
+    PAYMENT_PROVIDER_TITLES,
+    build_providers_order_kb,
+    build_settings_cashbox_kb,
+    build_settings_cashboxes_kb,
+)
+from .settings_config import PAYMENT_CASHBOX_GROUPS, PAYMENT_CASHBOX_TITLES
+from .settings_yookassa import show_yookassa_settings
+
+
+PAYMENT_CASHBOXES_SETTINGS_HINT = "Выберите кассу, чтобы настроить её способы оплаты и параметры."
+PAYMENT_CASHBOXES_SETTINGS_TITLE = "Кассы"
+PAYMENT_CASHBOX_NOT_FOUND = "Неизвестная касса."
+PAYMENT_CASHBOX_SETTINGS_HINT = "Способы оплаты включаются независимо и применяются в боте и на сайте."
+SETTING_UPDATED = "Настройка обновлена."
 
 
 router = Router(name="admin_settings_cashboxes")
@@ -32,14 +46,37 @@ def _get_sorted_provider_names() -> list[str]:
 
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "settings_cashboxes"))
-async def open_settings_cashboxes_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+async def open_settings_cashboxes_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Открывает список касс и сбрасывает ввод параметров."""
+    await state.clear()
     providers_state = await load_payment_providers_settings()
     text = menu_text(
-        "Кассы",
-        "Чем клиент может платить.",
-        quote("Нажмите на кассу, чтобы включить или выключить её в боте и на сайте."),
+        PAYMENT_CASHBOXES_SETTINGS_TITLE,
+        quote(PAYMENT_CASHBOXES_SETTINGS_HINT),
     )
     await callback.message.edit_text(text=text, reply_markup=build_settings_cashboxes_kb(providers_state))
+    await callback.answer()
+
+
+async def show_cashbox_settings(callback: CallbackQuery, cashbox: str) -> None:
+    """Показывает настройки выбранной платёжной системы."""
+    if cashbox == "YOOKASSA":
+        await show_yookassa_settings(callback)
+        return
+    text = menu_text(PAYMENT_CASHBOX_TITLES[cashbox], quote(PAYMENT_CASHBOX_SETTINGS_HINT))
+    keyboard = build_settings_cashbox_kb(cashbox, await load_payment_providers_settings())
+    await callback.message.edit_text(text=text, reply_markup=keyboard)
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action == "settings_cashbox"))
+async def open_cashbox_settings(callback: CallbackQuery, callback_data: AdminPanelCallback, state: FSMContext) -> None:
+    """Открывает настройки кассы без изменения её состояния."""
+    cashboxes = list(PAYMENT_CASHBOX_GROUPS)
+    if not 1 <= callback_data.page <= len(cashboxes):
+        await callback.answer(PAYMENT_CASHBOX_NOT_FOUND, show_alert=True)
+        return
+    await state.clear()
+    await show_cashbox_settings(callback, cashboxes[callback_data.page - 1])
     await callback.answer()
 
 
@@ -48,16 +85,30 @@ async def toggle_cashbox_setting(
     callback: CallbackQuery,
     callback_data: AdminPanelCallback,
     session: AsyncSession,
+    state: FSMContext,
 ) -> None:
-    config = await toggle_setting(
-        callback, session, callback_data.page, PAYMENT_PROVIDER_TITLES, PAYMENTS_CONFIG, update_payments_config,
-        "Неизвестная касса",
-    )
-    if config is None:
+    keys = list(PAYMENT_PROVIDER_TITLES.keys())
+    index = callback_data.page
+
+    if not 1 <= index <= len(keys):
+        await callback.answer(PAYMENT_CASHBOX_NOT_FOUND, show_alert=True)
         return
-    updated_state = {k: bool(config.get(k, False)) for k in PAYMENT_PROVIDER_TITLES.keys()}
-    await callback.message.edit_reply_markup(reply_markup=build_settings_cashboxes_kb(updated_state))
-    await callback.answer(menu_text("Кассы", "Настройка обновлена"))
+
+    provider_code = keys[index - 1]
+
+    config = dict(PAYMENTS_CONFIG or {})
+    current_value = bool(config.get(provider_code, False))
+    config[provider_code] = not current_value
+
+    await update_payments_config(
+        session,
+        config,
+    )
+
+    await state.clear()
+    cashbox = next(name for name, providers in PAYMENT_CASHBOX_GROUPS.items() if provider_code in providers)
+    await show_cashbox_settings(callback, cashbox)
+    await callback.answer(SETTING_UPDATED)
 
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "settings_providers_order"))

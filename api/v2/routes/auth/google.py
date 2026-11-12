@@ -31,3 +31,5 @@ router = make_oauth_router(
         session, google_sub=sub, email=email
     ),
 )
+
+google_configured = router.configured

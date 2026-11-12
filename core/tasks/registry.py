@@ -36,11 +36,16 @@ from core.tasks.loop_tasks import (
     backup_thread_loop,
     blocked_drain_loop,
     notifications_loop,
+    remnawave_installer_loop,
     remnawave_monitor_loop,
     scheduled_broadcasts_loop_task,
     server_checks_loop,
+    tickets_delivery_loop,
+    yookassa_autopay_loop,
+    yookassa_refunds_loop,
 )
 from core.slow_log import loop_lag_loop
+from core.tasks.module_tasks import discover_module_loop_tasks
 from core.tasks.periodic_manager import periodic_task_manager
 
 
@@ -53,6 +58,10 @@ LOOP_TASKS = (
     ("blocked_drain", blocked_drain_loop, False),
     ("server_checks", server_checks_loop, True),
     ("remnawave_monitor", remnawave_monitor_loop, False),
+    ("remnawave_installer", remnawave_installer_loop, False),
+    ("tickets_delivery", tickets_delivery_loop, False),
+    ("yookassa_autopay", yookassa_autopay_loop, False),
+    ("yookassa_refunds", yookassa_refunds_loop, False),
     ("loop_lag", loop_lag_loop, False),
 )
 
@@ -98,6 +107,8 @@ def register_periodic_tasks() -> None:
             manager.register_thread_loop_task(task_id, backup_thread_loop)
         else:
             manager.register_loop_task(task_id, runner)
+    for task_id, runner in discover_module_loop_tasks():
+        manager.register_loop_task(task_id, runner)
 
     manager.set_scheduler_process_workers(process_budget)
 

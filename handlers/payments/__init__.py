@@ -20,7 +20,10 @@ from settings.config import PROVIDERS_ENABLED
 
 from .fast_payment_flow import router as fast_payment_flow_router
 from .gifts import router as gift_router
+from .kassa2328 import router as kassa2328_router
 from .pay import router as pay_router
+from .payhot import router as payhot_router
+from .yookassa_autopay import router as yookassa_autopay_router
 
 
 router = Router(name="payments_main_router")
@@ -43,13 +46,15 @@ provider_routers.add(".platega", "PLATEGA_SBP", "PLATEGA_CARDS", "PLATEGA_INT", 
 provider_routers.add(".tribute", "TRIBUTE")
 
 PROVIDERS = get_providers(PROVIDERS_ENABLED)
+# Новые кассы вендора подключаются безусловно и в его порядке: автоплатёж и
+# kassa2328 раньше остальных касс, payhot после.
+router.include_router(yookassa_autopay_router)
+router.include_router(kassa2328_router)
 provider_routers.ensure(name for name, cfg in PROVIDERS.items() if cfg.get("enabled"))
 set_router_loader(provider_routers.ensure)
-
+router.include_router(payhot_router)
 router.include_router(gift_router)
 router.include_router(pay_router)
 router.include_router(fast_payment_flow_router)
 
-# Анти-тампер и bootstrap-валидация лицензии: запускаются последними, когда пакет gifts
-# и все платёжные провайдеры полностью загружены (иначе циклический импорт gifts↔yookassa).
-from .gifts import runtime as _gifts_runtime  # noqa: E402,F401
+from .gifts import runtime as _gifts_runtime

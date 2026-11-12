@@ -13,9 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
+from database.payments import resolve_payment_creation_owner
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
+from services.payments.checkout_snapshot import capture_payment_checkout
 from services.payments.currency_rates import get_rub_rate
+from services.payments.owner_refs import payment_owner_token
 from services.payments.payment_links import register_payment_creator
 from settings.buttons import HELEKET
 from settings.config import (
@@ -76,7 +79,7 @@ process_callback_pay_heleket = register_topup_flow(
     amount_min_text=lambda name: "❌ Минимальная сумма для оплаты криптовалютой — 10₽ (≈0.1$).",
     entry_error_log=lambda cq, e: f"Error in process_callback_pay_heleket for user {cq.message.chat.id}: {e}",
     multicurrency_input=True,
-    link_by_chat_id=True,
+    link_by_chat_id=False,
     custom_back_cb="pay_heleket_crypto",
     entry_log="User {tg_id} initiated Heleket payment.",
     menu_text="Выберите способ оплаты через Heleket:",
@@ -96,13 +99,11 @@ async def generate_heleket_payment_link(
     failure_url: str | None = None,
     metadata: dict | None = None,
 ) -> str:
-    """
-    Создание платежа в Heleket и получение ссылки на оплату.
-    amount — сумма в RUB, method['currency'] — валюта провайдера (обычно USD).
-    session — сессия из хендлера; если не передана, создаётся своя (лишняя нагрузка на пул).
-    """
+    """Создаёт платёж Heleket и возвращает ссылку на оплату."""
+    tg_id = await resolve_payment_creation_owner(session, tg_id)
+    metadata = await capture_payment_checkout(session, tg_id, metadata)
     url = "https://api.heleket.com/v1/payment"
-    unique_order_id = order_id or f"{int(time.time())}_{tg_id}"
+    unique_order_id = order_id or f"{int(time.time())}_{payment_owner_token(tg_id)}"
 
     timeout = aiohttp.ClientTimeout(total=30, connect=10)
     try:
@@ -122,7 +123,7 @@ async def generate_heleket_payment_link(
                 "url_success": success_url or HELEKET_SUCCESS_URL,
                 "url_return": failure_url or HELEKET_RETURN_URL,
                 "url_callback": HELEKET_CALLBACK_URL,
-                "additional_data": f"tg_id:{tg_id},rub_amount:{amount}",
+                "additional_data": f"tg_id:{payment_owner_token(tg_id)},rub_amount:{amount}",
             }
             if method.get("to_currency"):
                 data["to_currency"] = method["to_currency"]
@@ -188,11 +189,12 @@ async def create_link(
     failure_url: str | None,
     metadata: dict | None,
 ) -> tuple[str, str | None]:
+    tg_id = await resolve_payment_creation_owner(session, tg_id)
     method = HELEKET_METHODS.get("crypto")
     if not method or not _heleket_method_enabled(method):
         raise ValueError("Heleket недоступен")
     amount_int = int(amount)
-    order_id = f"{int(time.time())}_{tg_id}"
+    order_id = f"{int(time.time())}_{payment_owner_token(tg_id)}"
     if amount_int < 10:
         raise ValueError("Минимальная сумма для Heleket — 10₽")
     url = await generate_heleket_payment_link(

@@ -6,18 +6,42 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.admin_permissions import require_admin_action
 from api.depends import get_session, verify_identity_admin
+from database.access.resolution import UserId, public_tg_id
 from database.keys import get_key_details
 from database.models import Key, Tariff, User
 from database.tariffs import get_tariff_by_id
+from filters.permissions import (
+    PERM_KEY_DELETE,
+    PERM_KEY_DEVICES,
+    PERM_KEY_EXPIRY,
+    PERM_KEY_FREEZE,
+    PERM_KEY_LOCATION,
+    PERM_KEY_REISSUE,
+    PERM_KEY_TARIFF,
+    PERM_KEY_TRAFFIC,
+    PERM_KEY_VIEW,
+)
 from logger import logger
+from settings.texts import MY_DEVICES_UNAVAILABLE_TEXT
+
+
+MY_DEVICES_UPDATE_FAILED_TEXT = "Не удалось изменить список устройств. Попробуйте позже."
+TRAFFIC_RESET_FAILED = "Не удалось сбросить трафик: панели не подтвердили операцию. Попробуйте позже."
+TRAFFIC_RESET_PARTIAL_TEXT = "Трафик сброшен на: {successful_servers}. Не удалось сбросить на: {failed_servers}."
 
 
 subs_router = APIRouter()
 
 
 async def _resolve(session: AsyncSession, client_id: str) -> Key:
-    key = (await session.execute(select(Key).where(Key.client_id == client_id))).scalar_one_or_none()
+    rows = (await session.execute(select(Key).where(Key.client_id == client_id).limit(2))).scalars().all()
+    if len(rows) > 1:
+        raise HTTPException(
+            status_code=409, detail="UUID принадлежит нескольким подпискам. Используйте карточку клиента."
+        )
+    key = rows[0] if rows else None
     if key is None:
         raise HTTPException(status_code=404, detail="Подписка не найдена")
     return key
@@ -27,7 +51,7 @@ def _owner_title(u: User | None) -> str:
     if u is None:
         return "—"
     name = " ".join(x for x in (u.first_name, u.last_name) if x)
-    return name or (f"@{u.username}" if u.username else f"#{u.tg_id or u.id}")
+    return name or (f"@{u.username}" if u.username else f"#{public_tg_id(u.tg_id) or u.id}")
 
 
 @subs_router.get("/search")
@@ -39,6 +63,7 @@ async def search_subscriptions(
     session: AsyncSession = Depends(get_session),
 ):
     """Поиск подписок по ключу/владельцу."""
+    await require_admin_action(session, identity, PERM_KEY_VIEW)
     term = q.strip().lstrip("@")
     stmt = select(Key, User).join(User, Key.user_id == User.id, isouter=True)
     if term:
@@ -67,7 +92,7 @@ async def search_subscriptions(
             "expiry_time": int(k.expiry_time or 0),
             "is_frozen": bool(k.is_frozen),
             "active": (not k.is_frozen) and int(k.expiry_time or 0) > now_ms,
-            "owner_tg_id": u.tg_id if u else None,
+            "owner_tg_id": public_tg_id(u.tg_id) if u else None,
             "owner_title": _owner_title(u),
         }
         for k, u in rows
@@ -82,6 +107,7 @@ async def subscription_detail(
     session: AsyncSession = Depends(get_session),
 ):
     """Детальная карточка подписки + справочники для действий (тарифы, кластеры)."""
+    await require_admin_action(session, identity, PERM_KEY_VIEW)
     key = await _resolve(session, client_id)
     owner = (await session.execute(select(User).where(User.id == key.user_id))).scalar_one_or_none()
     tariff = await get_tariff_by_id(session, key.tariff_id) if key.tariff_id else None
@@ -117,7 +143,7 @@ async def subscription_detail(
         if key.current_traffic_limit is not None
         else (int(tariff.get("traffic_limit")) if tariff and tariff.get("traffic_limit") else None),
         "remnawave_link": key.remnawave_link,
-        "owner_tg_id": owner.tg_id if owner else None,
+        "owner_tg_id": public_tg_id(owner.tg_id) if owner else None,
         "owner_title": _owner_title(owner),
         "clusters": clusters,
         "tariffs": [
@@ -139,7 +165,7 @@ async def _renew_apply(
 ) -> None:
     from services.operations import renew_key_in_cluster
 
-    await renew_key_in_cluster(
+    renewed = await renew_key_in_cluster(
         cluster_id=key.server_id,
         email=key.email,
         client_id=key.client_id,
@@ -150,6 +176,9 @@ async def _renew_apply(
         reset_traffic=reset_traffic,
         plan=key.tariff_id,
     )
+
+    if not renewed:
+        raise HTTPException(status_code=502, detail="Не удалось обновить подписку на панели")
 
 
 def _limits_for(key: Key, tariff) -> tuple[Any, Any]:
@@ -174,6 +203,7 @@ async def sub_change_expiry(
     session: AsyncSession = Depends(get_session),
 ):
     """Изменение срока: op = add | take | set (без сброса трафика)."""
+    await require_admin_action(session, identity, PERM_KEY_EXPIRY)
     key = await _resolve(session, client_id)
     op = str(payload.get("op") or "add")
     now_ms = int(time.time() * 1000)
@@ -193,7 +223,7 @@ async def sub_change_expiry(
     total_gb, hwid = _limits_for(key, tariff)
     key.expiry_time = new_expiry
     await _renew_apply(session, key, new_expiry=new_expiry, total_gb=total_gb, hwid=hwid, reset_traffic=False)
-    logger.info(f"[API] Срок подписки {client_id} изменён ({op}) → {new_expiry}")
+    logger.info(f"[Site:Subs] Срок подписки {client_id} изменён ({op}) → {new_expiry}")
     return {"expiry_time": new_expiry}
 
 
@@ -204,11 +234,23 @@ async def sub_reset_traffic(
     session: AsyncSession = Depends(get_session),
 ):
     """Сброс трафика подписки."""
+    await require_admin_action(session, identity, PERM_KEY_TRAFFIC)
     key = await _resolve(session, client_id)
     from services.operations.traffic import reset_traffic_in_cluster
 
-    await reset_traffic_in_cluster(key.server_id, key.email, session)
-    logger.info(f"[API] Трафик подписки {client_id} сброшен")
+    try:
+        result = await reset_traffic_in_cluster(key.server_id, key.email, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=TRAFFIC_RESET_FAILED) from exc
+    if isinstance(result, dict) and result.get("failed"):
+        return {
+            **result,
+            "message": TRAFFIC_RESET_PARTIAL_TEXT.format(
+                successful_servers=", ".join(result.get("succeeded") or []),
+                failed_servers=", ".join(result["failed"]),
+            ),
+        }
+    logger.info(f"[Site:Subs] Трафик подписки {client_id} сброшен")
     return {"message": "Трафик сброшен"}
 
 
@@ -220,6 +262,11 @@ async def sub_change_tariff(
     session: AsyncSession = Depends(get_session),
 ):
     """Смена тарифа (срок сохраняется). Для конфигурируемого можно задать devices/traffic_gb."""
+    await require_admin_action(session, identity, PERM_KEY_TARIFF)
+    if payload.get("devices") is not None:
+        await require_admin_action(session, identity, PERM_KEY_DEVICES)
+    if payload.get("traffic_gb") is not None:
+        await require_admin_action(session, identity, PERM_KEY_TRAFFIC)
     key = await _resolve(session, client_id)
     tariff_id = int(payload.get("tariff_id") or 0)
     if tariff_id <= 0:
@@ -232,18 +279,18 @@ async def sub_change_tariff(
     devices = payload.get("devices")
     traffic_gb = payload.get("traffic_gb")
     if bool(tariff.get("configurable")) and (devices is not None or traffic_gb is not None):
-        await save_key_tariff_selection(session, key.user_id, key.email, tariff_id, devices, traffic_gb)
+        await save_key_tariff_selection(session, UserId(key.user_id), key.email, tariff_id, devices, traffic_gb)
         total_gb = int(traffic_gb) if traffic_gb else int(tariff.get("traffic_limit") or 0)
         hwid = int(devices) if devices else int(tariff.get("device_limit") or 0)
     else:
-        await reset_key_tariff_state(session, key.user_id, key.email, tariff_id)
+        await reset_key_tariff_state(session, UserId(key.user_id), key.email, tariff_id)
         total_gb = int(tariff.get("traffic_limit") or 0)
         hwid = int(tariff.get("device_limit") or 0)
     key.tariff_id = tariff_id
     await _renew_apply(
         session, key, new_expiry=int(key.expiry_time or 0), total_gb=total_gb, hwid=hwid, reset_traffic=False
     )
-    logger.info(f"[API] Тариф подписки {client_id} → {tariff_id}")
+    logger.info(f"[Site:Subs] Тариф подписки {client_id} сменён на {tariff_id}")
     return {"message": "Тариф изменён", "tariff_id": tariff_id}
 
 
@@ -255,6 +302,10 @@ async def sub_set_limits(
     session: AsyncSession = Depends(get_session),
 ):
     """Задать лимит устройств / трафика (ГБ)."""
+    if "device_limit" in payload:
+        await require_admin_action(session, identity, PERM_KEY_DEVICES)
+    if "traffic_limit" in payload:
+        await require_admin_action(session, identity, PERM_KEY_TRAFFIC)
     key = await _resolve(session, client_id)
     device_limit = payload.get("device_limit")
     traffic_limit = payload.get("traffic_limit")
@@ -267,7 +318,7 @@ async def sub_set_limits(
     await _renew_apply(
         session, key, new_expiry=int(key.expiry_time or 0), total_gb=total_gb, hwid=hwid, reset_traffic=False
     )
-    logger.info(f"[API] Лимиты подписки {client_id}: dev={device_limit} gb={traffic_limit}")
+    logger.info(f"[Site:Subs] Лимиты подписки {client_id}: устройств {device_limit}, трафик {traffic_limit} ГБ")
     return {"device_limit": key.current_device_limit, "traffic_limit": key.current_traffic_limit}
 
 
@@ -279,6 +330,7 @@ async def sub_set_alias(
     session: AsyncSession = Depends(get_session),
 ):
     """Изменить псевдоним подписки."""
+    await require_admin_action(session, identity, PERM_KEY_VIEW)
     key = await _resolve(session, client_id)
     alias = payload.get("alias")
     key.alias = (str(alias).strip() or None) if alias is not None else None
@@ -295,6 +347,7 @@ async def sub_freeze(
     session: AsyncSession = Depends(get_session),
 ):
     """Заморозить подписку."""
+    await require_admin_action(session, identity, PERM_KEY_FREEZE)
     key = await _resolve(session, client_id)
     from database.keys import mark_key_as_frozen
     from services.operations.toggles import toggle_client_on_cluster
@@ -306,7 +359,7 @@ async def sub_freeze(
     if result.get("status") != "success":
         raise HTTPException(status_code=502, detail="Не удалось отключить клиента на панели")
     time_left = max(0, int(rec["expiry_time"]) - int(time.time() * 1000))
-    await mark_key_as_frozen(session, rec["tg_id"], rec["client_id"], time_left)
+    await mark_key_as_frozen(session, UserId(key.user_id), rec["client_id"], time_left)
     return {"message": "Подписка заморожена"}
 
 
@@ -317,6 +370,7 @@ async def sub_unfreeze(
     session: AsyncSession = Depends(get_session),
 ):
     """Разморозить подписку."""
+    await require_admin_action(session, identity, PERM_KEY_FREEZE)
     key = await _resolve(session, client_id)
     from database.keys import mark_key_as_unfrozen
     from services.operations.toggles import toggle_client_on_cluster
@@ -330,8 +384,8 @@ async def sub_unfreeze(
     now_ms = int(time.time() * 1000)
     leftover = max(0, int(rec["expiry_time"]))
     new_expiry = leftover if leftover > now_ms else now_ms + leftover
-    await mark_key_as_unfrozen(session, rec["tg_id"], rec["client_id"], new_expiry)
     await _renew_apply(session, key, new_expiry=new_expiry, total_gb=total_gb, hwid=hwid, reset_traffic=False)
+    await mark_key_as_unfrozen(session, UserId(key.user_id), rec["client_id"], new_expiry)
     return {"message": "Подписка разморожена"}
 
 
@@ -343,6 +397,7 @@ async def sub_change_location(
     session: AsyncSession = Depends(get_session),
 ):
     """Перенос подписки на другой кластер/страну."""
+    await require_admin_action(session, identity, PERM_KEY_LOCATION)
     key = await _resolve(session, client_id)
     cluster = str(payload.get("cluster") or "").strip() or None
     country = str(payload.get("country") or "").strip() or None
@@ -351,7 +406,7 @@ async def sub_change_location(
     from services.operations.update import update_subscription
 
     await update_subscription(key.user_id, key.email, session, cluster_override=cluster, country_override=country)
-    logger.info(f"[API] Подписка {client_id} перенесена: cluster={cluster} country={country}")
+    logger.info(f"[Site:Subs] Подписка {client_id} перенесена: кластер {cluster}, страна {country}")
     return {"message": "Локация изменена"}
 
 
@@ -363,12 +418,15 @@ async def sub_reissue(
     session: AsyncSession = Depends(get_session),
 ):
     """Перевыпуск подписки (пересборка на кластере, ссылка обновляется)."""
+    await require_admin_action(session, identity, PERM_KEY_REISSUE)
     key = await _resolve(session, client_id)
     cluster = str((payload or {}).get("cluster") or "").strip() or key.server_id
+    if cluster != key.server_id:
+        await require_admin_action(session, identity, PERM_KEY_LOCATION)
     from services.operations.update import update_subscription
 
     await update_subscription(key.user_id, key.email, session, cluster_override=cluster)
-    logger.info(f"[API] Подписка {client_id} перевыпущена на {cluster}")
+    logger.info(f"[Site:Subs] Подписка {client_id} перевыпущена на кластере {cluster}")
     return {"message": "Подписка перевыпущена"}
 
 
@@ -379,12 +437,13 @@ async def sub_delete(
     session: AsyncSession = Depends(get_session),
 ):
     """Удалить подписку с кластера и из БД."""
+    await require_admin_action(session, identity, PERM_KEY_DELETE)
     key = await _resolve(session, client_id)
     from services.operations import delete_key_from_cluster
 
     await delete_key_from_cluster(session=session, email=key.email, client_id=key.client_id, cluster_id=key.server_id)
     await session.delete(key)
-    logger.info(f"[API] Подписка {client_id} удалена")
+    logger.info(f"[Site:Subs] Подписка {client_id} удалена")
     return {"message": "Подписка удалена"}
 
 
@@ -395,7 +454,9 @@ async def sub_hwid_devices(
     session: AsyncSession = Depends(get_session),
 ):
     """Список HWID-устройств подписки (Remnawave)."""
+    await require_admin_action(session, identity, PERM_KEY_DEVICES)
     from panels.remnawave_runtime import remnawave_api
+
     key = await _resolve(session, client_id)
     from database.servers import get_servers
     from settings.config import REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD
@@ -409,15 +470,18 @@ async def sub_hwid_devices(
         return {"devices": [], "supported": False}
     try:
         async with remnawave_api(remna_node["api_url"]) as api:
+            api.bind_subscription(client_id, key.email, key.remnawave_link or key.key)
             if not await api.login(REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD):
                 raise HTTPException(status_code=502, detail="Remnawave недоступен")
-            devices = await api.get_user_hwid_devices(client_id, username=key.email) or []
+            devices = await api.get_user_hwid_devices(client_id, username=key.email)
+            if devices is None:
+                raise HTTPException(status_code=502, detail=MY_DEVICES_UNAVAILABLE_TEXT)
             return {"devices": devices, "supported": True}
     except HTTPException:
         raise
     except Exception as e:
-        logger.debug(f"[API] hwid list {client_id}: {e}")
-        return {"devices": [], "supported": True}
+        logger.debug(f"[Site:Subs] Не удалось получить устройства подписки {client_id}: {e}")
+        raise HTTPException(status_code=502, detail=MY_DEVICES_UNAVAILABLE_TEXT) from e
 
 
 @subs_router.post("/{client_id}/hwid/unbind")
@@ -428,7 +492,9 @@ async def sub_hwid_unbind(
     session: AsyncSession = Depends(get_session),
 ):
     """Отвязать одно HWID-устройство."""
+    await require_admin_action(session, identity, PERM_KEY_DEVICES)
     from panels.remnawave_runtime import remnawave_api
+
     key = await _resolve(session, client_id)
     hwid = str(payload.get("hwid") or "").strip()
     if not hwid:
@@ -444,9 +510,11 @@ async def sub_hwid_unbind(
     if not remna_node:
         raise HTTPException(status_code=400, detail="Не Remnawave-подписка")
     async with remnawave_api(remna_node["api_url"]) as api:
+        api.bind_subscription(client_id, key.email, key.remnawave_link or key.key)
         if not await api.login(REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD):
             raise HTTPException(status_code=502, detail="Remnawave недоступен")
-        await api.delete_user_hwid_device(client_id, hwid, username=key.email)
+        if await api.delete_user_hwid_device(client_id, hwid, username=key.email) is not True:
+            raise HTTPException(status_code=502, detail=MY_DEVICES_UPDATE_FAILED_TEXT)
         return {"message": "Устройство отвязано"}
 
 
@@ -457,7 +525,9 @@ async def sub_hwid_reset(
     session: AsyncSession = Depends(get_session),
 ):
     """Сбросить все HWID-устройства подписки."""
+    await require_admin_action(session, identity, PERM_KEY_DEVICES)
     from panels.remnawave_runtime import remnawave_api
+
     key = await _resolve(session, client_id)
     from database.servers import get_servers
     from settings.config import REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD
@@ -470,12 +540,17 @@ async def sub_hwid_reset(
     if not remna_node:
         raise HTTPException(status_code=400, detail="Не Remnawave-подписка")
     async with remnawave_api(remna_node["api_url"]) as api:
+        api.bind_subscription(client_id, key.email, key.remnawave_link or key.key)
         if not await api.login(REMNAWAVE_LOGIN, REMNAWAVE_PASSWORD):
             raise HTTPException(status_code=502, detail="Remnawave недоступен")
-        devices = await api.get_user_hwid_devices(client_id, username=key.email) or []
+        devices = await api.get_user_hwid_devices(client_id, username=key.email)
+        if devices is None:
+            raise HTTPException(status_code=502, detail=MY_DEVICES_UNAVAILABLE_TEXT)
         removed = 0
         for d in devices:
             h = d.get("hwid") if isinstance(d, dict) else None
-            if h and await api.delete_user_hwid_device(client_id, h, username=key.email):
+            if h and await api.delete_user_hwid_device(client_id, h, username=key.email) is True:
                 removed += 1
+        if devices and removed == 0:
+            raise HTTPException(status_code=502, detail=MY_DEVICES_UPDATE_FAILED_TEXT)
         return {"message": f"Сброшено устройств: {removed}", "removed": removed}

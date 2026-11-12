@@ -111,7 +111,7 @@ async def link_email_confirm(
         )
     if not await email_link_code.verify_and_consume_code(email_norm, str(body.code).strip()):
         raise HTTPException(status_code=401, detail="Неверный код или срок действия истёк")
-    result = await idb.attach_email(session, identity.id, email_norm)
+    result = await idb.attach_email(session, identity.id, email_norm, verified=True)
     if not result:
         # Сюда доходит владелец ящика - код он взял из письма, так что
         # отказ ему не утечка. Причину не расписываем: случаев несколько
@@ -131,5 +131,5 @@ async def link_email_confirm(
         except Exception as e:
             from logger import logger
 
-            logger.debug("[Auth] panel identity sync failed: {}", e)
+            logger.debug("[Site:Auth] Не удалось синхронизировать клиента с панелью: {}", e)
     return IdentityResponse.model_validate(result)

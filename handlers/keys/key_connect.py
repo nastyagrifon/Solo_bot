@@ -51,7 +51,12 @@ async def handle_connect_device(callback_query: CallbackQuery, session: AsyncSes
         key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
         key_name = key_obj.email if key_obj else key_ref
         record = await get_key_details(session, key_name)
-        if not key_owned_by_user(record, callback_query.from_user.id):
+        if (
+            key_obj is None
+            or not key_owned_by_user(record, callback_query.from_user.id)
+            or record.get("user_id") != key_obj.user_id
+            or record.get("client_id") != key_obj.client_id
+        ):
             await callback_query.answer("Доступ запрещён.", show_alert=True)
             return
 
@@ -97,7 +102,12 @@ async def _owned_key_link(callback_query: CallbackQuery, session: AsyncSession, 
 
     try:
         record = await get_key_details(session, email)
-        if not key_owned_by_user(record, callback_query.from_user.id):
+        if (
+            key_obj is None
+            or not key_owned_by_user(record, callback_query.from_user.id)
+            or record.get("user_id") != key_obj.user_id
+            or record.get("client_id") != key_obj.client_id
+        ):
             await callback_query.answer("Доступ запрещён.", show_alert=True)
             return None
         key_link = await get_subscription_link(session, email)

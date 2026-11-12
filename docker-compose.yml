@@ -21,8 +21,8 @@
 #   4. На хосте разрешите подключения из Docker:
 #        PostgreSQL: listen_addresses = '*' и в pg_hba.conf строка
 #                    host all all 172.16.0.0/12 scram-sha-256
-#        Redis:      bind 0.0.0.0 (и обязательно requirepass / firewall)
-#      Порты 5432/6379 наружу не открывайте — только для docker-сети.
+#        Redis:      слушать адрес Docker-шлюза и разрешить доступ только из Docker-сети
+#      Не публикуйте порты 5432/6379 в интернет; ограничьте их firewall правилом для Docker-сети.
 #
 # Бот слушает 127.0.0.1:3001 (вебхук Telegram, ссылки подписок) и 127.0.0.1:3004 (API).
 # HTTPS-домен направьте на 3001 через nginx/Caddy на хосте.
@@ -54,7 +54,9 @@ services:
       - bot_backups:/app/backups
       - bot_modules:/app/modules
       - bot_uploads:/app/static/web_uploads
+      - bot_web_packs:/app/static/web_packs
       - bot_img:/app/img
+      - bot_data:/app/data
 
   postgres:
     image: postgres:16-alpine
@@ -92,4 +94,6 @@ volumes:
   bot_backups:
   bot_modules:
   bot_uploads:
+  bot_web_packs:
   bot_img:
+  bot_data:

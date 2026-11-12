@@ -65,12 +65,7 @@ async def sweep_stale_payments_job() -> None:
 
 
 def run_in_own_loop(job: Callable[[], Coroutine[object, object, object]]) -> None:
-    """Точка входа процессного cron: свой движок и свой event loop.
-
-    APScheduler запускает такие задачи форком, и дочерний процесс наследует пул соединений
-    родителя. Работать с ними нельзя: сокеты общие, а цикл, в котором их открыли, чужой.
-    Старый движок не диспоузим — его сокеты принадлежат родителю.
-    """
+    """Запускает задачу в отдельном цикле событий с новым движком базы данных."""
     from database.db import reset_async_db_engine
 
     reset_async_db_engine()
@@ -123,8 +118,12 @@ async def cleanup_web_analytics_job() -> None:
         timezone as _tz,
     )
 
-    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import (
+        delete as sa_delete,
+        text as _sa_text,
+    )
 
+    from audit import delete_old_audit_events
     from database.models import KeyTrafficHistory
     from database.models.web import WebErrorReport, WebFlowEvent, WebPageView
 
@@ -132,43 +131,67 @@ async def cleanup_web_analytics_job() -> None:
     analytics_cutoff = now - timedelta(days=WEB_ANALYTICS_RETENTION_DAYS)
     error_cutoff = now - timedelta(days=WEB_ERROR_RETENTION_DAYS)
     traffic_cutoff = (now - timedelta(days=180)).date()
+    rate_limit_cutoff = int(now.timestamp()) - 3600
 
-    async with async_session_maker() as session:
-        try:
-            pv = await session.execute(sa_delete(WebPageView).where(WebPageView.created_at < analytics_cutoff))
-            fe = await session.execute(sa_delete(WebFlowEvent).where(WebFlowEvent.created_at < analytics_cutoff))
-            er = await session.execute(
+    async def rows_deleted(session, stmt, params: dict | None = None) -> int:
+        result = await session.execute(stmt, params) if params else await session.execute(stmt)
+        return result.rowcount or 0
+
+    steps: tuple[tuple[str, Callable[[object], Coroutine[None, None, int]]], ...] = (
+        (
+            "page_views",
+            lambda session: rows_deleted(
+                session, sa_delete(WebPageView).where(WebPageView.created_at < analytics_cutoff)
+            ),
+        ),
+        (
+            "flow_events",
+            lambda session: rows_deleted(
+                session, sa_delete(WebFlowEvent).where(WebFlowEvent.created_at < analytics_cutoff)
+            ),
+        ),
+        (
+            "error_reports",
+            lambda session: rows_deleted(
+                session,
                 sa_delete(WebErrorReport).where(
                     WebErrorReport.resolved.is_(True),
                     WebErrorReport.last_seen_at < error_cutoff,
-                )
-            )
-            th = await session.execute(
-                sa_delete(KeyTrafficHistory).where(KeyTrafficHistory.snapshot_date < traffic_cutoff)
-            )
-            from sqlalchemy import text as _sa_text
+                ),
+            ),
+        ),
+        (
+            "traffic_history",
+            lambda session: rows_deleted(
+                session, sa_delete(KeyTrafficHistory).where(KeyTrafficHistory.snapshot_date < traffic_cutoff)
+            ),
+        ),
+        (
+            "rate_limit",
+            lambda session: rows_deleted(
+                session,
+                _sa_text("DELETE FROM rate_limit_counters WHERE window_start < :c"),
+                {"c": rate_limit_cutoff},
+            ),
+        ),
+        (
+            "audit_events",
+            lambda session: delete_old_audit_events(session, older_than_days=AUDIT_RETENTION_DAYS),
+        ),
+    )
 
-            rl_cutoff = int(now.timestamp()) - 3600
-            rl = await session.execute(
-                _sa_text("DELETE FROM rate_limit_counters WHERE window_start < :c"), {"c": rl_cutoff}
-            )
-
-            from audit import delete_old_audit_events
-
-            audit_removed = await delete_old_audit_events(session, older_than_days=AUDIT_RETENTION_DAYS)
-            await session.commit()
-            logger.info(
-                "[WebAnalyticsCleanup] удалено page_views={} flow_events={} error_reports={} "
-                "traffic_history={} rate_limit={} audit_events={}",
-                pv.rowcount,
-                fe.rowcount,
-                er.rowcount,
-                th.rowcount,
-                rl.rowcount,
-                audit_removed,
-            )
-        except Exception as error:
-            logger.error("[WebAnalyticsCleanup] ошибка очистки: {}", error)
+    removed: list[str] = []
+    for name, run in steps:
+        async with async_session_maker() as session:
+            try:
+                count = await run(session)
+                await session.commit()
+                removed.append(f"{name}={count}")
+            except Exception as error:
+                await session.rollback()
+                removed.append(f"{name}=ошибка")
+                logger.error("[WebAnalyticsCleanup] шаг {} не выполнен: {}", name, error)
+    logger.info("[WebAnalyticsCleanup] удалено {}", " ".join(removed))
 
 
 async def abandoned_checkout_reminder_job() -> None:

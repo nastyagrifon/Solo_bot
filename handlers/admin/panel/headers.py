@@ -170,6 +170,13 @@ def align_screen(text: str) -> str:
         if not rows:
             return match.group(0)
         if rows not in aligned:
+            pairs = [_split_pair(row) for row in rows]
+            if all(pairs):
+                cells = cells_of(rows)
+                fallback_width = max(LABEL_COLUMN + 2, max(len(label) for label, _ in cells))
+                return "\n".join(
+                    f"<code>{label.ljust(fallback_width)}</code>  <code>{value}</code>" for label, value in cells
+                )
             lines = [branch(row, index == len(rows) - 1) for index, row in enumerate(rows)]
             return "<code>" + "\n".join(lines) + "</code>"
         lines = []
@@ -227,11 +234,7 @@ def card(*sections: str) -> str:
 
 
 def menu_text(title: str, *paragraphs: str, wide: bool = False) -> str:
-    """Собирает текст экрана: заголовок и абзацы. Значения таблиц выравниваются по одной вертикали.
-
-    wide — экран-редактор: подчёркивание длиннее, поэтому пузырь и клавиатура шире,
-    и подписи кнопок в многокнопочных рядах не обрезаются.
-    """
+    """Собирает экран с заголовком, абзацами и выровненными таблицами."""
     body = [wrap_text(p, WIDE_TEXT_EM if wide else MENU_TEXT_EM) for p in paragraphs if p]
 
     return align_screen("\n\n".join([menu_title(title, wide), *body]))

@@ -13,6 +13,9 @@ from ..panel.keyboard import AdminPanelCallback
 from .keyboard import MONEY_FIELDS, build_settings_money_kb
 
 
+MONEY_SETTINGS_DESCRIPTION = "Валюты, курс, кэшбэк и наценка на конвертацию."
+
+
 router = Router()
 router.callback_query.filter(IsAdminFilter())
 router.message.filter(IsAdminFilter())
@@ -23,10 +26,11 @@ class MoneySettingsState(StatesGroup):
 
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "settings_money"))
-async def open_settings_money(callback: CallbackQuery) -> None:
+async def open_settings_money(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     text = menu_text(
         "Деньги",
-        "Валюты, курс и кэшбэк.",
+        MONEY_SETTINGS_DESCRIPTION,
         section(
             "⚙️ Что здесь",
             "Валюты: RUB и USD",

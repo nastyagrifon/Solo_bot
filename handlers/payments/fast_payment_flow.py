@@ -1,3 +1,5 @@
+import importlib
+
 from math import ceil
 from types import SimpleNamespace
 from typing import Any
@@ -13,8 +15,10 @@ from core.rate_limit import rate_limit_hit
 from core.settings.buttons_config import BUTTONS_CONFIG
 from core.settings.money_config import get_currency_mode
 from database import get_balance, get_coupon_by_code_ci
+from database.access.resolution import TelegramId, user_id_from_legacy_ref
 from database.temporary_data import create_temporary_data, get_temporary_data
-from handlers.payments.checkout_coupon import apply_checkout_coupon, payload_base_price
+from database.users import get_locked_balance
+from handlers.payments.checkout_coupon import apply_checkout_coupon, checkout_price
 from handlers.payments.currency_flow import (
     build_currency_choice_kb,
     currency_label,
@@ -22,8 +26,10 @@ from handlers.payments.currency_flow import (
 )
 from handlers.utils import edit_or_send_message
 from logger import logger
+from middlewares.session import operation_session
+from services.coupons import apply_fixed_coupon
 from services.errors import ServiceError
-from services.payments.providers import get_providers_with_hooks, sort_provider_names
+from services.payments.providers import get_provider_menu_currency, get_providers_with_hooks, sort_provider_names
 from settings import buttons as btn
 from settings.cache_config import COUPON_ATTEMPTS_PER_MINUTE
 from settings.config import TRIBUTE_LINK, USE_NEW_PAYMENT_FLOW
@@ -65,10 +71,29 @@ async def get_payment_providers_config() -> dict[str, bool]:
     return dict(config)
 
 
+def _configured_fast_providers(providers_map: dict) -> list[str]:
+    configured = [str(provider).upper() for provider in (USE_NEW_PAYMENT_FLOW or [])]
+    if (
+        "YOOKASSA" in configured
+        and (providers_map.get("YOOKASSA_SBP") or {}).get("enabled")
+        and "YOOKASSA_SBP" not in configured
+    ):
+        configured.append("YOOKASSA_SBP")
+    if (providers_map.get("YOOKASSA_AUTOPAY") or {}).get("enabled") and "YOOKASSA_AUTOPAY" not in configured:
+        configured.append("YOOKASSA_AUTOPAY")
+    if USE_NEW_PAYMENT_FLOW and (providers_map.get("KASSA2328") or {}).get("enabled") and "KASSA2328" not in configured:
+        configured.append("KASSA2328")
+    if USE_NEW_PAYMENT_FLOW:
+        for provider in ("PAYHOT_CARDS", "PAYHOT_SBP", "PAYHOT_SBERPAY"):
+            if (providers_map.get(provider) or {}).get("enabled") and provider not in configured:
+                configured.append(provider)
+    return configured
+
+
 async def _fast_pay_options() -> SimpleNamespace:
     """Кассы быстрой оплаты по настройкам и режиму валют, плюс Tribute и Stars."""
     providers_map = await get_providers_with_hooks(await get_payment_providers_config())
-    configured_upper = [str(p).upper() for p in (USE_NEW_PAYMENT_FLOW or [])]
+    configured_upper = _configured_fast_providers(providers_map)
     configured_set = set(configured_upper)
 
     providers = [
@@ -85,7 +110,7 @@ async def _fast_pay_options() -> SimpleNamespace:
         providers = [
             p
             for p in providers
-            if str((providers_map.get(p) or {}).get("currency") or "").upper() in (allowed_currency, "RUB+USD")
+            if get_provider_menu_currency(providers_map.get(p) or {}) in (allowed_currency, "RUB+USD")
         ]
 
     tribute_cfg = providers_map.get("TRIBUTE") or {}
@@ -129,7 +154,7 @@ def _fast_provider_kb(opts: SimpleNamespace, coupon_text: str) -> InlineKeyboard
     for provider_upper in opts.providers:
         button_text = getattr(btn, provider_upper, provider_upper)
         if opts.one_screen:
-            curr = (opts.providers_map.get(provider_upper) or {}).get("currency")
+            curr = get_provider_menu_currency(opts.providers_map.get(provider_upper) or {})
             if curr and curr != "RUB+USD":
                 button_text = f"{button_text} ({currency_label(curr)})"
         keyboard.row(InlineKeyboardButton(text=button_text, callback_data=f"choose_payment_provider|{provider_upper}"))
@@ -142,6 +167,69 @@ def _fast_provider_kb(opts: SimpleNamespace, coupon_text: str) -> InlineKeyboard
     return keyboard
 
 
+async def _prepare_checkout(
+    session,
+    user_ref: int,
+    temp_key: str,
+    payload: dict,
+    required_amount: int | None,
+    *,
+    resume: bool,
+    apply_coupon: bool,
+    coupon_code: str | None = None,
+) -> tuple[dict, int | None, str] | None:
+    """Проверяет корзину и обновляет доплату по текущему балансу."""
+    async with operation_session(session) as checkout_session:
+        owner = await user_id_from_legacy_ref(checkout_session, user_ref)
+        if owner is None:
+            return None
+        balance = await get_locked_balance(checkout_session, owner)
+        if balance is None:
+            return None
+        if resume:
+            current = await get_temporary_data(checkout_session, owner)
+            if not current or current.get("state") != temp_key or current.get("data") != payload:
+                return None
+        else:
+            await create_temporary_data(checkout_session, owner, temp_key, payload)
+        price = checkout_price(temp_key, payload)
+        if price is None:
+            return None
+        coupon_note = ""
+        if apply_coupon:
+            coupon = await get_coupon_by_code_ci(checkout_session, coupon_code) if coupon_code is not None else None
+            if coupon and int(coupon.percent or 0) <= 0 and int(coupon.amount or 0) > 0:
+                result = await apply_fixed_coupon(
+                    session=checkout_session,
+                    user_id=owner,
+                    tg_id=user_ref if isinstance(user_ref, TelegramId) else None,
+                    code=coupon_code,
+                )
+                balance = result.balance
+            else:
+                payload, required_amount, coupon_note = await apply_checkout_coupon(
+                    checkout_session, owner, temp_key, payload, required_amount, coupon_code=coupon_code
+                )
+        price = checkout_price(temp_key, payload)
+        if price is not None:
+            required_amount = max(0, ceil(price - balance))
+        if required_amount is not None and payload.get("required_amount") != required_amount:
+            payload = {**payload, "required_amount": required_amount}
+            await create_temporary_data(checkout_session, owner, temp_key, payload)
+    return payload, required_amount, coupon_note
+
+
+async def _show_expired_checkout(message):
+    """Сообщает, что корзина больше недоступна."""
+    await edit_or_send_message(
+        target_message=message,
+        text=RESUME_CHECKOUT_EXPIRED,
+        reply_markup=InlineKeyboardBuilder()
+        .row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
+        .as_markup(),
+    )
+
+
 async def _run_provider_flow(
     provider: str,
     callback_query: CallbackQuery,
@@ -149,7 +237,28 @@ async def _run_provider_flow(
     state: FSMContext,
     required_amount: int | None,
 ) -> bool:
-    import importlib
+    data = await state.get_data()
+    temp_key = data.get("temp_key")
+    payload = data.get("temp_payload")
+    if not temp_key or not isinstance(payload, dict):
+        await _show_expired_checkout(callback_query.message)
+        return True
+    user_ref = TelegramId(callback_query.from_user.id)
+    prepared = await _prepare_checkout(
+        session, user_ref, str(temp_key), payload, required_amount, resume=True, apply_coupon=False
+    )
+    if prepared is None:
+        await _show_expired_checkout(callback_query.message)
+        return True
+    payload, required_amount, _ = prepared
+    await state.update_data(temp_payload=payload, required_amount=required_amount)
+    if required_amount == 0:
+        await state.set_state(None)
+        await _finish_from_balance(callback_query.message, session, str(temp_key), payload, user_ref, state=state)
+        return True
+    if required_amount is None or required_amount < 0:
+        await _show_expired_checkout(callback_query.message)
+        return True
 
     payment_config = await get_payment_providers_config()
     providers_map = await get_providers_with_hooks(payment_config)
@@ -178,7 +287,11 @@ async def _run_provider_flow(
                 await callback_query.message.delete()
             except Exception as error:
                 logger.warning(f"[FAST_FLOW] Не удалось удалить меню перед STARS: {error}")
-        await func(callback_query, session, *([cfg["method"]] if cfg.get("method") else []))
+        if provider_upper in {"YOOKASSA_AUTOPAY", "PAYHOT_SBERPAY"}:
+            # У этих двух касс вендора третьего позиционного аргумента нет: state только по имени.
+            await func(callback_query, session, state=state)
+        else:
+            await func(callback_query, session, *([cfg["method"]] if cfg.get("method") else []))
         return True
     except Exception as error:
         logger.error(f"[FAST_FLOW] Ошибка при вызове {provider_upper}.{fast_handler_name}(): {error}")
@@ -194,19 +307,25 @@ async def try_fast_payment_flow(
     temp_key: str,
     temp_payload: dict,
     required_amount: int | None = None,
+    resume: bool = False,
 ) -> bool:
-    await create_temporary_data(session, tg_id, temp_key, temp_payload)
-
     if not USE_NEW_PAYMENT_FLOW:
+        if not resume:
+            await create_temporary_data(session, tg_id, temp_key, temp_payload)
         return False
 
-    temp_payload, required_amount, coupon_note = await apply_checkout_coupon(
-        session, tg_id, temp_key, temp_payload, required_amount
+    prepared = await _prepare_checkout(
+        session, tg_id, temp_key, temp_payload, required_amount, resume=resume, apply_coupon=True
     )
-    if coupon_note and required_amount == 0:
+    if prepared is None:
+        await _show_expired_checkout(callback_query.message)
+        return True
+    temp_payload, required_amount, coupon_note = prepared
+    if required_amount == 0:
         await state.update_data(temp_key=temp_key, temp_payload=temp_payload, required_amount=0)
         await state.set_state(None)
-        return await _finish_from_balance(callback_query.message, session, temp_key, temp_payload, tg_id)
+        await _finish_from_balance(callback_query.message, session, temp_key, temp_payload, tg_id, state=state)
+        return True
 
     note_block = f"{coupon_note}\n\n" if coupon_note else ""
 
@@ -248,7 +367,7 @@ async def try_fast_payment_flow(
     if len(providers) == 1 and total_options == 1 and not coupon_offer:
         single_provider = providers[0]
         cfg = providers_map.get(single_provider) or {}
-        currency = cfg.get("currency")
+        currency = get_provider_menu_currency(cfg)
         if currency:
             await state.update_data(chosen_currency=currency)
         await state.update_data(temp_key=temp_key, temp_payload=temp_payload, required_amount=required_amount)
@@ -278,12 +397,10 @@ async def try_fast_payment_flow(
 
 @router.callback_query(F.data == "resume_checkout")
 async def resume_checkout(callback_query: CallbackQuery, state: FSMContext, session: Any):
-    tg_id = callback_query.from_user.id
+    tg_id = TelegramId(callback_query.from_user.id)
 
     expired_markup = (
-        InlineKeyboardBuilder()
-        .row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile"))
-        .as_markup()
+        InlineKeyboardBuilder().row(InlineKeyboardButton(text=btn.MAIN_MENU, callback_data="profile")).as_markup()
     )
 
     temp = await get_temporary_data(session, tg_id)
@@ -301,7 +418,7 @@ async def resume_checkout(callback_query: CallbackQuery, state: FSMContext, sess
 
     required_amount = payload.get("required_amount")
     if required_amount is None:
-        price = payload.get("selected_price_rub") or payload.get("cost") or payload.get("original_price")
+        price = checkout_price(temp_key, payload)
         if price is not None:
             balance = await get_balance(session, tg_id)
             required_amount = max(0, ceil(float(price) - float(balance)))
@@ -316,6 +433,7 @@ async def resume_checkout(callback_query: CallbackQuery, state: FSMContext, sess
             temp_key=temp_key,
             temp_payload=payload,
             required_amount=int(required_amount),
+            resume=True,
         )
 
     if not handled:
@@ -330,7 +448,7 @@ async def resume_checkout(callback_query: CallbackQuery, state: FSMContext, sess
 
 @router.callback_query(F.data == "fastflow_back")
 async def fastflow_back(callback_query: CallbackQuery, state: FSMContext, session: Any):
-    """Возврат из экрана выбора суммы в потоке /buy к выбору способа оплаты (без перехода на экран баланса)."""
+    """Возвращает к выбору способа оплаты в быстром потоке."""
     amount_not_found_text = "Сумма не найдена"
     data = await state.get_data()
     temp_key = data.get("temp_key")
@@ -352,10 +470,11 @@ async def fastflow_back(callback_query: CallbackQuery, state: FSMContext, sessio
         callback_query,
         session,
         state,
-        tg_id=callback_query.from_user.id,
+        tg_id=TelegramId(callback_query.from_user.id),
         temp_key=str(temp_key),
         temp_payload=dict(temp_payload),
         required_amount=int(required_amount),
+        resume=True,
     )
     await callback_query.answer()
 
@@ -386,10 +505,11 @@ async def fastflow_coupon_back(callback_query: CallbackQuery, state: FSMContext,
         callback_query,
         session,
         state,
-        tg_id=callback_query.from_user.id,
+        tg_id=TelegramId(callback_query.from_user.id),
         temp_key=str(temp_key),
         temp_payload=dict(temp_payload),
         required_amount=int(required_amount),
+        resume=True,
     )
     await callback_query.answer()
 
@@ -404,19 +524,28 @@ async def fastflow_coupon(callback_query: CallbackQuery, state: FSMContext):
         await callback_query.answer(amount_not_found_text, show_alert=True)
         return
 
-    await state.set_state(FastFlowCouponState.waiting_for_coupon_code)
     await edit_or_send_message(
         target_message=callback_query.message,
         text=input_text,
         reply_markup=InlineKeyboardBuilder()
         .row(InlineKeyboardButton(text=btn.BACK, callback_data="fastflow_coupon_back"))
         .as_markup(),
+        edit_only=True,
     )
+    await state.update_data(
+        fastflow_coupon_prompt={
+            "chat_id": callback_query.message.chat.id,
+            "message_id": callback_query.message.message_id,
+            "has_caption": callback_query.message.caption is not None
+            or callback_query.message.content_type in {"photo", "video", "animation", "audio", "document", "voice"},
+        }
+    )
+    await state.set_state(FastFlowCouponState.waiting_for_coupon_code)
 
 
 @router.callback_query(F.data == "buy_confirm_balance")
 async def buy_confirm_balance(callback_query: CallbackQuery, state: FSMContext, session: Any):
-    """Оформление с баланса после экрана с предложением купона."""
+    """Оформляет покупку с баланса после предложения купона."""
     data = await state.get_data()
     temp_key = data.get("temp_key")
     payload = data.get("temp_payload")
@@ -426,26 +555,89 @@ async def buy_confirm_balance(callback_query: CallbackQuery, state: FSMContext, 
     await callback_query.answer()
     await state.set_state(None)
     await _finish_from_balance(
-        callback_query.message, session, str(temp_key), payload, callback_query.from_user.id
+        callback_query.message, session, str(temp_key), payload, TelegramId(callback_query.from_user.id), state=state
     )
 
 
-async def _finish_from_balance(message, session, temp_key: str, payload: dict, user_ref: int) -> bool:
+async def _finish_from_balance(
+    message, session, temp_key: str, payload: dict, user_ref: int, *, state: FSMContext | None = None
+) -> bool:
     """Закрывает покупку с баланса без экрана касс."""
+    from handlers.keys.view.payload import send_key_info
     from handlers.payments.utils import _handle_temp_state
 
-    try:
-        done = await _handle_temp_state(session, user_ref, temp_key, payload, 0)
-    except Exception as e:
-        logger.error("[FastFlow] покупка с баланса не завершилась: {}", e)
-        return False
+    class CheckoutNotApplied(Exception):
+        pass
+
+    async with operation_session(session) as checkout_session:
+        try:
+            async with checkout_session.begin_nested():
+                owner = await user_id_from_legacy_ref(checkout_session, user_ref)
+                if owner is None:
+                    raise CheckoutNotApplied
+                balance = await get_locked_balance(checkout_session, owner)
+                current = await get_temporary_data(checkout_session, owner)
+                price = checkout_price(temp_key, payload)
+                if (
+                    balance is None
+                    or price is None
+                    or balance < price
+                    or not current
+                    or current.get("state") != temp_key
+                    or current.get("data") != payload
+                    or payload.get("required_amount") != 0
+                ):
+                    raise CheckoutNotApplied
+                done = await _handle_temp_state(checkout_session, owner, temp_key, payload, 0, notify_addons=False)
+                if not done:
+                    raise CheckoutNotApplied
+        except CheckoutNotApplied:
+            done = False
+    if done and temp_key == "waiting_for_addons_payment":
+        try:
+            target_message = message if message.from_user is not None and message.from_user.is_bot else None
+            if target_message is None and state is not None:
+                prompt = (await state.get_data()).get("fastflow_coupon_prompt")
+                if (
+                    isinstance(prompt, dict)
+                    and prompt.get("chat_id") == message.chat.id
+                    and type(prompt.get("message_id")) is int
+                    and prompt["message_id"] > 0
+                ):
+                    target_message = Message(
+                        message_id=prompt["message_id"],
+                        date=message.date,
+                        chat=message.chat,
+                        message_thread_id=message.message_thread_id,
+                        business_connection_id=message.business_connection_id,
+                        caption="" if prompt.get("has_caption") else None,
+                    ).as_(message.bot)
+            if target_message is None:
+                logger.warning("[ADDONS] Дополнения применены, но сообщение для обновления карточки не найдено")
+            else:
+                await send_key_info(message.bot, session, owner, payload["email"], target_message=target_message)
+        except Exception as error:
+            logger.warning("[ADDONS] Дополнения применены, но карточка не обновлена: {}", error)
+    if done and state is not None:
+        await state.update_data(
+            temp_key=None,
+            temp_payload=None,
+            required_amount=None,
+            fastflow_providers=[],
+            chosen_currency=None,
+            fastflow_coupon_prompt=None,
+        )
     if not done:
-        await message.answer("❌ Не удалось завершить покупку. Попробуйте ещё раз.")
+        try:
+            await message.answer("❌ Не удалось завершить покупку. Попробуйте ещё раз.")
+        except Exception as error:
+            logger.warning("[FastFlow] Не удалось сообщить о незавершённой покупке: {}", error)
     return done
 
 
 @router.message(FastFlowCouponState.waiting_for_coupon_code)
 async def fastflow_apply_coupon(message: Message, state: FSMContext, session: Any):
+    tg_id = TelegramId(message.from_user.id)
     input_text = "Введите купон:"
     amount_not_found_text = "Сумма не найдена"
     not_found_text = "Купон не найден"
@@ -498,10 +690,17 @@ async def fastflow_apply_coupon(message: Message, state: FSMContext, session: An
         return
 
     if percent_raw <= 0 and amount_raw > 0:
-        from services.coupons import apply_fixed_coupon
-
         try:
-            await apply_fixed_coupon(session=session, user_id=message.from_user.id, tg_id=message.from_user.id, code=code)
+            prepared = await _prepare_checkout(
+                session,
+                tg_id,
+                str(temp_key),
+                temp_payload,
+                required_amount,
+                resume=True,
+                apply_coupon=True,
+                coupon_code=code,
+            )
         except ServiceError as e:
             await message.answer(f"❌ {e.message}", reply_markup=back_markup)
             return
@@ -510,16 +709,14 @@ async def fastflow_apply_coupon(message: Message, state: FSMContext, session: An
             await message.answer(not_applicable_text, reply_markup=back_markup)
             return
 
-        balance_after = await get_balance(session, message.from_user.id)
-        price_now = int(payload_base_price(temp_payload) or required_amount)
-        left = int(max(0, ceil(float(price_now) - float(balance_after))))
-        payload_after = dict(temp_payload)
-        payload_after["required_amount"] = left
-        await create_temporary_data(session, message.from_user.id, str(temp_key), payload_after)
+        if prepared is None:
+            await _show_expired_checkout(message)
+            return
+        payload_after, left, _ = prepared
         await state.update_data(required_amount=left, temp_payload=payload_after)
         await state.set_state(None)
         if left == 0:
-            await _finish_from_balance(message, session, str(temp_key), payload_after, message.from_user.id)
+            await _finish_from_balance(message, session, str(temp_key), payload_after, tg_id, state=state)
             return
         await message.answer(
             f"✅ Купон активирован, на баланс начислено {amount_raw}. Осталось доплатить {left}.",
@@ -528,13 +725,24 @@ async def fastflow_apply_coupon(message: Message, state: FSMContext, session: An
         return
 
     try:
-        temp_payload_updated, required_amount_new, coupon_text = await apply_checkout_coupon(
-            session, message.from_user.id, str(temp_key), temp_payload, required_amount, coupon_code=code
+        prepared = await _prepare_checkout(
+            session,
+            tg_id,
+            str(temp_key),
+            temp_payload,
+            required_amount,
+            resume=True,
+            apply_coupon=True,
+            coupon_code=code,
         )
     except ServiceError as e:
         await message.answer(f"❌ {e.message}", reply_markup=back_markup)
         return
 
+    if prepared is None:
+        await _show_expired_checkout(message)
+        return
+    temp_payload_updated, required_amount_new, coupon_text = prepared
     if not coupon_text:
         await message.answer(not_applicable_text, reply_markup=back_markup)
         return
@@ -546,13 +754,13 @@ async def fastflow_apply_coupon(message: Message, state: FSMContext, session: An
     await state.set_state(None)
 
     if required_amount_new == 0:
-        await _finish_from_balance(message, session, str(temp_key), temp_payload_updated, message.from_user.id)
+        await _finish_from_balance(message, session, str(temp_key), temp_payload_updated, tg_id, state=state)
         return
 
     opts = await _fast_pay_options()
     lead_text = await shortfall_lead_text(
         session,
-        message.from_user.id,
+        tg_id,
         int(required_amount_new),
         getattr(message.from_user, "language_code", None),
     )
@@ -584,14 +792,13 @@ async def choose_payment_currency(callback_query: CallbackQuery, state: FSMConte
 
     providers = data.get("fastflow_providers") or []
     if not providers:
-        configured = [str(p) for p in (USE_NEW_PAYMENT_FLOW or [])]
-        providers = [p.upper() for p in configured]
+        providers = _configured_fast_providers(providers_map)
 
     filtered = sort_provider_names(
         [
             provider_upper
             for provider_upper in (p.upper() for p in providers)
-            if (providers_map.get(provider_upper) or {}).get("currency") == currency
+            if get_provider_menu_currency(providers_map.get(provider_upper) or {}) == currency
             and (providers_map.get(provider_upper) or {}).get("fast")
             and (providers_map.get(provider_upper) or {}).get("enabled", True)
         ],
@@ -637,7 +844,7 @@ async def choose_payment_currency(callback_query: CallbackQuery, state: FSMConte
 
     lead_text = await shortfall_lead_text(
         session,
-        callback_query.from_user.id,
+        TelegramId(callback_query.from_user.id),
         data.get("required_amount"),
         getattr(callback_query.from_user, "language_code", None),
         force_currency=currency,
@@ -667,7 +874,7 @@ async def choose_payment_provider(callback_query: CallbackQuery, state: FSMConte
         )
         return
 
-    currency = cfg.get("currency")
+    currency = get_provider_menu_currency(cfg)
     if currency:
         await state.update_data(chosen_currency=currency)
 

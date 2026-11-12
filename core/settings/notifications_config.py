@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..defaults import DEFAULT_NOTIFICATIONS_CONFIG
 from .runtime_sync import load_setting, register_runtime_config, update_setting
+from .traffic_notifications import validate_traffic_notification_settings
 
 
 NOTIFICATIONS_CONFIG: dict[str, Any] = DEFAULT_NOTIFICATIONS_CONFIG.copy()
@@ -22,6 +23,7 @@ async def load_notifications_config(session: AsyncSession) -> None:
 
 
 async def update_notifications_config(session: AsyncSession, new_values: dict[str, Any]) -> None:
+    validate_traffic_notification_settings({**DEFAULT_NOTIFICATIONS_CONFIG, **NOTIFICATIONS_CONFIG, **new_values})
     await update_setting(
         session,
         "NOTIFICATIONS_CONFIG",

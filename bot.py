@@ -1,7 +1,7 @@
 from importlib import import_module
 
 
-version = "0.5.3"
+version = "6.0.1"
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -13,7 +13,7 @@ from core.settings.modes_config import resolve_protect_content
 from core.slow_log import SlowTelegramRequests, watch_redis
 from database import async_session_maker
 from filters.private import IsPrivateFilter
-from settings.config import API_TOKEN, REDIS_URL
+from settings.config import API_TOKEN, BUTTON_ICON_CONFIG, REDIS_URL
 from utils.button_icons import apply_button_icons_patch, set_button_icon_config
 from utils.custom_emojis import initialize_custom_emojis
 from utils.errors import setup_error_handlers
@@ -28,23 +28,27 @@ bot = Bot(
 bot.session.middleware(SlowTelegramRequests())
 guard_webhook()
 
-RedisStorage = import_module("aiogram.fsm.storage.redis").RedisStorage
-_redis_asyncio = import_module("redis.asyncio")
-_BlockingConnectionPool = import_module("redis.asyncio.connection").BlockingConnectionPool
+if str(REDIS_URL or "").strip():
+    RedisStorage = import_module("aiogram.fsm.storage.redis").RedisStorage
+    _redis_asyncio = import_module("redis.asyncio")
+    _BlockingConnectionPool = import_module("redis.asyncio.connection").BlockingConnectionPool
 
-_redis_pool = _BlockingConnectionPool.from_url(
-    REDIS_URL,
-    encoding="utf-8",
-    decode_responses=True,
-    max_connections=128,
-    timeout=20,
-    health_check_interval=30,
-    socket_connect_timeout=5,
-    socket_timeout=5,
-    retry_on_timeout=True,
-)
-redis = watch_redis(_redis_asyncio.Redis(connection_pool=_redis_pool), "fsm")
-storage = RedisStorage(redis=redis)
+    _redis_pool = _BlockingConnectionPool.from_url(
+        REDIS_URL,
+        encoding="utf-8",
+        decode_responses=True,
+        max_connections=128,
+        timeout=20,
+        health_check_interval=30,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        retry_on_timeout=True,
+    )
+    redis = watch_redis(_redis_asyncio.Redis(connection_pool=_redis_pool), "fsm")
+    storage = RedisStorage(redis=redis)
+else:
+    redis = None
+    storage = MemoryStorage()
 
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -62,8 +66,6 @@ load_modules_from_folder()
 from utils.import_guard import warn_on_foreign_modules  # noqa: E402
 
 warn_on_foreign_modules("после загрузки модулей")
-
-from settings.buttons import BUTTON_ICON_CONFIG
 
 
 set_button_icon_config(BUTTON_ICON_CONFIG)

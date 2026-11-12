@@ -1,6 +1,14 @@
+from html import escape
+
+from database.access.resolution import UserId
+
 from ...panel.headers import menu_text, quote, section
-from ._common import *  # noqa: F401,F403
+from ._common import *
 from .edit import handle_key_edit
+
+
+TRAFFIC_RESET_FAILED = "Не удалось сбросить трафик: панели не подтвердили операцию. Попробуйте позже."
+TRAFFIC_RESET_PARTIAL_TEXT = "Трафик сброшен на: {successful_servers}. Не удалось сбросить на: {failed_servers}."
 
 
 @router.callback_query(
@@ -80,15 +88,21 @@ async def handle_reset_traffic(
     cluster_id = key_obj.server_id
 
     try:
-        await reset_traffic_in_cluster(cluster_id, email, session)
+        result = await reset_traffic_in_cluster(cluster_id, email, session)
+        text = f"✅ Трафик для ключа <b>{email}</b> успешно сброшен."
+        if isinstance(result, dict) and result.get("failed"):
+            text = TRAFFIC_RESET_PARTIAL_TEXT.format(
+                successful_servers=escape(", ".join(result.get("succeeded") or [])),
+                failed_servers=escape(", ".join(result["failed"])),
+            )
         await callback_query.message.edit_text(
-            menu_text("Подписка", f"✅ Трафик для ключа <b>{email}</b> успешно сброшен."),
+            menu_text("Подписка", text),
             reply_markup=build_editor_kb(user_id),
         )
     except Exception as e:
         logger.error(f"Ошибка при сбросе трафика: {e}")
         await callback_query.message.edit_text(
-            menu_text("Подписка", "❌ Не удалось сбросить трафик. Попробуйте позже."),
+            menu_text("Подписка", TRAFFIC_RESET_FAILED),
             reply_markup=build_editor_kb(user_id),
         )
 
@@ -110,7 +124,7 @@ async def handle_admin_freeze_subscription(
 
     try:
         record = await get_key_details(session, email)
-        if not record:
+        if not record or record.get("user_id") != key_obj.user_id or record.get("client_id") != key_obj.client_id:
             await reply_key_not_found(callback_query.message.edit_text, user_id)
             return
 
@@ -135,7 +149,7 @@ async def handle_admin_freeze_subscription(
         if time_left < 0:
             time_left = 0
 
-        await mark_key_as_frozen(session, record["user_id"], client_id, time_left)
+        await mark_key_as_frozen(session, UserId(record["user_id"]), client_id, time_left)
         session.expire_all()
 
         await callback_query.answer(menu_text("Подписка", "✅ Подписка отключена"))
@@ -167,7 +181,7 @@ async def handle_admin_unfreeze_subscription(
 
     try:
         record = await get_key_details(session, email)
-        if not record:
+        if not record or record.get("user_id") != key_obj.user_id or record.get("client_id") != key_obj.client_id:
             await reply_key_not_found(callback_query.message.edit_text, user_id)
             return
 
@@ -206,11 +220,7 @@ async def handle_admin_unfreeze_subscription(
             leftover = 0
         new_expiry_time = leftover if leftover > now_ms else now_ms + leftover
 
-        await mark_key_as_unfrozen(session, record["user_id"], client_id, new_expiry_time)
-        session.expire_all()
-        await release_session_early(session)
-
-        await renew_key_in_cluster(
+        renewed = await renew_key_in_cluster(
             cluster_id=cluster_id,
             email=email,
             client_id=client_id,
@@ -221,6 +231,12 @@ async def handle_admin_unfreeze_subscription(
             reset_traffic=False,
             plan=record.get("tariff_id"),
         )
+
+        if not renewed:
+            raise RuntimeError("Не удалось восстановить срок подписки на панели")
+
+        await mark_key_as_unfrozen(session, UserId(record["user_id"]), client_id, new_expiry_time)
+        session.expire_all()
 
         await callback_query.answer(menu_text("Подписка", "✅ Подписка включена"))
 
