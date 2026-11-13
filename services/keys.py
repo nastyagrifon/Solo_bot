@@ -708,6 +708,13 @@ async def execute_renewal(
     if not cluster_id:
         raise NotFoundError(f"Кластер для {key_server_id} не найден")
 
+    # Списание до панели: при параллельных продлениях второе упрётся в баланс, а не продлит даром;
+    # сбой дальше откатывается вместе с транзакцией.
+    if cost:
+        debited = await update_balance(session, billing_user_id, -cost)
+        if cost > 0 and debited is None:
+            raise InsufficientFundsError("Недостаточно средств для продления. Средства не списаны.")
+
     renewed_ok = await renew_key_in_cluster(
         cluster_id=cluster_id,
         email=key_email,
@@ -758,11 +765,6 @@ async def execute_renewal(
             current_traffic_limit=None if new_trf is None else carried_traffic,
             apply_limits=True,
         )
-    if cost:
-        debited = await update_balance(session, billing_user_id, -cost)
-        if cost > 0 and debited is None:
-            raise InsufficientFundsError("Недостаточно средств для продления. Средства не списаны.")
-
     if tariff.get("configurable"):
         cfg = normalize_tariff_config(tariff)
         raw_device_opts = cfg.get("device_options") or tariff.get("device_options") or []

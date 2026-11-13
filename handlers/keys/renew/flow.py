@@ -217,6 +217,8 @@ async def complete_key_renewal(
             )
             renewal_applied = True
         except ServiceError as e:
+            # Списание уже в транзакции: без отката middleware закоммитит его без продления.
+            await session.rollback()
             logger.error(f"[Error] Сервис продления: {e.message}")
             err_text = f"⚠️ {e.message}"
             err_kb = InlineKeyboardBuilder()
@@ -354,4 +356,6 @@ async def complete_key_renewal(
 
     except Exception as e:
         logger.error(f"[Error] Ошибка в complete_key_renewal: {e}")
+        if not renewal_applied:
+            await session.rollback()
         return renewal_applied
