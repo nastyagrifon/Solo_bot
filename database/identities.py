@@ -54,6 +54,12 @@ from utils.client_ip import client_ip
 from utils.cpu_tasks import check_password, hash_password
 
 
+# Хеш случайного пароля той же стоимости, что и настоящие (rounds=12): вход по
+# неизвестной почте проверяет пароль против него, чтобы время ответа не
+# выдавало, зарегистрирована ли почта.
+_DUMMY_PASSWORD_HASH = "$2b$12$P.jqV7SwcKc7xT0ng1RQn.FrR4xEhltP4ttH9DLFIMZ323nvfTg4u"
+
+
 def _request_meta(request) -> tuple[str | None, str | None]:
     if request is None:
         return None, None
@@ -287,9 +293,10 @@ async def login_by_email(
     """Проверяет пароль и выдаёт токен входа по email."""
     email_clean = email.strip().lower()
     identity = await get_identity_by_email(session, email_clean)
-    if not identity:
+    password_hash = identity.password_hash if identity else None
+    if not password_hash:
+        await run_cpu(check_password, password, _DUMMY_PASSWORD_HASH)
         return None
-    password_hash = identity.password_hash
     if not await run_cpu(check_password, password, password_hash):
         return None
     identity = (await _lock_identities(session, identity.id)).get(identity.id)
