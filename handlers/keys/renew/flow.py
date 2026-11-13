@@ -72,7 +72,7 @@ async def _finalize_renewal(
     expected_key_snapshot: dict | None = None,
 ) -> None:
     """Пересчитывает баланс и завершает смену тарифа."""
-    balance = round(await get_balance(session, tg_id), 2)
+    balance = await get_balance(session, tg_id, exact=True)
     cost = round(float(cost), 2)
 
     if balance < cost:

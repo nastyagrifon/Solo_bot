@@ -327,7 +327,7 @@ async def freeze_checkout_intent(
             data["autopay_amount"] = terms["amount"]
             data["autopay_period_days"] = terms["period_days"]
     cost = max(0, int(data.get("cost") or 0))
-    shortfall = max(0, ceil(cost - float(await get_balance(session, user_id))))
+    shortfall = max(0, ceil(cost - float(await get_balance(session, user_id, exact=True))))
     if not trusted_legacy and float(amount) < shortfall:
         raise InsufficientFundsError("Сумма платежа недостаточна для выбранной операции")
     result = {"state": state, "data": data}
@@ -466,7 +466,7 @@ async def apply_checkout_intent(
     if state == "balance_topup" or not state:
         return None
     cost = int(data.get("cost") or 0)
-    if float(await get_balance(session, user_id)) < cost:
+    if float(await get_balance(session, user_id, exact=True)) < cost:
         raise InsufficientFundsError("Средства для завершения оплаченной операции недоступны")
     flow = data.get("payment_flow")
     client_id = None
