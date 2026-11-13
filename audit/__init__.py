@@ -31,6 +31,7 @@ from database.audit import (
 )
 from database.models import AuditEvent
 from logger import logger
+from utils.client_ip import client_ip as resolve_client_ip
 
 from .access_log import (
     SITE_LOG_TAG,
@@ -300,7 +301,8 @@ def log_api_access(
     reason: str | None = None,
 ) -> None:
     context = ensure_api_context(request)
-    client_ip = request.client.host if request.client else "-"
+    # Кабинет ходит в API со своего сервера: peer здесь - его контейнер, а клиент едет в заголовках.
+    client_ip = resolve_client_ip(request) or "-"
     actor = describe_actor(context.actor_tg_id, context.actor_identity_id)
     action = describe_action(request.method, context.path_or_handler)
     line = (
