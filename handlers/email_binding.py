@@ -27,10 +27,18 @@ from services.email_binding import (
 )
 from services.errors import ServiceError
 from settings.buttons import BACK
+from settings.config import SUPPORT_CHAT_URL
 from utils.web_email_codes import normalize_email
 
 
 router = Router(name="email_binding")
+
+# Занятость адреса не расписываем: различимый ответ даёт перебором узнать,
+# чьи адреса есть в базе. Разбор таких случаев идёт через поддержку.
+REFUSAL_TEXT = (
+    "❌ Не удалось привязать этот адрес. "
+    f"Напишите в <a href='{SUPPORT_CHAT_URL}'>поддержку</a> — разберёмся."
+)
 
 EMAIL_RE = re.compile(r"^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$")
 
@@ -243,7 +251,7 @@ async def receive_email(message: Message, state: FSMContext, session) -> None:
     if not await _request_current(state, request_id, EmailBindingState.waiting_for_email.state):
         return
     if existing and existing.id != identity.id:
-        await message.answer("❌ Этот email уже занят. Используйте другой.", reply_markup=_email_keyboard())
+        await message.answer(REFUSAL_TEXT, reply_markup=_email_keyboard())
         return
     verification_required = is_email_binding_verification_enabled() and email_binding_codes_configured()
     if not await _request_current(state, request_id, EmailBindingState.waiting_for_email.state):
@@ -272,7 +280,7 @@ async def receive_email(message: Message, state: FSMContext, session) -> None:
         return
     if result is None:
         await message.answer(
-            "❌ Этот email уже занят или почта уже привязана. Начните заново.", reply_markup=_email_keyboard()
+            REFUSAL_TEXT, reply_markup=_email_keyboard()
         )
         return
     await session.commit()
@@ -325,7 +333,7 @@ async def receive_email_code(message: Message, state: FSMContext, session) -> No
     if result is None:
         await _discard_pending(state, request_id)
         await message.answer(
-            "❌ Этот email уже занят или почта уже привязана. Начните заново.", reply_markup=_profile_keyboard()
+            REFUSAL_TEXT, reply_markup=_profile_keyboard()
         )
         return
     await session.commit()
