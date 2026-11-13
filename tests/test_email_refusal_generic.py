@@ -23,11 +23,10 @@ class Refusal(unittest.TestCase):
     def test_bot_uses_one_refusal_everywhere(self):
         self.assertEqual(BOT.count("REFUSAL_TEXT, reply_markup="), 3)
 
-    def test_with_code_taken_check_waits_for_code(self):
-        """С подтверждением кодом занятость не проверяется до письма."""
+    def test_taken_refused_before_any_code(self):
+        """Занятый адрес отказ получает до письма: код на чужой ящик не уходит."""
         head = BOT[BOT.index("async def receive_email("):BOT.index("async def receive_email_code(")]
-        gate = head.index("if not verification_required:")
-        self.assertGreater(head.index("get_identity_by_email("), gate)
+        self.assertLess(head.index("get_identity_by_email("), head.index("verification_required ="))
 
     def test_web_registration_never_says_exists(self):
         self.assertNotIn("уже существует", WEB)
