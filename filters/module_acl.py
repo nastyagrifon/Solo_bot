@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 from aiogram import Router
+from aiogram.dispatcher.event.bases import SkipHandler
+from aiogram.types import CallbackQuery
 
 from logger import logger
 
@@ -58,9 +60,12 @@ def make_guard(module_name: str):
         if allowed:
             return await handler(event, data)
 
-        answer = getattr(event, "answer", None)
-        if answer is not None:
-            await answer("Этот раздел вам не открыт", show_alert=True)
+        if not isinstance(event, CallbackQuery):
+            # Текст без права — не отказ, а «не мне»: обработчик модуля ловит
+            # свободный текст (поиск по нику), и без пропуска человек получал
+            # «раздел не открыт» вместо ответа следующих обработчиков.
+            raise SkipHandler
+        await event.answer("Этот раздел вам не открыт", show_alert=True)
         return None
 
     return guard
