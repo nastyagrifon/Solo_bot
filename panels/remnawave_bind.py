@@ -32,19 +32,15 @@ _METHODS = (
     "resolve_user_id",
 )
 _FLAG = "_bind_shim_installed"
-_LOOKUP_TIMEOUT_SEC = 5.0
-# Цикл, в котором живёт пул соединений базы (цикл главного потока бота).
-_db_loop: asyncio.AbstractEventLoop | None = None
-
-
-def remember_db_loop() -> None:
-    """Запоминает текущий цикл как цикл базы; звать из кода главного потока."""
-    global _db_loop
-    try:
-        _db_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        pass
 _SEEN = "_bind_shim_seen"
+_LOOKUP_TIMEOUT_SEC = 5.0
+
+
+def _db_loop() -> asyncio.AbstractEventLoop | None:
+    """Цикл, за которым закреплён общий пул базы (`bind_main_loop` при старте)."""
+    from database import db
+
+    return db._main_loop
 
 
 def _call_ids(name: str, args: tuple, kwargs: dict) -> list[str]:
@@ -93,16 +89,15 @@ async def _ensure_bound(api, ids: list[str]) -> None:
     missing = list(dict.fromkeys(i for i in ids if i not in seen))
     if not missing:
         return
-    if threading.current_thread() is threading.main_thread():
-        remember_db_loop()
+    main = _db_loop()
     loop = asyncio.get_running_loop()
-    if _db_loop is loop:
+    if main is loop or (main is None and threading.current_thread() is threading.main_thread()):
         found = await asyncio.wait_for(_lookup(missing), _LOOKUP_TIMEOUT_SEC)
-    elif _db_loop is not None and _db_loop.is_running():
+    elif main is not None and main.is_running():
         # Операции with_remnawave_api идут в своём цикле в потоке run_io, а пул
-        # базы привязан к циклу главного потока: запрос уходит туда. Главный
-        # цикл в это время свободен — он ждёт run_io через await.
-        future = asyncio.run_coroutine_threadsafe(_lookup(missing), _db_loop)
+        # базы закреплён за главным циклом: запрос уходит туда. Главный цикл в
+        # это время свободен — он ждёт run_io через await.
+        future = asyncio.run_coroutine_threadsafe(_lookup(missing), main)
         found = await asyncio.wait_for(asyncio.wrap_future(future), _LOOKUP_TIMEOUT_SEC)
     else:
         return
