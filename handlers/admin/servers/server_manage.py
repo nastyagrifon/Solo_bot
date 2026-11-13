@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_servers
 from database.models import Key, Server
+from database.servers import _invalidate_servers_cache
 from filters.admin import IsAdminFilter
 from settings.buttons import BACK
 
@@ -234,6 +235,7 @@ async def process_callback_delete_server(
             (Server.cluster_name == cluster_name) & (Server.server_name == server_name)
         )
         await session.execute(stmt_delete)
+        await _invalidate_servers_cache(session)
         await callback_query.message.edit_text(
             text=(
                 menu_text(
@@ -248,6 +250,7 @@ async def process_callback_delete_server(
             (Server.cluster_name == cluster_name) & (Server.server_name == server_name)
         )
         await session.execute(stmt_delete)
+        await _invalidate_servers_cache(session)
         await callback_query.message.edit_text(
             text=menu_text("Сервер", f"✅ Сервер '{server_name}' удален."),
             reply_markup=build_admin_back_kb("clusters"),
@@ -266,6 +269,7 @@ async def toggle_server_enabled(
     new_status = action == "enable"
 
     await session.execute(update(Server).where(Server.server_name == server_name).values(enabled=new_status))
+    await _invalidate_servers_cache(session)
 
     servers = await get_servers(session=session, include_enabled=True)
 
@@ -322,6 +326,7 @@ async def save_server_limit(message: types.Message, state: FSMContext, session: 
         new_value = limit if limit > 0 else None
 
         await session.execute(update(Server).where(Server.server_name == server_name).values(max_keys=new_value))
+        await _invalidate_servers_cache(session)
 
         servers = await get_servers(session=session, include_enabled=True)
         cluster_name, server = next(
