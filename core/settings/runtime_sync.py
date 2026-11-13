@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.redis_cache import cache_get, cache_key, cache_set
 from database.models import Setting
 from database.settings_cache import settings_cache
+from logger import logger
 from settings.cache_config import (
     RUNTIME_CONFIG_SYNC_PULL_INTERVAL_SEC,
     RUNTIME_CONFIG_SYNC_TTL_SEC,
@@ -111,6 +112,23 @@ async def maybe_sync_runtime_configs(force: bool = False) -> bool:
             _apply_runtime_config(name, raw_value)
         _LOCAL_VERSION = remote_version
         return True
+
+
+# Фоновые циклы читают *_CONFIG без входящих апдейтов: без своего опроса правка
+# админа в отдельном процессе или у «тихого» лидера не доходит до перезапуска.
+_BACKGROUND_SYNC_INTERVAL_SEC = 5.0
+
+
+async def runtime_config_sync_loop(*_args: Any) -> None:
+    """Держит *_CONFIG текущего процесса свежими для фоновых задач."""
+    while True:
+        try:
+            await maybe_sync_runtime_configs()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("[RuntimeSync] Правки настроек не подтянуты: {}", error)
+        await asyncio.sleep(_BACKGROUND_SYNC_INTERVAL_SEC)
 
 
 # Общий цикл «строка Setting ↔ словарь *_CONFIG». Словарь правится на месте:

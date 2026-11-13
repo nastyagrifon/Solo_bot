@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 
 from collections.abc import Callable, Coroutine
 
@@ -69,7 +70,8 @@ def run_in_own_loop(job: Callable[[], Coroutine[object, object, object]]) -> Non
     from database.db import reset_async_db_engine
 
     reset_async_db_engine()
-    asyncio.run(_run_and_release(job))
+    # Сначала свежие настройки, затем закрытие клиента Redis и движка прогона.
+    asyncio.run(_run_and_release(partial(_with_fresh_runtime_configs, job)))
 
 
 async def _run_and_release(job: Callable[[], Coroutine[object, object, object]]) -> None:
@@ -85,6 +87,17 @@ async def _run_and_release(job: Callable[[], Coroutine[object, object, object]])
             await close_loop_client()
         finally:
             await db.engine.dispose()
+
+
+async def _with_fresh_runtime_configs(job: Callable[[], Coroutine[object, object, object]]) -> None:
+    # Воркер пула живёт долго и апдейтов не видит: без этого задача берёт *_CONFIG на момент его старта.
+    try:
+        from core.settings.runtime_sync import maybe_sync_runtime_configs
+
+        await maybe_sync_runtime_configs(force=True)
+    except Exception as error:
+        logger.warning("[Cron] Правки настроек не подтянуты: {}", error)
+    await job()
 
 
 async def cleanup_expired_gifts_job() -> None:
