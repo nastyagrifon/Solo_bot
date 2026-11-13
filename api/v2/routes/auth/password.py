@@ -91,7 +91,12 @@ async def register_by_email(
         raise HTTPException(status_code=400, detail="Пароль минимум 8 символов")
     existing = await idb.get_identity_by_email(session, email)
     if existing:
-        raise HTTPException(status_code=409, detail="Идентичность с таким email уже существует")
+        # Тот же ответ, что у привязки почты: различимый отказ даёт перебором
+        # узнать, чьи адреса есть в базе.
+        raise HTTPException(
+            status_code=409,
+            detail="Не удалось зарегистрировать этот адрес. Напишите в поддержку — разберёмся.",
+        )
     raw_referral = str(body.referral_code or "").strip()
     if "/referral/" in raw_referral:
         raw_referral = raw_referral.split("/referral/", 1)[-1]
