@@ -91,9 +91,9 @@ async def _run_and_release(job: Callable[[], Coroutine[object, object, object]])
 
 async def _with_fresh_runtime_configs(job: Callable[[], Coroutine[object, object, object]]) -> None:
     # Воркер пула живёт долго и апдейтов не видит: без этого задача берёт *_CONFIG на момент его старта.
-    from core.settings.runtime_sync import maybe_sync_runtime_configs
-
     try:
+        from core.settings.runtime_sync import maybe_sync_runtime_configs
+
         await maybe_sync_runtime_configs(force=True)
     except Exception as error:
         logger.warning("[Cron] Правки настроек не подтянуты: {}", error)
