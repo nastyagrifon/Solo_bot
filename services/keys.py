@@ -880,7 +880,7 @@ async def create_vpn_key_headless(
     """Создаёт VPN-ключ без обработки Telegram-сообщений."""
     from handlers.utils import generate_random_email
     from services.clusters import select_cluster
-    from services.operations import create_key_on_cluster
+    from services.operations import create_key_on_cluster, delete_key_from_cluster
     from services.tariffs.tariff_display import (
         get_effective_limits_for_key,
         resolve_price_to_charge,
@@ -919,6 +919,17 @@ async def create_vpn_key_headless(
         resolved = await resolve_price_to_charge(session, {})
         price_to_charge = int(resolved or 0)
 
+    # Списание до панели: без денег ключ не создаётся, а сбой дальше откатывает его вместе с транзакцией.
+    if price_to_charge and not skip_balance_charge:
+        logger.info(f"[Key Creation] Списание с баланса user={tg_id}: -{price_to_charge} ₽")
+        debited = await update_balance(session, tg_id, -int(price_to_charge))
+        if debited is None:
+            raise InsufficientFundsError("Недостаточно средств на балансе")
+    elif skip_balance_charge:
+        logger.info(f"[Key Creation] Пропуск списания (skip_balance_charge) user={tg_id}")
+    else:
+        logger.info(f"[Key Creation] Списание не требуется (price=0) user={tg_id}")
+
     await create_key_on_cluster(
         cluster_id=cluster_id,
         tg_id=tg_id,
@@ -934,34 +945,33 @@ async def create_vpn_key_headless(
     )
     logger.info(f"[Key Creation] Ключ создан на кластере {cluster_id} для пользователя {tg_id}")
 
-    await update_key_post_creation_snapshot(
-        session,
-        user_id=owner.id,
-        email=email,
-        selected_device_limit=selected_device_limit,
-        selected_traffic_limit=selected_traffic_gb,
-        selected_price_rub=price_to_charge,
-    )
+    try:
+        await update_key_post_creation_snapshot(
+            session,
+            user_id=owner.id,
+            email=email,
+            selected_device_limit=selected_device_limit,
+            selected_traffic_limit=selected_traffic_gb,
+            selected_price_rub=price_to_charge,
+        )
 
-    key_record = await get_key_details(session, email)
-    if not key_record or key_record.get("user_id") != owner.id:
-        raise ValidationError(f"Ключ не найден после создания: {email}")
-    final_link = key_record.get("link", "") or ""
+        key_record = await get_key_details(session, email)
+        if not key_record or key_record.get("user_id") != owner.id:
+            raise ValidationError(f"Ключ не найден после создания: {email}")
+        final_link = key_record.get("link", "") or ""
 
-    if is_trial:
-        trial_status = await get_trial(session, tg_id)
-        if trial_status in (0, -1):
-            await update_trial(session, tg_id, 1)
-
-    if price_to_charge and not skip_balance_charge:
-        logger.info(f"[Key Creation] Списание с баланса user={tg_id}: -{price_to_charge} ₽")
-        debited = await update_balance(session, tg_id, -int(price_to_charge))
-        if debited is None:
-            raise InsufficientFundsError("Недостаточно средств на балансе")
-    elif skip_balance_charge:
-        logger.info(f"[Key Creation] Пропуск списания (skip_balance_charge) user={tg_id}")
-    else:
-        logger.info(f"[Key Creation] Списание не требуется (price=0) user={tg_id}")
+        if is_trial:
+            trial_status = await get_trial(session, tg_id)
+            if trial_status in (0, -1):
+                await update_trial(session, tg_id, 1)
+    except Exception:
+        # Запись и списание откатятся с транзакцией, а клиент в панели остался бы рабочим без оплаты.
+        if not (forced_client_id and forced_email):
+            try:
+                await delete_key_from_cluster(cluster_id, email, client_id, session)
+            except Exception as cleanup_error:
+                logger.error(f"[Key Creation] Не удалось удалить ключ {email} из панели после сбоя: {cleanup_error}")
+        raise
 
     return CreatedVpnKey(
         client_id=client_id,

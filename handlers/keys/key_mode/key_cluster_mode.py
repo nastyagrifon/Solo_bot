@@ -42,7 +42,7 @@ from hooks.processors import (
 from logger import logger
 from services.clusters import is_full_remnawave_cluster
 from services.errors import InsufficientFundsError, ServiceError
-from services.operations import create_key_on_cluster
+from services.operations import create_key_on_cluster, delete_key_from_cluster
 from services.tariffs.tariff_display import (
     build_key_created_message,
     get_effective_limits_for_key,
@@ -251,6 +251,7 @@ async def key_cluster_mode(
     client_id = str(uuid.uuid4())
     email = key_name.lower()
     expiry_timestamp = int(expiry_time.timestamp() * 1000)
+    panel_created = False
 
     try:
         owner = await resolve_user_optional(session, tg_id)
@@ -322,6 +323,12 @@ async def key_cluster_mode(
         else:
             price_to_charge = await resolve_price_to_charge(session, data)
 
+        # Списание до панели: без денег ключ не создаётся, а сбой дальше откатывает его вместе с транзакцией.
+        if price_to_charge and not skip_balance_charge:
+            debited = await update_balance(session, billing_user_id, -int(price_to_charge))
+            if debited is None:
+                raise InsufficientFundsError("Недостаточно средств на балансе")
+
         await create_key_on_cluster(
             cluster_id=least_loaded_cluster,
             tg_id=billing_user_id,
@@ -334,6 +341,7 @@ async def key_cluster_mode(
             traffic_limit_bytes=traffic_limit_bytes,
             is_trial=is_trial,
         )
+        panel_created = True
 
         logger.info(f"[Key Creation] Ключ создан на кластере {least_loaded_cluster} для пользователя {tg_id}")
 
@@ -358,13 +366,20 @@ async def key_cluster_mode(
             if trial_status in [0, -1]:
                 await update_trial(session, billing_user_id, 1)
 
-        if price_to_charge and not skip_balance_charge:
-            debited = await update_balance(session, billing_user_id, -int(price_to_charge))
-            if debited is None:
-                raise InsufficientFundsError("Недостаточно средств на балансе")
-
     except Exception as e:
         logger.error(f"[Error] Ошибка при создании ключа для пользователя {tg_id}: {e}")
+        if panel_created:
+            # Запись и списание откатятся, а клиент в панели остался бы рабочим без оплаты.
+            created_client_id = client_id
+            try:
+                created_client_id = (await get_key_details(session, email) or {}).get("client_id") or client_id
+            except Exception:
+                pass
+            try:
+                await delete_key_from_cluster(least_loaded_cluster, email, created_client_id, session)
+            except Exception as cleanup_error:
+                logger.error(f"[Error] Не удалось удалить неоплаченный ключ {email} из панели: {cleanup_error}")
+        await session.rollback()
         error_message = "❌ Произошла ошибка при создании подписки. Пожалуйста, попробуйте снова."
 
         if safe_to_edit:
