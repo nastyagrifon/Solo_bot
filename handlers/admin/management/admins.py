@@ -9,6 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from database.identities import get_identity_by_tg_id
+from database.identity_sessions import delete_other_sessions
 from database.models import Admin
 from filters.admin import HasPermission, invalidate_admin_cache
 from filters.admin_actions import granular_permissions_enabled
@@ -286,6 +288,13 @@ async def delete_admin(callback: CallbackQuery, callback_data: AdminPanelCallbac
     tg_id = int(callback_data.action.split("|")[1])
 
     await session.execute(delete(Admin).where(Admin.tg_id == tg_id))
+    # Иначе снятый админ остаётся админом сайта: флаг в личности и открытые
+    # сессии живут отдельно от строки admins.
+    identity = await get_identity_by_tg_id(session, tg_id)
+    if identity is not None:
+        identity.is_admin = False
+        # Пустой keep_token_hash: token_hash NOT NULL, уходят все сессии.
+        await delete_other_sessions(session, identity_id=identity.id, keep_token_hash="")
     await session.commit()
     invalidate_admin_cache(tg_id)
 
