@@ -22,10 +22,15 @@ def discover_module_loop_tasks() -> list[tuple[str, ModuleLoopRunner]]:
     except OSError as exc:
         logger.warning("[PeriodicManager] Не удалось прочитать каталог модулей: {}", exc)
         return []
+    from utils.modules_manager import manager as modules_manager
+
     tasks = []
     for module_path in module_paths:
         name = module_path.name
         if not name.isidentifier() or is_core_replaced_module(name) or not (module_path / "tasks.py").is_file():
+            continue
+        # Выключенный админом модуль не должен оживать циклами после перезапуска.
+        if not modules_manager.should_autostart(name):
             continue
         try:
             module = importlib.import_module(f"modules.{name}.tasks")
