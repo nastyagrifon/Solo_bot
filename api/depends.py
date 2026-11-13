@@ -368,8 +368,10 @@ async def verify_identity_admin_short(
         if identity:
             if granular_permissions_enabled():
                 await require_admin_action(session, identity)
-                if await resolve_identity_role(session, identity) in ("moderator", "designer"):
-                    raise HTTPException(status_code=403, detail="Forbidden")
+            # Роль проверяется и при выключенных детальных правах, как в
+            # verify_identity_admin: иначе дизайнер и модератор проходили.
+            if await resolve_identity_role(session, identity) != "admin":
+                raise HTTPException(status_code=403, detail="Forbidden")
             actor = await resolve_actor_from_identity(session, identity)
         await session.commit()
     if not identity:
