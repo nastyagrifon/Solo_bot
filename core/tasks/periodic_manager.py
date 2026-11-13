@@ -89,6 +89,7 @@ def _run_process_loop_task(task_id: str, runner: LoopRunner) -> None:
 async def _run_process_loop_task_async(task_id: str, runner: LoopRunner) -> None:
     from core.bootstrap import bootstrap
     from core.settings.modes_config import resolve_protect_content
+    from core.settings.runtime_sync import runtime_config_sync_loop
     from database import async_session_maker
     from database.db import reset_async_db_engine
     from settings.config import API_TOKEN
@@ -98,16 +99,21 @@ async def _run_process_loop_task_async(task_id: str, runner: LoopRunner) -> None
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, protect_content=resolve_protect_content()),
     )
     logger.info("[PeriodicManager] Process-loop задача {} запущена, PID={}", task_id, os.getpid())
+    sync_task = None
     try:
         reset_async_db_engine()
         await bootstrap()
         if bot.default is not None:
             bot.default.protect_content = resolve_protect_content()
+        # Апдейтов в этом процессе нет: правки админа подтягивает только свой опрос.
+        sync_task = asyncio.create_task(runtime_config_sync_loop())
         await runner(bot, async_session_maker)
     except Exception as error:
         logger.opt(exception=error).error("[PeriodicManager] Ошибка process-loop задачи {}", task_id)
         raise
     finally:
+        if sync_task is not None:
+            sync_task.cancel()
         try:
             await bot.session.close()
         except Exception:

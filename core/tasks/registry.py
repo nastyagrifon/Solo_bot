@@ -44,6 +44,7 @@ from core.tasks.loop_tasks import (
     yookassa_autopay_loop,
     yookassa_refunds_loop,
 )
+from core.settings.runtime_sync import runtime_config_sync_loop
 from core.slow_log import loop_lag_loop
 from core.tasks.module_tasks import discover_module_loop_tasks
 from core.tasks.periodic_manager import periodic_task_manager
@@ -63,6 +64,7 @@ LOOP_TASKS = (
     ("yookassa_autopay", yookassa_autopay_loop, False),
     ("yookassa_refunds", yookassa_refunds_loop, False),
     ("loop_lag", loop_lag_loop, False),
+    ("runtime_config_sync", runtime_config_sync_loop, False),
 )
 
 # (id, async job, trigger, можно ли в processpool). Остаток бюджета после петель
