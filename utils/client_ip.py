@@ -76,7 +76,11 @@ def client_ip(request) -> str:
     if request is None:
         return ""
     try:
-        peer_raw = (request.client.host if request.client else "") or ""
+        if hasattr(request, "client"):
+            peer_raw = (request.client.host if request.client else "") or ""
+        else:
+            # aiohttp: адрес TCP-собеседника лежит в request.remote
+            peer_raw = getattr(request, "remote", "") or ""
     except Exception:
         peer_raw = ""
     try:

@@ -7,24 +7,12 @@ from settings.cache_config import (
     WEBHOOK_ABUSE_FAIL_THRESHOLD,
     WEBHOOK_ABUSE_FAIL_WINDOW_SEC,
 )
+from utils.client_ip import client_ip
 
 
 def get_webhook_client_ip(request: web.Request) -> str:
-    """IP клиента: X-Forwarded-For (первый) или X-Real-IP, иначе request.remote."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip() or "unknown"
-    real = request.headers.get("X-Real-IP")
-    if real:
-        return real.strip() or "unknown"
-    if request.remote:
-        s = str(request.remote)
-        if "%" in s:
-            s = s.split("%")[0]
-        if ":" in s:
-            s = s.rsplit(":", 1)[0]
-        return s or "unknown"
-    return "unknown"
+    """IP клиента: заголовки прокси учитываются, только если запрос пришёл от доверенного прокси."""
+    return client_ip(request) or "unknown"
 
 
 async def is_webhook_ip_blocked(ip: str) -> bool:
