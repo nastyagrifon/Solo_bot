@@ -1,3 +1,5 @@
+import multiprocessing
+
 from database import async_session_maker
 from database.db import bind_main_loop, warm_pool
 from database.settings_cache import settings_cache
@@ -90,6 +92,19 @@ async def bootstrap() -> None:
                     )
     except Exception as exc:
         logger.warning("[bootstrap] identity-session cleanup failed: {}", exc)
+
+    # Веб-админ синхронизируется один раз на старт и только в главном процессе:
+    # bootstrap() зовут ещё и демонические process-loop задачи, а им пул
+    # процессов для хеширования недоступен.
+    if multiprocessing.parent_process() is None:
+        try:
+            from database.setup.web_admin_bootstrap import ensure_web_admin
+
+            async with async_session_maker() as session:
+                await ensure_web_admin(session)
+                await session.commit()
+        except Exception as exc:
+            logger.warning("[bootstrap] web-admin bootstrap failed: {}", exc)
 
     # Переключение слота убивает бота, поэтому отчёт о нём досылает уже новый
     # экземпляр: сторож ждёт файл и пишет админу, который нажал кнопку.

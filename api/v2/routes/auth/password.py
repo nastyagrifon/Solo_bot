@@ -183,15 +183,6 @@ async def login(
         logger.warning("[Site:Auth] Проверка частоты попыток входа сорвалась: {}", e)
     result = await idb.login_by_email(session, email, body.password, request=request)
     if not result:
-        from database.setup.web_admin_bootstrap import ensure_web_admin
-
-        try:
-            await ensure_web_admin(session)
-            await session.flush()
-            result = await idb.login_by_email(session, email, body.password, request=request)
-        except Exception as exc:
-            logger.warning("[Site:Auth] Не удалось выдать права веб-админа: {}", exc)
-    if not result:
         try:
             from core.redis_cache import cache_incr, cache_set
 
