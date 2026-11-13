@@ -107,7 +107,7 @@ async def proceed_purchase_with_values(
         f"selected_traffic_gb={selected_traffic_gb}"
     )
 
-    balance = await get_balance(session, tg_id)
+    balance = await get_balance(session, tg_id, exact=True)
 
     if balance < price_rub:
         required_amount = ceil(price_rub - balance)

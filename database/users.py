@@ -174,13 +174,14 @@ async def check_user_exists(session: AsyncSession, legacy_user_ref: int) -> bool
     return value
 
 
-async def get_balance(session: AsyncSession, legacy_user_ref: int) -> float:
+async def get_balance(session: AsyncSession, legacy_user_ref: int, *, exact: bool = False) -> float:
     uid = await resolve_uid_cached(session, legacy_user_ref)
     if uid is None:
         return 0.0
     ckey = user_ref_cache_key("balance", UserId(uid))
     pending = is_purge_pending(session, ckey)
-    cached = None if pending else await cache_get(ckey)
+    # Кеш и ответ округлены для показа; решение «хватает ли» по ним пропустит 99.97 при цене 100.
+    cached = None if pending or exact else await cache_get(ckey)
     if cached is not None:
         try:
             return round(float(cached), 1)
@@ -188,6 +189,8 @@ async def get_balance(session: AsyncSession, legacy_user_ref: int) -> float:
             pass
     result = await session.execute(select(func.coalesce(User.balance, 0.0)).where(User.id == uid))
     balance = result.scalar_one_or_none()
+    if exact:
+        return float(balance or 0.0)
     value = round(float(balance or 0.0), 1)
     if not pending:
         await cache_set(ckey, value, BALANCE_CACHE_TTL_SEC)
