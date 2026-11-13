@@ -392,7 +392,7 @@ async def activate_trial(
     identity=Depends(verify_identity_token),
 ):
     """Активация триала (бесплатного или платного). Доступно 1 раз."""
-    from database import get_trial, update_trial
+    from database import claim_trial, get_trial, update_trial
     from database.tariffs import get_tariffs
 
     trial_disabled = bool(MODES_CONFIG.get("TRIAL_TIME_DISABLED", TRIAL_TIME_DISABLE)) or bool(
@@ -423,6 +423,9 @@ async def activate_trial(
         raise HTTPException(status_code=400, detail="Некорректная длительность триала")
 
     if price <= 0:
+        # Триал занимается до выдачи ключа: параллельный запрос получит отказ, сбой откатит занятие.
+        if not await claim_trial(session, tg_id):
+            raise HTTPException(status_code=409, detail="Пробная подписка уже использована")
         moscow_tz = tz_moscow("Europe/Moscow")
         expiry = datetime.now(moscow_tz) + timedelta(days=duration)
         try:
@@ -452,6 +455,9 @@ async def activate_trial(
     required_amount = int(max(0, ceil(float(price) - balance)))
 
     if required_amount <= 0:
+        # Триал занимается до выдачи ключа: параллельный запрос получит отказ, сбой откатит занятие.
+        if not await claim_trial(session, tg_id):
+            raise HTTPException(status_code=409, detail="Пробная подписка уже использована")
         moscow_tz = tz_moscow("Europe/Moscow")
         expiry = datetime.now(moscow_tz) + timedelta(days=duration)
         try:

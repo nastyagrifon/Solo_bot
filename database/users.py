@@ -274,6 +274,21 @@ async def update_trial(session: AsyncSession, legacy_user_ref: int, status: int)
     logger.info(f"[DB] Триал статус обновлён для пользователя id={uid}: {status}")
 
 
+async def claim_trial(session: AsyncSession, legacy_user_ref: int) -> bool:
+    """Занимает неиспользованный пробный период одной строкой UPDATE; False, если он уже занят."""
+    u = await resolve_user_optional(session, legacy_user_ref)
+    if u is None:
+        return False
+    # Параллельный запрос ждёт блокировку строки и после неё уже не проходит условие.
+    claimed = await session.scalar(
+        update(User)
+        .where(User.id == u.id, func.coalesce(User.trial, 0).in_([0, -1]))
+        .values(trial=1)
+        .returning(User.id)
+    )
+    return claimed is not None
+
+
 async def grant_extended_trial_for_users(session: AsyncSession, user_ids: list[int]) -> None:
     """Разрешает расширенный пробный период, если обычный ещё не использован."""
     if not user_ids:
