@@ -32,6 +32,13 @@ _LOOP_RESTART_MAX_DELAY_SEC = 300
 _LOOP_RESTART_STABLE_RUNTIME_SEC = 300
 
 
+def _module_task_owner(task_id: str) -> str | None:
+    """Имя модуля для цикла вида module:<имя>:<id> (см. discover_module_loop_tasks)."""
+    prefix, _, rest = task_id.partition(":")
+    name = rest.partition(":")[0]
+    return name if prefix == "module" and name else None
+
+
 def _loop_restart_delay(failures: int) -> int:
     return min(_LOOP_RESTART_BASE_DELAY_SEC * (2 ** min(failures, 6)), _LOOP_RESTART_MAX_DELAY_SEC)
 
@@ -396,7 +403,15 @@ class PeriodicTaskManager:
             scheduler.start()
             self._scheduler = scheduler
             for loop_task in self._loop_tasks.values():
-                task = asyncio.create_task(self._run_async_loop_task(loop_task, bot, sessionmaker))
+                coro = self._run_async_loop_task(loop_task, bot, sessionmaker)
+                owner = _module_task_owner(loop_task.task_id)
+                if owner:
+                    from core import module_runtime
+
+                    # На учёте модуля: его остановка снимает и цикл.
+                    task = module_runtime.spawn(coro, module=owner)
+                else:
+                    task = asyncio.create_task(coro)
                 self._running_tasks[loop_task.task_id] = task
             for loop_task in self._thread_loop_tasks.values():
                 stop_event = threading.Event()
