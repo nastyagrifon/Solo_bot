@@ -24,9 +24,10 @@ from settings.config import OVERPAY_WEBHOOK_PASSWORD, OVERPAY_WEBHOOK_USERNAME
 _PROVIDER = "overpay"
 
 _STATUS_SUCCESS = {"charged", "approved", "settled", "completed", "success", "successful"}
-_STATUS_REFUNDED = {"refunded"}
+# reversed — снятие авторизации после approved: зачисленное откатывается как возврат.
+_STATUS_REFUNDED = {"refunded", "reversed"}
 _STATUS_CHARGEBACK = {"chargeback"}
-_STATUS_FAILED = {"declined", "rejected", "reversed", "error", "expired", "cancelled", "failed"}
+_STATUS_FAILED = {"declined", "rejected", "error", "expired", "cancelled", "failed"}
 
 
 def _webhook_auth_configured() -> bool:
