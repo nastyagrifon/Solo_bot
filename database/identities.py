@@ -132,6 +132,18 @@ async def get_identity_by_google_sub(session: AsyncSession, google_sub: str) -> 
     return result.scalar_one_or_none()
 
 
+async def _revoke_unverified_email_access(session: AsyncSession, identity: Identity) -> None:
+    """Неподтверждённую почту мог занять кто угодно: его пароль и сессии владельцу почты не передаются."""
+    if identity.email_verified:
+        return
+    # Кеш авторизации чистится по токенам, поэтому до того, как они пропадут из базы.
+    await invalidate_identity_cache(session, identity_ids=(identity.id,))
+    identity.password_hash = None
+    identity.api_token_hash = None
+    await session.execute(delete(IdentitySession).where(IdentitySession.identity_id == identity.id))
+    await session.flush()
+
+
 async def get_or_create_identity_for_google(
     session: AsyncSession,
     google_sub: str,
@@ -152,6 +164,7 @@ async def get_or_create_identity_for_google(
         email_clean = email.strip().lower()
         existing_by_email = await get_identity_by_email(session, email_clean)
         if existing_by_email and existing_by_email.google_sub is None:
+            await _revoke_unverified_email_access(session, existing_by_email)
             existing_by_email.google_sub = google_sub
             existing_by_email.email_verified = True
             await session.flush()
@@ -197,6 +210,7 @@ async def get_or_create_identity_for_yandex(
         email_clean = email.strip().lower()
         existing_by_email = await get_identity_by_email(session, email_clean)
         if existing_by_email and existing_by_email.yandex_sub is None:
+            await _revoke_unverified_email_access(session, existing_by_email)
             existing_by_email.yandex_sub = yandex_sub
             existing_by_email.email_verified = True
             await session.flush()
@@ -294,6 +308,7 @@ async def login_by_verified_email(session: AsyncSession, email: str, *, request=
     identity = (await _lock_identities(session, identity.id)).get(identity.id)
     if identity is None or identity.email != email_clean:
         return None
+    await _revoke_unverified_email_access(session, identity)
     identity.email_verified = True
     await session.flush()
     token = await issue_token_for_identity(session, identity, request=request)
@@ -1001,6 +1016,7 @@ async def attach_email(
         for src_user in src_users:
             await _combine_billing_users(session, int(src_user.id), int(dst_uid), identity_id)
 
+        await _revoke_unverified_email_access(session, existing)
         if existing.password_hash:
             identity.password_hash = existing.password_hash
         identity.email_verified = existing.email_verified
