@@ -69,7 +69,22 @@ def run_in_own_loop(job: Callable[[], Coroutine[object, object, object]]) -> Non
     from database.db import reset_async_db_engine
 
     reset_async_db_engine()
-    asyncio.run(job())
+    asyncio.run(_run_and_release(job))
+
+
+async def _run_and_release(job: Callable[[], Coroutine[object, object, object]]) -> None:
+    # Воркер пула живёт долго, а цикл у каждой задачи свой: клиент Redis и движок
+    # этого цикла без закрытия копятся в воркере (задача раз в 10 минут — 144 в сутки).
+    from core.redis_cache import close_loop_client
+    from database import db
+
+    try:
+        await job()
+    finally:
+        try:
+            await close_loop_client()
+        finally:
+            await db.engine.dispose()
 
 
 async def cleanup_expired_gifts_job() -> None:
