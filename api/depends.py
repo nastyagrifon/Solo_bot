@@ -293,6 +293,9 @@ async def resolve_identity_role(session: AsyncSession, identity: Identity) -> st
             if role in ("moderator", "designer"):
                 return role
             return "admin"
+        # Telegram без строки в admins — админа сняли; is_admin в личности
+        # остаётся от прежней роли и прав больше не даёт.
+        return "user"
     if getattr(identity, "is_admin", False):
         return "admin"
     return "user"
@@ -311,7 +314,7 @@ async def verify_identity_admin(
     if not identity.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
     await require_admin_action(session, identity)
-    if await resolve_identity_role(session, identity) in ("moderator", "designer"):
+    if await resolve_identity_role(session, identity) != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
     await bind_identity_actor(request, session, identity)
     await mark_site_initialized(session)
