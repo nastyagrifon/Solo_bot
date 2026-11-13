@@ -67,13 +67,17 @@ async def _fetch_remnawave_meters(api_url: str, entries: list[tuple]) -> dict[tu
     if not isinstance(users, list):
         return result
     profiles = defaultdict(list)
+    by_username = defaultdict(list)
     for user in users:
         if not isinstance(user, dict):
             continue
         for identifier in {user.get("uuid"), user.get("vlessUuid")} - {None, ""}:
             profiles[str(identifier)].append(user)
+        if user.get("username"):
+            by_username[str(user["username"])].append(user)
     for key, server, _fallback_limit in entries:
-        matches = profiles.get(str(key.client_id), [])
+        # У части ключей client_id бота не совпадает с id в панели — тогда ищем по username.
+        matches = profiles.get(str(key.client_id)) or by_username.get(str(key.email or ""), [])
         if len(matches) != 1:
             continue
         profile = matches[0]

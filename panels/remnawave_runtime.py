@@ -28,6 +28,14 @@ if TYPE_CHECKING:
     from panels.remnawave import RemnawaveAPI
 
 
+try:
+    from panels.remnawave_bind import install as _install_bind_shim
+
+    _install_bind_shim()
+except Exception as _bind_error:
+    logger.warning(f"[Remnawave] обёртка привязки подписки не установлена: {_bind_error}")
+
+
 _remnawave_semaphore = asyncio.Semaphore(REMNAWAVE_MAX_CONCURRENCY)
 
 
