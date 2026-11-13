@@ -247,17 +247,15 @@ async def receive_email(message: Message, state: FSMContext, session) -> None:
         await _discard_pending(state, request_id)
         await message.answer("ℹ️ Почта уже была привязана.", reply_markup=_profile_keyboard())
         return
+    # Занятый адрес сразу получает общий отказ, письмо на него не уходит:
+    # чужой ящик не должен получать коды по чужому запросу.
+    existing = await get_identity_by_email(session, email)
+    if not await _request_current(state, request_id, EmailBindingState.waiting_for_email.state):
+        return
+    if existing and existing.id != identity.id:
+        await message.answer(REFUSAL_TEXT, reply_markup=_email_keyboard())
+        return
     verification_required = is_email_binding_verification_enabled() and email_binding_codes_configured()
-    if not verification_required:
-        # С кодом занятость проверяется только после ввода кода из письма: отказ
-        # до письма отличал бы занятый адрес от свободного. Код получит лишь
-        # владелец ящика, ему отказ уже не утечка.
-        existing = await get_identity_by_email(session, email)
-        if not await _request_current(state, request_id, EmailBindingState.waiting_for_email.state):
-            return
-        if existing and existing.id != identity.id:
-            await message.answer(REFUSAL_TEXT, reply_markup=_email_keyboard())
-            return
     if not await _request_current(state, request_id, EmailBindingState.waiting_for_email.state):
         return
     if not await _binding_allowed(message, state):
