@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import threading
@@ -31,6 +32,18 @@ _METHODS = (
     "resolve_user_id",
 )
 _FLAG = "_bind_shim_installed"
+_LOOKUP_TIMEOUT_SEC = 5.0
+# Цикл, в котором живёт пул соединений базы (цикл главного потока бота).
+_db_loop: asyncio.AbstractEventLoop | None = None
+
+
+def remember_db_loop() -> None:
+    """Запоминает текущий цикл как цикл базы; звать из кода главного потока."""
+    global _db_loop
+    try:
+        _db_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
 _SEEN = "_bind_shim_seen"
 
 
@@ -76,15 +89,23 @@ async def _ensure_bound(api, ids: list[str]) -> None:
     bind = getattr(api, "bind_subscription", None)
     if not bind or not ids:
         return
-    # Пул соединений базы живёт в цикле главного потока; в цикле run_io из
-    # другого потока его трогать нельзя — там привязку делает with_remnawave_api.
-    if threading.current_thread() is not threading.main_thread():
-        return
     seen = _seen(api)
     missing = list(dict.fromkeys(i for i in ids if i not in seen))
     if not missing:
         return
-    found = await _lookup(missing)
+    if threading.current_thread() is threading.main_thread():
+        remember_db_loop()
+    loop = asyncio.get_running_loop()
+    if _db_loop is loop:
+        found = await asyncio.wait_for(_lookup(missing), _LOOKUP_TIMEOUT_SEC)
+    elif _db_loop is not None and _db_loop.is_running():
+        # Операции with_remnawave_api идут в своём цикле в потоке run_io, а пул
+        # базы привязан к циклу главного потока: запрос уходит туда. Главный
+        # цикл в это время свободен — он ждёт run_io через await.
+        future = asyncio.run_coroutine_threadsafe(_lookup(missing), _db_loop)
+        found = await asyncio.wait_for(asyncio.wrap_future(future), _LOOKUP_TIMEOUT_SEC)
+    else:
+        return
     for cid in missing:
         email, link = found.get(cid, (None, None))
         if link:

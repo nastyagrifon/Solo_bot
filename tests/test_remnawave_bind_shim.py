@@ -16,13 +16,14 @@ import asyncio
 import importlib.util
 import pathlib
 import sys
+import threading
 import types
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 KEYS = {"bot-id": ("user@x", "https://sub.example/abc", "vless://legacy")}
-DB = {"queries": 0, "fail": False}
+DB = {"queries": 0, "fail": False, "threads": []}
 
 
 class _Col:
@@ -48,6 +49,7 @@ class _Session:
 
     async def execute(self, stmt):
         DB["queries"] += 1
+        DB["threads"].append(threading.current_thread() is threading.main_thread())
         if DB["fail"]:
             raise RuntimeError("db down")
         rows = [(cid, *KEYS[cid]) for cid in stmt.ids if cid in KEYS]
@@ -109,6 +111,7 @@ class BindShim(unittest.TestCase):
         self.shim, self._saved = _load_shim()
         DB["queries"] = 0
         DB["fail"] = False
+        DB["threads"] = []
         self.cls = _fake_class()
         self.assertTrue(self.shim.install(self.cls))
 
@@ -205,11 +208,39 @@ class BindShim(unittest.TestCase):
         self.assertIs(Bare.delete_user, orig)
 
 
+    def test_worker_thread_loop_queries_db_on_main_loop(self):
+        # Как with_remnawave_api: операция в своём цикле в потоке пула,
+        # главный цикл ждёт её через await и свободен для запроса к базе.
+        api = self.cls()
+
+        async def main():
+            self.shim.remember_db_loop()
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: asyncio.run(api.delete_user("bot-id")))
+
+        self.assertTrue(asyncio.run(main()))
+        self.assertEqual(api.calls[0], ("bind", "bot-id", "user@x", "https://sub.example/abc"))
+        self.assertEqual(DB["threads"], [True])
+
+    def test_worker_thread_without_db_loop_calls_through(self):
+        self.shim._db_loop = None
+        api = self.cls()
+        result = []
+        worker = threading.Thread(target=lambda: result.append(asyncio.run(api.delete_user("bot-id"))))
+        worker.start()
+        worker.join()
+        self.assertEqual(result, [True])
+        # Чужой цикл базу не трогает: ни запроса, ни привязки.
+        self.assertEqual(DB["queries"], 0)
+        self.assertEqual(api.calls, [("delete_user", "bot-id")])
+
+
 class RuntimeInstallsShim(unittest.TestCase):
     def test_runtime_calls_install_on_import(self):
         src = (ROOT / "panels/remnawave_runtime.py").read_text(encoding="utf-8")
         self.assertIn("from panels.remnawave_bind import install", src)
         self.assertIn("_install_bind_shim()", src)
+        self.assertIn("_remember_db_loop()", src)
 
 
 if __name__ == "__main__":
