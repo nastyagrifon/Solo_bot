@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_balance, set_user_balance, update_balance
 from database.access.resolution import UserId, resolve_user_optional
 from database.payments import add_payment, count_balance_activity, get_balance_activity
+from database.users import get_locked_balance
 from filters.admin import IsAdminFilter
 from utils.csv_export import export_user_all_payments_csv
 
@@ -157,17 +158,20 @@ async def handle_balance_add(
                     status="success",
                 )
         else:
-            new_balance = max(0, old_balance + amount)
-            await set_user_balance(session, user_id, new_balance)
-            deducted = old_balance - new_balance
-            if deducted > 0:
-                await add_payment(
-                    session=session,
-                    legacy_user_ref=user_id,
-                    amount=-deducted,
-                    payment_system="admin",
-                    status="success",
+            # Списание относительное: пополнение между чтением и записью не затирается.
+            new_balance = await update_balance(session, user_id, amount)
+            if new_balance is None:
+                await callback_query.answer(
+                    f"❌ Не списать {-amount}Р: на балансе {old_balance}Р", show_alert=True
                 )
+                return
+            await add_payment(
+                session=session,
+                legacy_user_ref=user_id,
+                amount=amount,
+                payment_system="admin",
+                status="success",
+            )
 
         if old_balance != new_balance:
             await handle_balance_change(callback_query, callback_data, session)
@@ -249,21 +253,23 @@ async def handle_balance_input(message: Message, state: FSMContext, session: Asy
                 status="success",
             )
     elif op_type == "take":
-        current_balance = await get_balance(session, user_id)
-        new_balance = max(0, current_balance - amount)
-        deducted = current_balance if amount > current_balance else amount
-        text = menu_text("Баланс", f"✅ С баланса списано <b>{deducted}Р</b>")
-        await set_user_balance(session, user_id, new_balance)
-        if deducted > 0:
-            await add_payment(
-                session=session,
-                legacy_user_ref=user_id,
-                amount=-deducted,
-                payment_system="admin",
-                status="success",
-            )
+        # Списание относительное: пополнение между чтением и записью не затирается.
+        if await update_balance(session, user_id, -amount) is None:
+            current_balance = await get_balance(session, user_id)
+            text = menu_text("Баланс", f"❌ Не списать <b>{amount}Р</b>: на балансе {current_balance}Р")
+        else:
+            text = menu_text("Баланс", f"✅ С баланса списано <b>{amount}Р</b>")
+            if amount > 0:
+                await add_payment(
+                    session=session,
+                    legacy_user_ref=user_id,
+                    amount=-amount,
+                    payment_system="admin",
+                    status="success",
+                )
     else:
-        current_balance = await get_balance(session, user_id)
+        # Точный баланс под блокировкой: пополнение не проскочит между чтением и записью, разница в журнале верная.
+        current_balance = await get_locked_balance(session, user_id) or 0.0
         text = menu_text("Баланс", f"✅ Баланс теперь <b>{amount}Р</b>")
         await set_user_balance(session, user_id, amount)
         delta = amount - current_balance
