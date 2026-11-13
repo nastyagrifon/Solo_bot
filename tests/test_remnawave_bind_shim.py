@@ -66,7 +66,16 @@ def _load_shim():
     database.async_session_maker = _Session
     models = types.ModuleType("database.models")
     models.Key = types.SimpleNamespace(**{n: _Col(n) for n in ("client_id", "email", "remnawave_link", "key")})
-    stubs = {"logger": logger, "sqlalchemy": sqlalchemy, "database": database, "database.models": models}
+    db = types.ModuleType("database.db")
+    db._main_loop = None
+    database.db = db
+    stubs = {
+        "logger": logger,
+        "sqlalchemy": sqlalchemy,
+        "database": database,
+        "database.models": models,
+        "database.db": db,
+    }
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
     spec = importlib.util.spec_from_file_location("remnawave_bind_under_test", ROOT / "panels/remnawave_bind.py")
@@ -214,8 +223,8 @@ class BindShim(unittest.TestCase):
         api = self.cls()
 
         async def main():
-            self.shim.remember_db_loop()
             loop = asyncio.get_running_loop()
+            sys.modules["database.db"]._main_loop = loop
             return await loop.run_in_executor(None, lambda: asyncio.run(api.delete_user("bot-id")))
 
         self.assertTrue(asyncio.run(main()))
@@ -223,7 +232,7 @@ class BindShim(unittest.TestCase):
         self.assertEqual(DB["threads"], [True])
 
     def test_worker_thread_without_db_loop_calls_through(self):
-        self.shim._db_loop = None
+        sys.modules["database.db"]._main_loop = None
         api = self.cls()
         result = []
         worker = threading.Thread(target=lambda: result.append(asyncio.run(api.delete_user("bot-id"))))
@@ -235,12 +244,15 @@ class BindShim(unittest.TestCase):
         self.assertEqual(api.calls, [("delete_user", "bot-id")])
 
 
-class RuntimeInstallsShim(unittest.TestCase):
-    def test_runtime_calls_install_on_import(self):
-        src = (ROOT / "panels/remnawave_runtime.py").read_text(encoding="utf-8")
-        self.assertIn("from panels.remnawave_bind import install", src)
-        self.assertIn("_install_bind_shim()", src)
-        self.assertIn("_remember_db_loop()", src)
+class BootstrapInstallsShim(unittest.TestCase):
+    def test_installed_at_bootstrap_not_on_import(self):
+        # Установка при импорте remnawave_runtime ловила круговой импорт
+        # panels.remnawave и молча не вставала.
+        boot = (ROOT / "core/bootstrap.py").read_text(encoding="utf-8")
+        self.assertIn("from panels.remnawave_bind import install", boot)
+        self.assertLess(boot.index("bind_main_loop()\n"), boot.index("install_bind_shim()"))
+        runtime = (ROOT / "panels/remnawave_runtime.py").read_text(encoding="utf-8")
+        self.assertNotIn("remnawave_bind", runtime)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,14 @@ from .settings.yookassa_config import YOOKASSA_CONFIG, load_yookassa_config, upd
 
 async def bootstrap() -> None:
     bind_main_loop()
+    # После всех импортов: из remnawave_runtime установка ловила круговой импорт.
+    try:
+        from panels.remnawave_bind import install as install_bind_shim
+
+        if install_bind_shim():
+            logger.info("[bootstrap] обёртка привязки подписки установлена")
+    except Exception as error:
+        logger.warning("[bootstrap] обёртка привязки подписки не установлена: {}", error)
     await warm_pool()
     async with async_session_maker() as session:
         await initialize_all_tariff_weights(session)
