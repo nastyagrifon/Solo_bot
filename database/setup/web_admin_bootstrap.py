@@ -1,6 +1,8 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.executor import run_cpu
+from database.identity_sessions import delete_other_sessions
 from database.models import Identity
 from logger import logger
 from utils.cpu_tasks import hash_password
@@ -26,7 +28,7 @@ async def ensure_web_admin(session: AsyncSession) -> None:
     email = login.lower()
     result = await session.execute(select(Identity).where(Identity.email == email))
     identity = result.scalar_one_or_none()
-    password_hash = hash_password(password)
+    password_hash = await run_cpu(hash_password, password)
     if identity is None:
         identity = Identity(
             email=email,
@@ -37,6 +39,10 @@ async def ensure_web_admin(session: AsyncSession) -> None:
         session.add(identity)
         logger.info("[Site:Auth] Создан админский аккаунт сайта {}", email)
     else:
+        # Почта могла быть зарегистрирована раньше чужим человеком: его старые
+        # сессии не должны стать админскими вместе с повышением.
+        if not identity.is_admin:
+            await delete_other_sessions(session, identity_id=identity.id, keep_token_hash="")
         identity.password_hash = password_hash
         identity.is_admin = True
         if identity.onboarding_completed_at is None and identity.onboarding_stage != "done":
