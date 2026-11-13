@@ -9,7 +9,7 @@ from settings.cache_config import SERVERS_CACHE_TTL_SEC
 
 
 async def _invalidate_servers_cache(session: AsyncSession | None = None) -> None:
-    patterns = ("servers:*", "tariffs_cluster:*")
+    patterns = ("servers:*", "tariffs_cluster:*", "remna_server:*")
     if not defer_purge_patterns(session, *patterns):
         for pattern in patterns:
             await cache_delete_pattern(pattern)
