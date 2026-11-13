@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import NOTIFICATIONS_CONFIG
 from database import get_keys, get_tariffs, get_tariffs_for_cluster
-from database.access.resolution import resolve_user_optional
+from database.access.resolution import TelegramId, resolve_user_optional
 from database.models import Notification
 from handlers.keys.utils import build_key_callback
 from handlers.notifications.keyboards import build_tariffs_keyboard
@@ -56,7 +56,7 @@ class DiscountOffer:
 
 
 async def _handle_discount(callback: CallbackQuery, session: AsyncSession, offer: DiscountOffer):
-    tg_id = callback.from_user.id
+    tg_id = TelegramId(callback.from_user.id)
     u = await resolve_user_optional(session, tg_id)
     if u is None:
         await callback.message.edit_text(offer.unavailable)

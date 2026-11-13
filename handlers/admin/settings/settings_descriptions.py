@@ -1,9 +1,55 @@
 from typing import Final
 
 
+ADMIN_GRANULAR_PERMISSIONS_HINT = (
+    "Включает отдельные права модераторов на действия с подписками и пользователями. "
+    "Права задаются в управлении администраторами. Главный администратор сохраняет полный доступ."
+)
+EXPIRY_SKIP_TRIAL_HINT = "Не отправлять первое напоминание об истечении подпискам с текущим пробным тарифом."
+MONEY_SETTINGS_DESCRIPTION = "Валюты, курс, кэшбэк и наценка на конвертацию."
+SINGLE_SUBSCRIPTION_SCREEN_HINT = (
+    "В режиме одной подписки: включено — открыть личный кабинет после создания; "
+    "выключено — показать обычный экран с кнопками подключения и просмотра подписки."
+)
+TRAFFIC_SETTINGS_HINT = (
+    "Уровни задаются в процентах оставшегося трафика: от 1 до 100. "
+    "Первый включённый порог должен быть выше второго. "
+    "Исчерпание лимита — отдельное уведомление при 0%."
+)
+YOOKASSA_AUTOPAY_SETTINGS_DESCRIPTION = (
+    "Сроки автопродления, повторные списания, скидка, уведомления и параметры чеков. "
+    "Автоплатежи включаются в разделе «Кассы → ЮКасса». "
+    "Изменение стоимости требует нового согласия клиента, если сумма превышает ранее согласованную."
+)
+YOOKASSA_AUTOPAY_SETTING_HINTS = {
+    "DAYS_BEFORE_EXPIRY": "Целое число от 0 до 3650. За сколько дней до окончания начинать автопродление.",
+    "MAX_RETRY_ATTEMPTS": "Целое число от 1 до 1000. Сколько попыток допускается в одном цикле автопродления.",
+    "RETRY_INTERVAL_HOURS": "Целое число от 1 до 8760. Пауза между повторными попытками списания.",
+    "AUTOPAY_DISCOUNT_PERCENT": "Скидка от 0 до 99,99 процента. Бесплатное автопродление не поддерживается.",
+    "MIN_PAYMENT_AMOUNT": "От 0,01 до 1 000 000 рублей, не более двух знаков после запятой.",
+    "QUICK_AMOUNTS": "Целые суммы от 1 до 1 000 000 через запятую, например: 90, 500, 900.",
+    "MANAGE_BUTTON_LOCATION": "Где пользователь сможет управлять сохранёнными способами оплаты и автопродлением.",
+    "SEND_RECEIPT": "Передавать параметры чека при создании оплаты. Реквизиты чека настраиваются на сервере.",
+    "TAX_SYSTEM_CODE": "Код системы налогообложения магазина от 1 до 6. 0 — не передавать код в чеке.",
+    "VAT_CODE": "Код ставки НДС в API ЮКассы от 1 до 12 согласно настройкам вашего магазина.",
+    "PAYMENT_MODE": "Код способа расчёта в API ЮКассы, например: full_payment.",
+    "PAYMENT_SUBJECT": "Код предмета расчёта в API ЮКассы, например: service.",
+}
+YOOKASSA_MARKUP_PERCENT_PROMPT = "Введите процент наценки от 0 до 100. Можно использовать десятичную дробь."
+YOOKASSA_METHODS_HINT = (
+    "Карты и СБП ЮКассы включаются независимо. "
+    "Чтобы предложить оба способа оплаты, включите «ЮКасса · карты» и «ЮКасса · СБП». "
+    "Наценка и параметры автоплатежей находятся в разделе «Кассы → ЮКасса»."
+)
+YOOKASSA_SETTINGS_HINT = (
+    "Наценка добавляется к сумме оплаты, а на баланс зачисляется исходная сумма. "
+    "Клиент видит полную стоимость перед оплатой. Для автоплатежей требуется согласие на полную сумму."
+)
+
+
 SECTION_DESCRIPTIONS: Final[dict[str, str]] = {
-    "payments": "Какие платёжные системы доступны пользователям в боте и на сайте.",
-    "money": "Валюты, курс и кэшбэк.",
+    "payments": f"Какие платёжные системы доступны пользователям в боте и на сайте. {YOOKASSA_METHODS_HINT}",
+    "money": MONEY_SETTINGS_DESCRIPTION,
     "buttons": "Какие кнопки видят пользователи в меню бота.",
     "notifications": "Автоматические уведомления, автопродление и интервалы фоновых задач.",
     "modes": "Режимы поведения бота.",
@@ -11,9 +57,13 @@ SECTION_DESCRIPTIONS: Final[dict[str, str]] = {
     "web": "Сайт и личный кабинет.",
     "remnawave": "Мониторинг панели Remnawave и автодействия с хостами.",
     "management": "Обслуживание и сервисные действия.",
+    "yookassa": YOOKASSA_SETTINGS_HINT,
+    "yookassa_autopay": YOOKASSA_AUTOPAY_SETTINGS_DESCRIPTION,
 }
 
 SETTING_HINTS: Final[dict[str, str]] = {
+    **YOOKASSA_AUTOPAY_SETTING_HINTS,
+    "KASSA2328": "Приём платежей через 2328. Настройте KASSA2328_PROJECT_UUID и KASSA2328_API_KEY на сервере.",
     "CHANNEL_BUTTON_ENABLE": "Кнопка перехода в ваш канал в меню бота",
     "DONATIONS_BUTTON_ENABLE": "Кнопка донатов в главном меню",
     "BALANCE_BUTTON_ENABLE": "Кнопка пополнения баланса в профиле",
@@ -96,6 +146,9 @@ SETTING_HINTS: Final[dict[str, str]] = {
     "WEBAPP_ONLY_BUTTON": "Подпись кнопки на заглушке — ведёт в бота",
     "WEB_NODE_STATUS_INTERVAL_MIN": "Частота обновления блока «Статус серверов», минут",
     "EMAIL_BINDING_ENABLED": "Кнопка привязки email в боте — вход на сайт без Telegram",
+    "EMAIL_BINDING_VERIFY_ENABLED": "Подтверждение почты кодом при привязке в боте. При недоступных SMTP/Redis почта сохраняется без подтверждения.",
+    "EMAIL_BINDING_REMINDER_ENABLED": "Только Telegram WebApp; окно появляется не чаще заданного числа дней. Для привязки почты нужны настроенные SMTP и Redis.",
+    "EMAIL_BINDING_REMINDER_INTERVAL_DAYS": "Число дней между показами: целое число от 1 до 365.",
     "WEB_NOTIFY_PAYMENT_TITLE": "Веб-уведомление об оплате. Переменная: {amount}",
     "WEB_NOTIFY_PAYMENT_MESSAGE": "Текст веб-уведомления об оплате. Переменная: {amount}",
     "WEB_NOTIFY_KEY_CREATED_TITLE": "Веб-уведомление о создании подписки. Переменная: {email}",
@@ -120,4 +173,17 @@ SETTING_HINTS: Final[dict[str, str]] = {
     "HOST_ROTATION_ENABLED": "Ротация хостов по расписанию",
     "HOST_ROTATION_INTERVAL_MIN": "Период ротации хостов, минут",
     "MAINTENANCE_ENABLED": "Бот отвечает заглушкой всем, кроме админов",
+    "SINGLE_SUBSCRIPTION_OPEN_PROFILE": SINGLE_SUBSCRIPTION_SCREEN_HINT,
+    "EXPIRY_24H_SKIP_TRIAL_ENABLED": EXPIRY_SKIP_TRIAL_HINT,
+    "TRAFFIC_WARNING_ENABLED": TRAFFIC_SETTINGS_HINT,
+    "TRAFFIC_WARNING_LEVEL_1_ENABLED": TRAFFIC_SETTINGS_HINT,
+    "TRAFFIC_WARNING_LEVEL_2_ENABLED": TRAFFIC_SETTINGS_HINT,
+    "TRAFFIC_WARNING_LEVEL_1_PERCENT": TRAFFIC_SETTINGS_HINT,
+    "TRAFFIC_WARNING_LEVEL_2_PERCENT": TRAFFIC_SETTINGS_HINT,
+    "TRAFFIC_EXHAUSTED_ENABLED": TRAFFIC_SETTINGS_HINT,
+    "ADMIN_GRANULAR_PERMISSIONS_ENABLED": ADMIN_GRANULAR_PERMISSIONS_HINT,
+    "MARKUP_ENABLED": YOOKASSA_SETTINGS_HINT,
+    "MARKUP_PERCENT": YOOKASSA_MARKUP_PERCENT_PROMPT,
+    "YOOKASSA": YOOKASSA_METHODS_HINT,
+    "YOOKASSA_SBP": YOOKASSA_METHODS_HINT,
 }

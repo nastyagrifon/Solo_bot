@@ -89,6 +89,12 @@ class AccountKeyActionResponse(BaseModel):
 class AccountKeyRenewRequest(BaseModel):
     tariff_id: int | None = None
     provider_id: str | None = None
+    payhot_customer_phone: str | None = Field(None, max_length=32)
+    autopay_consent: bool = False
+    autopay_accepted_amount: float | None = Field(None, gt=0)
+    autopay_accepted_gross_amount: float | None = Field(None, gt=0)
+    accepted_gross_amount: float | None = Field(None, gt=0)
+    autopay_accepted_period_days: int | None = Field(None, ge=1)
     success_url: str | None = None
     failure_url: str | None = None
     coupon_code: str | None = None
@@ -102,6 +108,8 @@ class AccountKeyRenewResponse(AccountKeyActionResponse):
     charged_rub: int = 0
     balance_rub: float = 0.0
     base_price_rub: int = 0
+    autopay_price_rub: float | None = None
+    autopay_period_days: int | None = None
     discount_rub: int = 0
     final_price_rub: int = 0
     applied_coupon_code: str | None = None
@@ -166,6 +174,12 @@ class AccountKeyAddonsPreviewRequest(BaseModel):
     include_device: bool | None = None
     include_traffic: bool | None = None
     provider_id: str | None = None
+    payhot_customer_phone: str | None = Field(None, max_length=32)
+    autopay_consent: bool = False
+    autopay_accepted_amount: float | None = Field(None, gt=0)
+    autopay_accepted_gross_amount: float | None = Field(None, gt=0)
+    accepted_gross_amount: float | None = Field(None, gt=0)
+    autopay_accepted_period_days: int | None = Field(None, ge=1)
     success_url: str | None = None
     failure_url: str | None = None
     coupon_code: str | None = None
@@ -257,6 +271,12 @@ class TariffPurchaseRequest(BaseModel):
     selected_device_limit: int | None = None
     selected_traffic_gb: int | None = None
     provider_id: str | None = None
+    payhot_customer_phone: str | None = Field(None, max_length=32)
+    autopay_consent: bool = False
+    autopay_accepted_amount: float | None = Field(None, gt=0)
+    autopay_accepted_gross_amount: float | None = Field(None, gt=0)
+    accepted_gross_amount: float | None = Field(None, gt=0)
+    autopay_accepted_period_days: int | None = Field(None, ge=1)
     success_url: str | None = None
     failure_url: str | None = None
     coupon_code: str | None = None
@@ -268,6 +288,8 @@ class TariffPurchaseResponse(BaseModel):
     key_email: str | None = None
     charged_rub: int | None = None
     base_price_rub: int = 0
+    autopay_price_rub: float | None = None
+    autopay_period_days: int | None = None
     discount_rub: int = 0
     final_price_rub: int = 0
     applied_coupon_code: str | None = None
@@ -282,6 +304,12 @@ class GiftCreateRequest(BaseModel):
     selected_device_limit: int | None = None
     selected_traffic_gb: int | None = None
     provider_id: str | None = None
+    payhot_customer_phone: str | None = Field(None, max_length=32)
+    autopay_consent: bool = False
+    autopay_accepted_amount: float | None = Field(None, gt=0)
+    autopay_accepted_gross_amount: float | None = Field(None, gt=0)
+    accepted_gross_amount: float | None = Field(None, gt=0)
+    autopay_accepted_period_days: int | None = Field(None, ge=1)
     success_url: str | None = None
     failure_url: str | None = None
 
@@ -455,6 +483,15 @@ class PartnerTopResponse(BaseModel):
     user_referred_count: int = 0
     user_position: int | None = None
     top: list[PartnerTopEntryResponse] = []
+
+
+class PartnerInvitedEntry(BaseModel):
+    user_id: int | None = None
+    tg_id: int | None = None
+    joined_at: str | None = None
+    balance: float = 0.0
+    keys_count: int = 0
+    payments_count: int = 0
 
 
 class PartnerInvitedResponse(BaseModel):

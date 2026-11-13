@@ -154,11 +154,23 @@ def make_oauth_router(
 
         if info_res.status_code != 200:
             raise HTTPException(status_code=401, detail=f"{human} не вернул профиль")
-        sub, email = parse_userinfo(info_res.json())
+        info = info_res.json()
+        sub, email = parse_userinfo(info)
         if not sub:
             raise HTTPException(status_code=401, detail=f"{human} не вернул идентификатор пользователя")
 
         identity = await get_identity(session, sub, email)
+        # Профиль из ответа провайдера, как у вендора: Google отдаёт name/picture,
+        # Яндекс - display_name/login/avatar_url.
+        display_name = str(info.get("name") or info.get("display_name") or "").strip()[:128]
+        username = str(info.get("login") or "").strip().lstrip("@")[:64]
+        avatar_url = str(info.get("picture") or info.get("avatar_url") or "").strip()
+        if display_name:
+            identity.display_name = display_name
+        if username:
+            identity.username = username
+        if avatar_url.startswith("https://"):
+            identity.avatar_url = avatar_url[:1024]
         await bind_identity_actor(request, session, identity)
         token = await idb.issue_token_for_identity(session, identity, request=request)
         logger.info(
@@ -178,4 +190,6 @@ def make_oauth_router(
         """Позволяет фронтенду узнать, настроен ли вход через провайдера на этом сервере."""
         return {"enabled": configured()}
 
+    # root.py спрашивает «настроен ли вход» снаружи фабрики
+    router.configured = configured
     return router

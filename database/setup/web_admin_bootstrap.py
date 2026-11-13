@@ -7,11 +7,7 @@ from utils.cpu_tasks import hash_password
 
 
 async def ensure_web_admin(session: AsyncSession) -> None:
-    """Bootstrap/sync web-admin identity from config (WEB_ADMIN_LOGIN/WEB_ADMIN_PASSWORD).
-
-    Вызов на старте API: если креды заданы в config.py — upsert Identity с bcrypt-хешем.
-    Если пусто или переменных нет в config.py — no-op с предупреждением, сайт останется без админа.
-    """
+    """Создаёт или обновляет веб-администратора по учётным данным из настроек."""
     from settings import config
 
     login = (getattr(config, "WEB_ADMIN_LOGIN", None) or "").strip()
@@ -39,10 +35,10 @@ async def ensure_web_admin(session: AsyncSession) -> None:
             onboarding_stage="done",
         )
         session.add(identity)
-        logger.info("[web-admin] created admin identity {}", email)
+        logger.info("[Site:Auth] Создан админский аккаунт сайта {}", email)
     else:
         identity.password_hash = password_hash
         identity.is_admin = True
         if identity.onboarding_completed_at is None and identity.onboarding_stage != "done":
             identity.onboarding_stage = "done"
-        logger.info("[web-admin] synced password for {}", email)
+        logger.info("[Site:Auth] Пароль админского аккаунта сайта {} синхронизирован", email)

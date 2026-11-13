@@ -10,8 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
+from database.access.resolution import TelegramId
+from database.payments import resolve_payment_creation_owner
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
+from services.payments.checkout_snapshot import capture_payment_checkout
+from services.payments.owner_refs import payment_owner_token
 from services.payments.payment_links import register_payment_creator
 from settings.buttons import KASSAI_CARDS, KASSAI_SBP
 from settings.config import (
@@ -66,7 +70,7 @@ KASSAI_MIN_TEXTS = {"cards": "оплаты картой", "sbp": "оплаты �
 
 
 async def _payment_link(amount: int, tg_id: int, method: dict, session: AsyncSession) -> str | None:
-    payment_url = await generate_kassai_payment_link(amount, tg_id, method, session)
+    payment_url = await generate_kassai_payment_link(amount, TelegramId(tg_id), method, session)
     if not payment_url or payment_url == "https://fk.life/":
         return None
     return payment_url
@@ -85,7 +89,7 @@ process_callback_pay_kassai = register_topup_flow(
     amount_min_text=lambda name: f"❌ Минимальная сумма для {KASSAI_MIN_TEXTS[name]} — {{min}}₽.",
     entry_error_log=lambda cq, e: f"Error in process_callback_pay_kassai for user {cq.message.chat.id}: {e}",
     multicurrency_input=True,
-    link_by_chat_id=True,
+    link_by_chat_id=False,
     custom_back_cb="pay_kassai_{method}",
     entry_log="User {tg_id} initiated KassaAI payment.",
     menu_text="Выберите способ оплаты через KassaAI:",
@@ -105,12 +109,11 @@ async def generate_kassai_payment_link(
     failure_url: str | None = None,
     metadata: dict | None = None,
 ) -> str:
-    """
-    Создание заказа в KassaAI и получение ссылки на оплату.
-    session — сессия из хендлера; если не передана, создаётся своя (лишняя нагрузка на пул).
-    """
+    """Создаёт заказ KassaI и возвращает ссылку на оплату."""
+    tg_id = await resolve_payment_creation_owner(session, tg_id)
+    metadata = await capture_payment_checkout(session, tg_id, metadata)
     nonce = int(time.time())
-    unique_payment_id = payment_id or f"{nonce}_{tg_id}"
+    unique_payment_id = payment_id or f"{nonce}_{payment_owner_token(tg_id)}"
     url = "https://api.fk.life/v1/orders/create"
 
     headers = {"Content-Type": "application/json"}
@@ -188,13 +191,14 @@ def create_link_factory(method_name: str):
         failure_url: str | None,
         metadata: dict | None,
     ) -> tuple[str, str | None]:
+        tg_id = await resolve_payment_creation_owner(session, tg_id)
         if currency != "RUB":
             raise ValueError("KassaI поддерживает только RUB")
         method = KASSAI_METHODS.get(method_name)
         if not method or not _kassai_method_enabled(method):
             raise ValueError("Способ оплаты KassaI недоступен")
         amount_int = int(amount)
-        payment_id = f"{int(time.time())}_{tg_id}"
+        payment_id = f"{int(time.time())}_{payment_owner_token(tg_id)}"
         if method_name == "cards" and amount_int < 50:
             raise ValueError("Минимальная сумма для карт — 50₽")
         if method_name == "sbp" and amount_int < 10:

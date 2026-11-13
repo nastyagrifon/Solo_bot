@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_key_by_client_id, get_key_by_email, get_key_details, get_keys
+from database.access.resolution import TelegramId, UserId, resolve_uid_cached
 from database.models import Key
 from handlers.utils import render_text
 from services.payments.currency_rates import format_for_user
@@ -28,7 +29,7 @@ def happ_import_url(key_link: str, connect_prefix: str, crypt_host: str) -> str:
 
 
 def key_owned_by_user(record: dict | None, user_id: int) -> bool:
-    """Проверка, что ключ принадлежит пользователю (защита от пересылки callback)."""
+    """Проверяет принадлежность ключа клиенту."""
     return record is not None and record.get("tg_id") == user_id
 
 
@@ -38,7 +39,11 @@ async def owned_key_record(callback_query, session: AsyncSession) -> tuple[str, 
     key_obj = await resolve_key(session, callback_query.from_user.id, key_ref)
     email = key_obj.email if key_obj else key_ref
     record = await get_key_details(session, email)
-    if not key_owned_by_user(record, callback_query.from_user.id):
+    # key_obj нет у старых кнопок, где в callback_data лежит email: их пускаем по владельцу записи.
+    if not key_owned_by_user(record, callback_query.from_user.id) or (
+        key_obj is not None
+        and (record.get("user_id") != key_obj.user_id or record.get("client_id") != key_obj.client_id)
+    ):
         await callback_query.answer("Доступ запрещён.", show_alert=True)
         return None
     return email, record
@@ -56,6 +61,9 @@ def build_key_callback(prefix: str, client_id: str | None, email: str | None = N
 async def resolve_key(session: AsyncSession, tg_id: int, key_ref: str | int | None) -> Key | None:
     if key_ref is None:
         return None
+
+    if not isinstance(tg_id, UserId | TelegramId):
+        tg_id = TelegramId(tg_id)
 
     key_ref_str = str(key_ref)
 
@@ -75,9 +83,7 @@ async def resolve_key(session: AsyncSession, tg_id: int, key_ref: str | int | No
 
 
 async def _resolve_key_from_db(session: AsyncSession, tg_id: int, key_ref: str) -> Key | None:
-    """Ищет ключ по свежему списку из БД: кеш списка мог отстать от только что созданной подписки."""
-    from database.access.resolution import resolve_uid_cached
-
+    """Ищет ключ в актуальных данных базы."""
     uid = await resolve_uid_cached(session, tg_id)
     if uid is None:
         return None
@@ -93,12 +99,7 @@ def _escape_html(value: str) -> str:
 
 
 def order_tariff_items(grouped_tariffs: dict) -> list[tuple[str, Any]]:
-    """Сквозной порядок выбора: одиночные тарифы и подгруппы вперемешку по sort_order.
-
-    Подгруппа встаёт по минимальному sort_order своих тарифов. Раньше одиночные
-    тарифы всегда шли первыми, из-за чего подгруппы оказывались внизу.
-    Возвращает список ("tariff", tariff_dict) | ("subgroup", subgroup_title).
-    """
+    """Упорядочивает тарифы и подгруппы по заданному порядку."""
     items: list[tuple[int, str, Any]] = []
     for t in grouped_tariffs.get(None, []):
         items.append((int(t.get("sort_order") or 0), "tariff", t))
@@ -111,10 +112,7 @@ def order_tariff_items(grouped_tariffs: dict) -> list[tuple[str, Any]]:
 
 
 def format_subgroup_description(description: str | None, limit: int = 300) -> str:
-    """Блок описания подгруппы над списком тарифов (пусто, если не задано).
-
-    Длина ограничена, чтобы caption фото не превысил лимит Telegram (1024).
-    """
+    """Формирует краткое описание подгруппы."""
     text = (description or "").strip()
     if not text:
         return ""
@@ -124,12 +122,7 @@ def format_subgroup_description(description: str | None, limit: int = 300) -> st
 
 
 def format_tariff_descriptions(tariffs: list[dict[str, Any]], total_limit: int = 500) -> str:
-    """Компактный блок описаний для списка тарифов рядом с кнопками.
-
-    Описание схлопывается в одну строку. Длина тизера подбирается под число
-    тарифов с описанием, а общий объём ограничен total_limit, чтобы caption
-    не превысил лимит Telegram (1024) даже вместе со скидочным блоком.
-    """
+    """Формирует краткие описания тарифов."""
     described = [
         (str(t.get("name", "")), " ".join((t.get("description") or "").split()))
         for t in tariffs

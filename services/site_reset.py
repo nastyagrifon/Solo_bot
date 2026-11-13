@@ -21,14 +21,7 @@ from settings.config import DATABASE_URL, USE_PGBOUNCER
 
 
 async def reset_site(_session: AsyncSession) -> None:
-    """Полный сброс web-части: все web_* таблицы + identities.
-
-    Использует отдельный engine без command_timeout — стандартный pool имеет
-    жёсткий 30-сек лимит на запрос, который не переопределяется SET LOCAL
-    (это клиентский asyncpg-таймаут). Для длинных FK-каскадов нужен dedicated
-    коннект с более мягкими настройками.
-    Биллинг-данные (пользователи бота, ключи, платежи) не трогаются.
-    """
+    """Сбрасывает данные сайта и учётные записи, сохраняя расчётные данные клиентов."""
     connect_args: dict = {}
     db_url = DATABASE_URL
     if "+asyncpg" in DATABASE_URL:
@@ -58,7 +51,7 @@ async def _run_reset(session: AsyncSession) -> None:
         await session.execute(text("SET LOCAL statement_timeout = '5min'"))
         await session.execute(text("SET LOCAL lock_timeout = '30s'"))
     except Exception as exc:
-        logger.warning("[site-reset] Не удалось задать timeouts (возможно SQLite): {}", exc)
+        logger.warning("[Site:Reset] Не удалось задать тайм-ауты базы (возможно, SQLite): {}", exc)
 
     steps: list[tuple[str, object]] = [
         ("web_page_variant_blocks", delete(WebPageVariantBlock)),
@@ -75,7 +68,7 @@ async def _run_reset(session: AsyncSession) -> None:
         ("identities", delete(Identity)),
     ]
     for label, stmt in steps:
-        logger.info("[site-reset] step start: {}", label)
+        logger.info("[Site:Reset] Шаг начат: {}", label)
         if label == "identities":
             try:
                 activity = await session.execute(
@@ -88,15 +81,15 @@ async def _run_reset(session: AsyncSession) -> None:
                     )
                 )
                 for row in activity.mappings():
-                    logger.info("[site-reset] pg_stat pre-identities: {}", dict(row))
+                    logger.info("[Site:Reset] Состояние базы перед очисткой клиентов: {}", dict(row))
             except Exception as exc:
-                logger.warning("[site-reset] diag pg_stat failed: {}", exc)
+                logger.warning("[Site:Reset] Диагностику базы снять не удалось: {}", exc)
         try:
             result = await session.execute(stmt)
             rowcount = getattr(result, "rowcount", "?")
-            logger.info("[site-reset] step ok: {} (rows={})", label, rowcount)
+            logger.info("[Site:Reset] Шаг выполнен: {} (строк: {})", label, rowcount)
         except Exception as exc:
-            logger.error("[site-reset] step FAIL: {} — {}: {}", label, type(exc).__name__, exc)
+            logger.error("[Site:Reset] Шаг не выполнен: {} — {}: {}", label, type(exc).__name__, exc)
             try:
                 activity = await session.execute(
                     text(
@@ -107,9 +100,9 @@ async def _run_reset(session: AsyncSession) -> None:
                     )
                 )
                 for row in activity.mappings():
-                    logger.error("[site-reset] pg_stat post-fail: {}", dict(row))
+                    logger.error("[Site:Reset] Состояние базы после сбоя: {}", dict(row))
             except Exception:
                 pass
             raise
     await reset_site_initialized(session)
-    logger.info("[site-reset] Веб-часть сайта сброшена к исходному состоянию")
+    logger.info("[Site:Reset] Сайт сброшен к исходному состоянию")

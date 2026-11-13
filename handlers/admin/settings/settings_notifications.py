@@ -20,6 +20,15 @@ from .keyboard import (
 from .toggle import toggle_setting
 
 
+EXPIRY_SKIP_TRIAL_HINT = "Не отправлять первое напоминание об истечении подпискам с текущим пробным тарифом."
+TRAFFIC_SETTINGS_HINT = (
+    "Уровни задаются в процентах оставшегося трафика: от 1 до 100. "
+    "Первый включённый порог должен быть выше второго. "
+    "Исчерпание лимита — отдельное уведомление при 0%."
+)
+TRAFFIC_SETTINGS_INVALID = "Пороги должны быть целыми числами от 1 до 100; первый включённый порог — выше второго."
+
+
 router = Router(name="admin_settings_notifications")
 router.callback_query.filter(IsAdminFilter())
 
@@ -39,6 +48,7 @@ async def open_settings_notifications_menu(callback: CallbackQuery, session: Asy
         "Уведомления",
         "Что бот шлёт клиентам и админам.",
         quote("Нажмите на уведомление, чтобы включить или выключить его."),
+        quote(EXPIRY_SKIP_TRIAL_HINT, TRAFFIC_SETTINGS_HINT),
     )
     await callback.message.edit_text(text=text, reply_markup=build_settings_notifications_kb(notifications_state))
     await callback.answer()
@@ -102,11 +112,25 @@ async def toggle_notification_setting(
     callback_data: AdminPanelCallback,
     session: AsyncSession,
 ) -> None:
-    config = await toggle_setting(
-        callback, session, callback_data.page, NOTIFICATION_TITLES, NOTIFICATIONS_CONFIG, update_notifications_config
-    )
-    if config is None:
+    keys = list(NOTIFICATION_TITLES.keys())
+    idx = callback_data.page
+
+    if not 1 <= idx <= len(keys):
+        await callback.answer("Неизвестная настройка", show_alert=True)
         return
+
+    key = keys[idx - 1]
+
+    config = dict(NOTIFICATIONS_CONFIG or {})
+    current = bool(config.get(key, False))
+    config[key] = not current
+
+    try:
+        await update_notifications_config(session, config)
+    except ValueError:
+        await callback.answer(TRAFFIC_SETTINGS_INVALID, show_alert=True)
+        return
+
     notifications_state = await load_notification_settings()
     await callback.message.edit_reply_markup(reply_markup=build_settings_notifications_kb(notifications_state))
     await callback.answer(menu_text("Уведомления", "Настройка обновлена"))
@@ -156,7 +180,7 @@ async def notification_interval_value_input(message: Message, state: FSMContext,
 
     data = await state.get_data()
     key = data.get("setting_key")
-    if not key:
+    if key not in NOTIFICATION_TIME_FIELDS:
         await state.clear()
         await message.answer(menu_text("Уведомления", "Ошибка состояния. Попробуйте ещё раз."))
         return
@@ -164,7 +188,11 @@ async def notification_interval_value_input(message: Message, state: FSMContext,
     config = dict(NOTIFICATIONS_CONFIG or {})
     config[key] = new_value
 
-    await update_notifications_config(session, config)
+    try:
+        await update_notifications_config(session, config)
+    except ValueError:
+        await message.answer(TRAFFIC_SETTINGS_INVALID)
+        return
     await state.clear()
 
     notifications_state = await load_notification_settings()

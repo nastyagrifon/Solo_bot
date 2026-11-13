@@ -10,9 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import add_payment, async_session_maker
+from database.access.resolution import TelegramId
+from database.payments import resolve_payment_creation_owner
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
+from services.payments.checkout_snapshot import capture_payment_checkout
 from services.payments.currency_rates import get_rub_rate
+from services.payments.owner_refs import payment_owner_token
 from services.payments.payment_links import register_payment_creator
 from settings.buttons import WATA_INT, WATA_RU
 from settings.config import (
@@ -75,14 +79,16 @@ process_callback_pay_wata = register_topup_flow(
     methods=WATA_METHODS,
     states=ReplenishBalanceWata,
     enabled=_wata_method_enabled,
-    payment_link=lambda amount, tg_id, method, session: generate_wata_payment_link(amount, tg_id, method, session),
+    payment_link=lambda amount, tg_id, method, session: generate_wata_payment_link(
+        amount, TelegramId(tg_id), method, session
+    ),
     payment_message=WATA_PAYMENT_MESSAGE,
     min_amount=lambda name, method: WATA_MIN_AMOUNTS.get(name, 10),
     input_min_text=lambda name: "❌ Минимальная сумма для оплаты через WATA — {symbol}{min}.",
     amount_min_text=lambda name: "❌ Минимальная сумма для оплаты через WATA — {symbol}{min}.",
     entry_error_log=lambda cq, e: f"Error in process_callback_pay_wata for user {cq.message.chat.id}: {e}",
     multicurrency_input=True,
-    link_by_chat_id=True,
+    link_by_chat_id=False,
     custom_back_cb="pay_wata_{method}",
     entry_log="User {tg_id} initiated Wata payment.",
     menu_text="Выберите способ оплаты через WATA:",
@@ -102,13 +108,15 @@ async def generate_wata_payment_link(
     failure_url: str | None = None,
     metadata: dict | None = None,
 ) -> str | None:
+    tg_id = await resolve_payment_creation_owner(session, tg_id)
+    metadata = await capture_payment_checkout(session, tg_id, metadata)
     token = method.get("token") or ""
     if not token:
         logger.error(f"[WATA] Не задан токен для кассы {method.get('currency')}")
         return None
 
     currency = str(method.get("currency") or "RUB").upper()
-    unique_order_id = payment_id or f"{int(time.time())}_{tg_id}_{int(amount)}"
+    unique_order_id = payment_id or f"{int(time.time())}_{payment_owner_token(tg_id)}_{int(amount)}"
 
     pending_metadata = dict(metadata or {})
     pending_metadata.setdefault("cassa", "ru" if currency == "RUB" else "int")
@@ -209,6 +217,7 @@ def create_link_factory(method_name: str):
         failure_url: str | None,
         metadata: dict | None,
     ) -> tuple[str, str | None]:
+        tg_id = await resolve_payment_creation_owner(session, tg_id)
         method = WATA_METHODS.get(method_name)
         if not method or not _wata_method_enabled(method):
             raise ValueError("Способ оплаты Wata недоступен")
@@ -222,7 +231,7 @@ def create_link_factory(method_name: str):
             symbol = "$" if method["currency"] == "USD" else "₽"
             raise ValueError(f"Минимальная сумма Wata — {symbol}{min_amount}")
 
-        payment_id = f"{int(time.time())}_{tg_id}_{amount_int}"
+        payment_id = f"{int(time.time())}_{payment_owner_token(tg_id)}_{amount_int}"
         url = await generate_wata_payment_link(
             amount_int,
             tg_id,

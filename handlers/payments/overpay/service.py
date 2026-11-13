@@ -19,8 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import register_pending_payment
+from database.access.resolution import TelegramId
+from database.payments import resolve_payment_creation_owner
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
+from services.payments.checkout_snapshot import capture_payment_checkout
+from services.payments.owner_refs import payment_owner_token
 from services.payments.payment_links import register_payment_creator
 from settings.buttons import OVERPAY_CARDS, OVERPAY_SBP
 from settings.config import (
@@ -99,8 +103,7 @@ def _resolve_cert_path(path: str) -> str:
 
 
 def _pem_from_cryptography(p12_data: bytes, password: bytes | None) -> bytes | None:
-    """Штатный разбор. Ключ идёт последним: openssl читает цепочку до первого не-сертификата,
-    и CA, поставленные после ключа, молча теряются."""
+    """Преобразует PKCS12 в PEM через cryptography."""
     private_key, certificate, additional = pkcs12.load_key_and_certificates(p12_data, password)
     if private_key is None or certificate is None:
         logger.error("[Overpay] В .p12 нет приватного ключа или сертификата")
@@ -113,8 +116,7 @@ def _pem_from_cryptography(p12_data: bytes, password: bytes | None) -> bytes | N
 
 
 def _pem_from_openssl(path: str, password: str) -> bytes | None:
-    """Запасной путь для контейнеров, которые не берёт cryptography: старое шифрование,
-    нестандартные поля, самодельные сборки. Пароль передаём через окружение, не в аргументах."""
+    """Преобразует PKCS12 в PEM через OpenSSL."""
     env = {**os.environ, "OVERPAY_P12_PASS": password}
     for extra in (["-legacy"], []):
         try:
@@ -194,7 +196,7 @@ def _base_url() -> str:
 
 
 async def _payment_link(amount: int, tg_id: int, method: dict, session: AsyncSession) -> str | None:
-    result = await generate_overpay_payment_link(amount, tg_id, method, session)
+    result = await generate_overpay_payment_link(amount, TelegramId(tg_id), method, session)
     return result[0] if result else None
 
 
@@ -365,6 +367,8 @@ async def generate_overpay_payment_link(
     return_url: str | None = None,
     metadata: dict | None = None,
 ) -> tuple[str, str] | None:
+    tg_id = await resolve_payment_creation_owner(session, tg_id)
+    metadata = await capture_payment_checkout(session, tg_id, metadata)
     if not _overpay_credentials_ok():
         logger.error("[Overpay] Не заданы реквизиты API")
         return None
@@ -379,7 +383,7 @@ async def generate_overpay_payment_link(
     if not terminal_id:
         logger.error(f"[Overpay] Не задан terminal_id для метода '{method_name}'")
         return None
-    unique_tx_id = merchant_tx_id or f"ovp_{int(time.time())}_{tg_id}"
+    unique_tx_id = merchant_tx_id or f"ovp_{int(time.time())}_{payment_owner_token(tg_id)}"
     ret_url = return_url or OVERPAY_RETURN_URL or ""
 
     use_sbp_direct = method_name == "sbp" and bool(OVERPAY_SBP_DIRECT_QR)
@@ -464,6 +468,7 @@ def _create_link_factory(method_name: str):
         failure_url: str | None,
         metadata: dict | None,
     ) -> tuple[str, str | None]:
+        tg_id = await resolve_payment_creation_owner(session, tg_id)
         if currency != "RUB":
             raise ValueError("Overpay поддерживает только RUB")
         method = OVERPAY_METHODS.get(method_name)

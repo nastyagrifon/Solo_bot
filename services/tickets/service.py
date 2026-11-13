@@ -4,8 +4,10 @@ from sqlalchemy import Text, and_, case, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Identity, Ticket, TicketMessage
+from database.users import get_billing_user_id_for_identity
 
 from .events import publish_tickets_changed
+from .queue import queue_assignment, queue_message, queue_new_ticket, queue_topic_delete, queue_topic_state
 
 
 OPEN = "open"
@@ -70,19 +72,21 @@ async def create_ticket(
     )
     session.add(ticket)
     await session.flush()
-    session.add(
-        TicketMessage(
-            ticket_id=ticket.id,
-            author="client",
-            body=(body or "").strip(),
-            attachments=attachments or None,
-            read_by_client=True,
-            read_by_agent=False,
-            created_at=now,
-        )
+    first_message = TicketMessage(
+        ticket_id=ticket.id,
+        author="client",
+        author_identity_id=identity_id,
+        body=(body or "").strip(),
+        attachments=attachments or None,
+        read_by_client=True,
+        read_by_agent=False,
+        created_at=now,
     )
+    session.add(first_message)
     await session.flush()
-    await publish_tickets_changed()
+    await queue_message(session, first_message)
+    await queue_new_ticket(session, ticket)
+    await publish_tickets_changed(session, ticket.identity_id)
     return ticket
 
 
@@ -90,8 +94,21 @@ async def get_ticket(session: AsyncSession, ticket_id: str) -> Ticket | None:
     return await session.get(Ticket, ticket_id)
 
 
-async def get_ticket_by_topic(session: AsyncSession, topic_id: int) -> Ticket | None:
-    return (await session.execute(select(Ticket).where(Ticket.topic_id == topic_id))).scalar_one_or_none()
+async def get_ticket_by_topic(
+    session: AsyncSession, topic_id: int, *, chat_id: int | None = None, bot_id: int | None = None
+) -> Ticket | None:
+    """Находит обращение по теме в конкретном чате и боте."""
+    query = select(Ticket).where(Ticket.topic_id == topic_id)
+    if chat_id is not None:
+        query = query.where(or_(Ticket.topic_chat_id.is_(None), Ticket.topic_chat_id == chat_id))
+    if bot_id is not None:
+        query = query.where(or_(Ticket.topic_bot_id.is_(None), Ticket.topic_bot_id == bot_id))
+    if chat_id is not None or bot_id is not None:
+        query = query.order_by(Ticket.topic_chat_id.is_not(None).desc(), Ticket.topic_bot_id.is_not(None).desc()).limit(
+            1
+        )
+    matches = list((await session.scalars(query)).all())
+    return matches[0] if len(matches) == 1 else None
 
 
 async def add_message(
@@ -102,8 +119,11 @@ async def add_message(
     body: str,
     attachments: list | None = None,
     agent_tg_id: int | None = None,
+    author_identity_id: str | None = None,
 ) -> TicketMessage | None:
-    ticket = await session.get(Ticket, ticket_id)
+    ticket = await session.scalar(
+        select(Ticket).where(Ticket.id == ticket_id).with_for_update().execution_options(populate_existing=True)
+    )
     if ticket is None:
         return None
     now = _now()
@@ -112,6 +132,7 @@ async def add_message(
     msg = TicketMessage(
         ticket_id=ticket_id,
         author="note" if is_note else ("agent" if is_agent else "client"),
+        author_identity_id=author_identity_id if (is_agent or is_note) else ticket.identity_id,
         agent_tg_id=agent_tg_id if (is_agent or is_note) else None,
         body=(body or "").strip(),
         attachments=attachments or None,
@@ -123,6 +144,8 @@ async def add_message(
     if is_note:
         ticket.updated_at = now
         await session.flush()
+        await queue_message(session, msg)
+        await publish_tickets_changed(session, client=False)
         return msg
     msg.read_by_client = is_agent is False
     if ticket.status != CLOSED:
@@ -130,7 +153,8 @@ async def add_message(
     ticket.last_message_at = now
     ticket.updated_at = now
     await session.flush()
-    await publish_tickets_changed()
+    await queue_message(session, msg)
+    await publish_tickets_changed(session, ticket.identity_id)
     return msg
 
 
@@ -143,7 +167,8 @@ async def set_status(session: AsyncSession, *, ticket_id: str, status: str) -> T
     ticket.status = status
     ticket.updated_at = _now()
     await session.flush()
-    await publish_tickets_changed()
+    await queue_topic_state(session, ticket)
+    await publish_tickets_changed(session, ticket.identity_id)
     return ticket
 
 
@@ -154,6 +179,7 @@ async def set_rating(session: AsyncSession, *, ticket_id: str, rating: int) -> T
     ticket.rating = max(1, min(5, int(rating)))
     ticket.updated_at = _now()
     await session.flush()
+    await publish_tickets_changed(session, ticket.identity_id, client=True)
     return ticket
 
 
@@ -171,16 +197,19 @@ async def set_tags(session: AsyncSession, *, ticket_id: str, tags: list[str]) ->
     ticket.tags = clean or None
     ticket.updated_at = _now()
     await session.flush()
+    await publish_tickets_changed(session, ticket.identity_id, client=False)
     return ticket
 
 
 async def assign_ticket(session: AsyncSession, *, ticket_id: str, agent_tg_id: int | None) -> Ticket | None:
     ticket = await session.get(Ticket, ticket_id)
-    if ticket is None:
-        return None
+    if ticket is None or ticket.assigned_agent_tg_id == agent_tg_id:
+        return ticket
     ticket.assigned_agent_tg_id = agent_tg_id
     ticket.updated_at = _now()
     await session.flush()
+    await queue_assignment(session, ticket)
+    await publish_tickets_changed(session, ticket.identity_id, client=False)
     return ticket
 
 
@@ -251,9 +280,8 @@ async def delete_ticket(session: AsyncSession, ticket_id: str) -> bool:
     ticket = await session.get(Ticket, ticket_id)
     if ticket is None:
         return False
-    from .forum import delete_topic
-
-    await delete_topic(ticket)
+    await queue_topic_delete(session, ticket)
+    await publish_tickets_changed(session, ticket.identity_id)
     await session.delete(ticket)
     await session.flush()
     return True
@@ -291,21 +319,14 @@ async def close_stale(session: AsyncSession, *, answered_days: int = 2) -> int:
     for t in tickets:
         t.status = CLOSED
         t.updated_at = now
+        await publish_tickets_changed(session, t.identity_id)
     await session.flush()
-    await publish_tickets_changed()
     return len(tickets)
 
 
 async def resolve_billing_user_ref(session: AsyncSession, identity) -> int | None:
-    """users.id для админ-карточки клиента."""
-    from database.models import User
-
-    user = (await session.execute(select(User).where(User.identity_id == identity.id))).scalar_one_or_none()
-    if user is None:
-        tg = getattr(identity, "tg_id", None)
-        if tg and int(tg) != 0:
-            user = (await session.execute(select(User).where(User.tg_id == int(tg)))).scalar_one_or_none()
-    return int(user.id) if user is not None else None
+    """Возвращает внутренний ID для карточки клиента."""
+    return await get_billing_user_id_for_identity(session, identity.id, getattr(identity, "tg_id", None))
 
 
 async def build_client_context(session: AsyncSession, identity) -> dict | None:
@@ -403,7 +424,26 @@ async def mark_read(session: AsyncSession, *, ticket_id: str, by: str) -> None:
     if by not in ("client", "agent"):
         return
     col = TicketMessage.read_by_client if by == "client" else TicketMessage.read_by_agent
-    await session.execute(
+    result = await session.execute(
         update(TicketMessage).where(TicketMessage.ticket_id == ticket_id, col.is_(False)).values({col: True})
     )
+    if not result.rowcount:
+        return
+    ticket = await session.get(Ticket, ticket_id)
+    if ticket is not None:
+        await publish_tickets_changed(session, ticket.identity_id)
     await session.flush()
+
+
+async def set_priority(session: AsyncSession, *, ticket_id: str, priority: str) -> Ticket | None:
+    """Меняет приоритет и обновляет очередь операторов."""
+    if priority not in {"low", "normal", "high"}:
+        return None
+    ticket = await session.get(Ticket, ticket_id)
+    if ticket is None or ticket.priority == priority:
+        return ticket
+    ticket.priority = priority
+    ticket.updated_at = _now()
+    await session.flush()
+    await publish_tickets_changed(session, client=False)
+    return ticket

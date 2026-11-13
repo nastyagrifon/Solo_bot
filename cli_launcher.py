@@ -7,9 +7,11 @@ import select
 import shutil
 import subprocess
 import sys
+import tempfile
 import time as time_mod
 
 from datetime import datetime
+from fnmatch import fnmatch
 from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -24,8 +26,8 @@ def _ensure_cli_deps() -> None:
     с подсказкой, как поставить его руками.
     """
     try:
-        import requests  # noqa: F401
-        import rich  # noqa: F401
+        import requests
+        import rich
 
         return
     except ImportError:
@@ -53,10 +55,10 @@ def _ensure_cli_deps() -> None:
 
 
 def _bootstrap_rpc() -> None:
-    """Бутстрап: тянет core/rpc с публичной ветки, если его ещё нет рядом с CLI."""
+    """Загружает ядро CLI из публичного репозитория при его отсутствии."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
-        import core.rpc  # noqa: F401
+        import core.rpc
 
         if hasattr(core.rpc, "get_settings_builder_url"):
             return
@@ -87,7 +89,7 @@ def _bootstrap_rpc() -> None:
     sys.modules.pop("core.rpc", None)
 
     try:
-        import core.rpc  # noqa: F401
+        import core.rpc
     except Exception as e:
         print(f"Не удалось подготовить core/rpc: {e}")
         sys.exit(1)
@@ -124,10 +126,9 @@ _reexec_into_target_python()
 _ensure_cli_deps()
 _bootstrap_rpc()
 
-from core.rpc import (  # noqa: E402
+from core.rpc import (
     adopt_beta_files,
     cli_gate,
-    extract_version,
     get_settings_builder_url,
     local_version,
     migrate_settings_layout,
@@ -258,7 +259,7 @@ def step_info(text: str) -> None:
 
 
 def menu(title: str, groups: list, subtitle: str = "") -> None:
-    """Меню одним блоком: [(заголовок группы, [(номер, значок, подпись, доступен, примечание)])]."""
+    """Выводит сгруппированные пункты меню."""
     blocks = []
     notes = []
     for position, (group_title, items) in enumerate(groups):
@@ -322,7 +323,7 @@ DEFAULT_SERVICE_NAME = "bot.service"
 VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "bin", "python")
 SOLOBOT_CMD_PATH = "/usr/local/bin/solobot"
 SETTINGS_DIR = os.path.join(PROJECT_DIR, "settings")
-CLI_VERSION = "v1.3.0"
+CLI_VERSION = "v1.3.3"
 
 
 def _ensure_solobot_command() -> None:
@@ -413,8 +414,13 @@ def refresh_service_name() -> str:
 SERVICE_NAME = refresh_service_name()
 
 
+def is_ascii_only(value: str) -> bool:
+    """Проверяет, что строка содержит только ASCII."""
+    return all(ord(ch) < 128 for ch in value)
+
+
 def _parse_tag_version(tag_name: str) -> tuple[int, ...]:
-    """Извлекает кортеж (major, minor, patch, ...) из тега для сортировки. v.5.1 -> (5, 1), v4 -> (4, 0)."""
+    """Разбирает номер версии для сортировки тегов."""
     s = tag_name.strip().lstrip("v.")
     parts = []
     for part in re.split(r"[.\s]+", s):
@@ -426,7 +432,7 @@ def _parse_tag_version(tag_name: str) -> tuple[int, ...]:
 
 
 def warn_english_only():
-    """Предупреждение о необходимости английской раскладки."""
+    """Просит переключить клавиатуру на английскую раскладку."""
     step_fail("Обнаружен ввод с неанглийской раскладкой.")
     step_warn("Пожалуйста, переключите раскладку на ENG и введите снова.")
 
@@ -444,17 +450,12 @@ _AUTO_FILE_MARKERS = (("buttons", "buttons.py"), ("img", "папку img"), ("re
 _AUTO_STOP_MARKERS = (
     ("БЕЗ бэкапа", "резервная копия не создана"),
     ("Всё равно продолжить обновление", "config и texts не содержат переменных новой версии"),
+    ("с перезаписью локальных изменений кода", "нужно подтверждение перезаписи локальных изменений"),
 )
 
 
 def _auto_answer(message: str) -> bool | None:
-    """Ответ за админа в неинтерактивном режиме. None — обычный интерактивный запуск.
-
-    Вопросы «обновлять ли buttons.py / img / redis_cache.py» отвечаются по флагам:
-    без флага файл не перезаписывается. Вопросы, где «да» означает обновление
-    вслепую (без бэкапа, с неполным конфигом), отвечаются «нет» — без админа
-    у экрана такой риск брать нельзя. Остальные подтверждения — «да».
-    """
+    """Выбирает безопасный ответ при автоматическом обновлении."""
     global _AUTO_ABORT_REASON
 
     if not _AUTO_YES:
@@ -470,11 +471,7 @@ def _auto_answer(message: str) -> bool | None:
 
 
 def safe_confirm(message: str, default: bool = False, **kwargs) -> bool:
-    """Подтверждение y/n, устойчивое к раскладке.
-
-    Срезает не-ASCII «мусор» от переключения раскладки и принимает y/n в любой
-    раскладке (y/да/д/у → да, n/нет/н → нет). Пустой ввод → значение по умолчанию.
-    """
+    """Запрашивает подтверждение с учётом русской и английской раскладки."""
     auto = _auto_answer(message)
     if auto is not None:
         console.print(f"[faint]{message} → {'да' if auto else 'нет'}[/faint]")
@@ -500,12 +497,7 @@ def safe_confirm(message: str, default: bool = False, **kwargs) -> bool:
 
 
 def safe_prompt(message: str, **kwargs) -> str:
-    """Безопасный Prompt.ask с защитой от русской раскладки.
-
-    Не-ASCII символы тихо фильтруются. Предупреждение появляется только
-    если после фильтрации в строке не осталось значимого ASCII (т.е. ввод
-    был полностью на не-английской раскладке).
-    """
+    """Запрашивает текст и отсекает ввод в неверной раскладке."""
     while True:
         try:
             value = Prompt.ask(message, **kwargs)
@@ -592,12 +584,118 @@ def has_local_config() -> bool:
     return os.path.exists(resolve_config_path(PROJECT_DIR))
 
 
+def _local_docker_files() -> list[str]:
+    """Находит существующие локальные настройки Docker."""
+    patterns = (
+        "docker-compose*.yml",
+        "docker-compose*.yaml",
+        "compose*.yml",
+        "compose*.yaml",
+        ".env",
+        ".env.*",
+        DOCKER_STATE_FILE,
+    )
+    paths = set()
+    directories = {"", "web-app"}
+    env_path = os.path.join(PROJECT_DIR, ".env")
+    compose_files = os.environ.get("COMPOSE_FILE") or _read_env_value(env_path, "COMPOSE_FILE")
+    separator = (
+        os.environ.get("COMPOSE_PATH_SEPARATOR") or _read_env_value(env_path, "COMPOSE_PATH_SEPARATOR") or os.pathsep
+    )
+    if any(marker in compose_files or marker in separator for marker in ("$", "\\")):
+        resolved = _dc("config", "--environment", capture=True)
+        if resolved.returncode != 0:
+            raise ValueError("Не удалось определить COMPOSE_FILE. Проверьте Compose и .env перед обновлением.")
+        values = dict(line.split("=", 1) for line in resolved.stdout.splitlines() if "=" in line)
+        compose_files = values.get("COMPOSE_FILE", compose_files)
+        separator = values.get("COMPOSE_PATH_SEPARATOR", separator)
+    for value in compose_files.split(separator):
+        if not value:
+            continue
+        path = os.path.abspath(os.path.join(PROJECT_DIR, value))
+        if os.path.commonpath((PROJECT_DIR, path)) == PROJECT_DIR and os.path.lexists(path):
+            paths.add(os.path.relpath(path, PROJECT_DIR))
+            directories.add(os.path.relpath(os.path.dirname(path), PROJECT_DIR))
+    for directory in directories:
+        folder = os.path.join(PROJECT_DIR, directory)
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            if any(fnmatch(name, pattern) for pattern in patterns) and not os.path.isdir(os.path.join(folder, name)):
+                paths.add(os.path.relpath(os.path.join(folder, name), PROJECT_DIR))
+    return sorted(paths)
+
+
+def _docker_file_excludes() -> list[str]:
+    """Исключает локальные настройки Docker из обновления."""
+    return ["--exclude=/" + re.sub(r"([\\*?\[\]])", r"\\\1", path) for path in _local_docker_files()]
+
+
+def _confirm_project_file_update(local_files: list[str]) -> bool:
+    """Проверяет локальные изменения и предлагает резервную копию."""
+    if os.path.lexists(os.path.join(PROJECT_DIR, ".git")):
+        try:
+            status = subprocess.run(
+                ["git", "-C", PROJECT_DIR, "status", "--porcelain", "--untracked-files=normal"],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            step_fail(f"Не удалось проверить локальные изменения: {error}")
+            return False
+        if status.returncode != 0:
+            step_fail("Git не смог проверить локальные изменения. Обновление отменено.")
+            console.print(status.stderr.rstrip(), markup=False)
+            return False
+        changed = bool(status.stdout.strip())
+        if changed:
+            step_warn("Найдены локальные изменения и файлы вне Git:")
+            console.print(status.stdout.rstrip(), markup=False)
+    else:
+        changed = True
+        step_warn("В установке нет .git: проверить локальные изменения кода невозможно.")
+    if local_files:
+        step_info("Локальные настройки Docker сохраняются:")
+        console.print("\n".join(f"  {path}" for path in local_files), markup=False)
+        step_info("Для дополнительных настроек можно использовать docker-compose.override.yml.")
+    if changed:
+        step_warn("Остальные файлы кода могут быть перезаписаны выбранной веткой.")
+        if not safe_confirm("Продолжить обновление с перезаписью локальных изменений кода?", default=False):
+            step_warn("Обновление отменено.")
+            return False
+    if safe_confirm("Создать резервную копию файлов проекта перед обновлением (без Docker-томов)?", default=True):
+        try:
+            backup_path = backup_project()
+        except (OSError, subprocess.SubprocessError) as error:
+            step_fail(f"Не удалось создать резервную копию: {error}")
+            backup_path = None
+        if not backup_path and not safe_confirm("Бэкап не создан. Продолжить обновление БЕЗ бэкапа?", default=False):
+            return False
+    return True
+
+
 def bootstrap_project_files(branch: str = "main", force: bool = False) -> bool:
+    """Скачивает код, сохраняя локальную конфигурацию."""
     refresh_service_name()
-    if has_project_code() and not force:
+    project_present = has_project_code()
+    if project_present and not force:
         return True
 
-    step_warn("Полный проект рядом не найден. Подтягиваю файлы бота...")
+    try:
+        local_files = _local_docker_files()
+    except (OSError, ValueError) as error:
+        step_fail(f"Не удалось проверить настройки Docker: {error}")
+        return False
+    if project_present or local_files or os.path.lexists(os.path.join(PROJECT_DIR, ".git")):
+        if not _confirm_project_file_update(local_files):
+            return False
+
+    if project_present:
+        step_info(f"Обновляю файлы проекта из ветки {branch}...")
+    else:
+        step_warn("Полный проект рядом не найден. Подтягиваю файлы бота...")
     install_core_packages_if_needed()
     install_rsync_if_needed()
 
@@ -629,6 +727,7 @@ def bootstrap_project_files(branch: str = "main", force: bool = False) -> bool:
     if os.path.exists(os.path.join(PROJECT_DIR, "modules")):
         rsync_cmd.insert(2, "--exclude=modules")
     rsync_cmd.insert(2, "--exclude=.git")
+    rsync_cmd[2:2] = _docker_file_excludes()
 
     sync_result = run_with_status(rsync_cmd, status_text="Распаковка файлов проекта")
     subprocess.run(["rm", "-rf", TEMP_DIR], check=False)
@@ -866,25 +965,25 @@ def _prompt_db_creds() -> dict:
     return creds
 
 
-def _ensure_data_services(creds: dict) -> bool:
+def _start_local_data_service(service: str, creds: dict) -> bool:
     compose_file = os.path.join(PROJECT_DIR, "docker-compose.local.yml")
     if not os.path.exists(compose_file):
-        step_warn("Файл docker-compose.local.yml не найден — данные не поднять автоматически.")
+        step_warn("Файл docker-compose.local.yml не найден — сервис не поднять автоматически.")
         return False
     if not _ensure_docker():
         return False
-    for port, svc in ((5432, "PostgreSQL"), (6379, "Redis")):
-        owner = _port_owner(port)
-        if owner and "docker" not in owner.lower():
-            console.print(
-                f"[warn]Порт {port} уже занят процессом «{owner}» (не Docker) — это помешает поднять {svc}.[/warn]"
-            )
-            console.print(
-                f"[faint]Обычно это системный {svc}. Остановите его (например: sudo systemctl stop postgresql) "
-                f"или освободите порт {port}, затем повторите.[/faint]"
-            )
-            if not safe_confirm("Попробовать поднять контейнеры всё равно?", default=False):
-                return False
+    port, label = {"postgres": (5432, "PostgreSQL"), "redis": (6379, "Redis")}[service]
+    owner = _port_owner(port)
+    if owner and "docker" not in owner.lower():
+        console.print(
+            f"[warn]Порт {port} уже занят процессом «{owner}» (не Docker) — это помешает поднять {label}.[/warn]"
+        )
+        console.print(
+            f"[faint]Если это уже установленный {label}, оставьте его работающим. "
+            f"Иначе освободите порт {port} и повторите.[/faint]"
+        )
+        if not safe_confirm(f"Попробовать поднять контейнер {label} всё равно?", default=False):
+            return False
     env = {
         **os.environ,
         "POSTGRES_USER": creds["user"],
@@ -892,12 +991,18 @@ def _ensure_data_services(creds: dict) -> bool:
         "POSTGRES_DB": creds["name"],
     }
     base = ["docker", "compose", "-f", compose_file, "up", "-d"]
-    with console.status("[warn.bold]Запуск PostgreSQL и Redis…[/warn.bold]"):
-        res = subprocess.run(base + ["--wait"], capture_output=True, text=True, env=env)
+    with console.status(f"[warn.bold]Запуск {label}…[/warn.bold]"):
+        res = subprocess.run(base + ["--wait", service], capture_output=True, text=True, env=env)
         if res.returncode != 0:
-            res = subprocess.run(base, capture_output=True, text=True, env=env)
+            res = subprocess.run(base + [service], capture_output=True, text=True, env=env)
     if res.returncode != 0:
         console.print(f"[err]{(res.stderr or '').strip()[:500]}[/err]")
+        return False
+    return True
+
+
+def _ensure_postgres_service(creds: dict) -> bool:
+    if not _start_local_data_service("postgres", creds):
         return False
     for _ in range(30):
         chk = subprocess.run(
@@ -910,6 +1015,93 @@ def _ensure_data_services(creds: dict) -> bool:
         sleep(2)
     step_warn("PostgreSQL запущен, но не ответил готовностью за отведённое время.")
     return False
+
+
+def _ensure_redis_service(creds: dict) -> bool:
+    if not _start_local_data_service("redis", creds):
+        return False
+    for _ in range(30):
+        chk = subprocess.run(
+            ["docker", "exec", "solobot-redis", "redis-cli", "ping"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if chk.returncode == 0 and (chk.stdout or "").strip().upper() == "PONG":
+            return True
+        sleep(2)
+    step_warn("Redis запущен, но не ответил за отведённое время.")
+    return False
+
+
+def _system_redis_is_available() -> bool:
+    """Проверяет Redis по настройкам системной службы."""
+    script = """
+import runpy
+import sys
+
+from redis import Redis
+
+try:
+    value = runpy.run_path(sys.argv[1]).get("REDIS_URL")
+    if not value:
+        sys.exit(1)
+    with Redis.from_url(value, socket_connect_timeout=2, socket_timeout=2) as client:
+        sys.exit(0 if client.ping() else 1)
+except Exception:
+    sys.exit(1)
+"""
+    env = dict(os.environ)
+    env.pop("REDIS_URL", None)
+    if shutil.which("systemctl"):
+        try:
+            service = subprocess.run(
+                ["systemctl", "show", SERVICE_NAME, "--property=MainPID", "--value"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            pid = (service.stdout or "").strip()
+            if service.returncode == 0 and pid.isdigit() and int(pid) > 0:
+                with open(f"/proc/{pid}/environ", "rb") as process_env:
+                    for value in process_env.read().split(b"\0"):
+                        if value.startswith(b"REDIS_URL="):
+                            env["REDIS_URL"] = os.fsdecode(value.split(b"=", 1)[1])
+                            break
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        result = subprocess.run(
+            [VENV_PYTHON, "-c", script, resolve_config_path(PROJECT_DIR)],
+            cwd=PROJECT_DIR,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _install_redis_for_system_update(version: str | None) -> None:
+    if (_version_major(version) or 0) < 6:
+        return
+    if _system_redis_is_available():
+        step_ok("Redis из настроек бота уже доступен. Повторная установка не нужна.")
+        return
+    step_info("Отдельный шаг Redis: в версии 6 он используется для кеша и межпроцессной синхронизации.")
+    if not safe_confirm(
+        "Установить и запустить Redis в Docker? Он будет доступен только через localhost.", default=True
+    ):
+        step_warn("Redis пропущен по выбору администратора; бот продолжит работу с резервным режимом.")
+        return
+    if _ensure_redis_service(_read_config_db_creds()):
+        step_ok("Redis установлен и запущен.")
+    else:
+        step_warn("Redis автоматически не запущен. Проверьте порт 6379 и повторите установку Redis позже.")
 
 
 def install_bot():
@@ -933,7 +1125,7 @@ def install_bot():
     if not safe_confirm("Запустить автоматическую установку?", default=True):
         return
 
-    total = 9
+    total = 10
     try:
         step_rule(1, total, "Файлы проекта")
         console.print(
@@ -1055,21 +1247,37 @@ def install_bot():
             return
         step_ok("Зависимости установлены.")
 
-        step_rule(6, total, "Данные (PostgreSQL и Redis)")
+        step_rule(6, total, "PostgreSQL")
         console.print(
             "[faint]Зададим доступ к базе данных (Enter — значения по умолчанию). Эти значения пропишутся "
-            "в config.py и в контейнер PostgreSQL, чтобы бот и база точно совпали. Затем подниму PostgreSQL и Redis.[/faint]"
+            "в config.py и в контейнер PostgreSQL, чтобы бот и база точно совпали.[/faint]"
         )
         db_creds = _prompt_db_creds()
-        if _ensure_data_services(db_creds):
-            step_ok("PostgreSQL и Redis запущены.")
+        if _ensure_postgres_service(db_creds):
+            step_ok("PostgreSQL запущен.")
         else:
             step_warn(
-                "Не удалось поднять данные автоматически. Подними вручную: "
-                "docker compose -f docker-compose.local.yml up -d"
+                "Не удалось поднять PostgreSQL автоматически. Подними вручную: "
+                "docker compose -f docker-compose.local.yml up -d postgres"
             )
 
-        step_rule(7, total, "База данных")
+        step_rule(7, total, "Redis")
+        if _system_redis_is_available():
+            step_ok("Redis из настроек бота уже доступен. Повторная установка не нужна.")
+        else:
+            console.print(
+                "[faint]Redis будет запущен отдельным Docker-контейнером. Порт 6379 привязан только к localhost "
+                "для системной службы бота и не доступен из внешней сети.[/faint]"
+            )
+            if safe_confirm("Установить и запустить Redis?", default=True):
+                if _ensure_redis_service(db_creds):
+                    step_ok("Redis установлен и запущен.")
+                else:
+                    step_warn("Redis не удалось запустить автоматически. Проверьте порт 6379 и повторите позже.")
+            else:
+                step_warn("Redis пропущен; бот продолжит работу с резервным режимом без кеша.")
+
+        step_rule(8, total, "База данных")
         console.print(
             "[faint]Создаю таблицы по доступам из config.py. "
             "Если данные базы в config.py неверные — шаг можно завершить позже, перезапустив бота из меню.[/faint]"
@@ -1084,7 +1292,7 @@ def install_bot():
                 "Пересоздать БД (СОТРЁТ данные): docker compose -f docker-compose.local.yml down -v, затем переустановите.[/faint]"
             )
 
-        step_rule(8, total, "Служба автозапуска")
+        step_rule(9, total, "Служба автозапуска")
         console.print(
             "[faint]Создаю systemd-службу, чтобы бот стартовал сам и поднимался после перезагрузки сервера.[/faint]"
         )
@@ -1093,7 +1301,7 @@ def install_bot():
             return
         step_ok(f"Служба {SERVICE_NAME} настроена.")
 
-        step_rule(9, total, "Права и запуск")
+        step_rule(10, total, "Права и запуск")
         console.print(
             "[faint]Назначаю владельца и права на файлы проекта, закрываю секреты (config.py, тексты) и запускаю бота.[/faint]"
         )
@@ -1283,15 +1491,9 @@ BACKUP_SKIP_DIRS = ("venv", "node_modules", ".git", "__pycache__")
 
 
 def backup_project() -> str | None:
-    """Копия проекта без того, что восстанавливается само.
-
-    venv пересобирает установка зависимостей, node_modules и .git тянут сотни
-    мегабайт и в откате не нужны — держать их в копии значит только раздувать её.
-    """
-    from datetime import datetime
-
+    """Копирует файлы проекта без окружения и Git."""
     os.makedirs(BACK_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     dst = os.path.join(BACK_DIR, f"backup-{ts}")
     step_warn("Создаётся резервная копия проекта...")
     install_rsync_if_needed()
@@ -1324,7 +1526,8 @@ def _restore_backup_unattended(backup_path: str) -> bool:
 
 
 def _build_update_rsync_excludes(update_buttons: bool, update_img: bool, update_redis_cache: bool) -> list[str]:
-    excludes = []
+    """Сохраняет локальные файлы при копировании обновления."""
+    excludes = _docker_file_excludes()
     if not update_img:
         excludes.append("--exclude=img")
     if not update_buttons:
@@ -1334,6 +1537,7 @@ def _build_update_rsync_excludes(update_buttons: bool, update_img: bool, update_
         excludes.append("--exclude=core/redis_cache.py")
     excludes.append("--exclude=modules")
     excludes.append("--exclude=static/web_uploads")
+    excludes.append("--exclude=static/web_packs")
     return excludes
 
 
@@ -1418,7 +1622,7 @@ def _list_db_backups() -> list[str]:
 
 
 def _bot_backup_dir() -> str:
-    """Каталог, куда бэкапы кладёт сам бот — берём из его config.py."""
+    """Читает каталог резервных копий бота из конфигурации."""
     value = _read_config_str("BACK_DIR").strip()
     if not value:
         return ""
@@ -1426,7 +1630,7 @@ def _bot_backup_dir() -> str:
 
 
 def _list_bot_db_backups() -> list[str]:
-    """Дампы, снятые ботом при запуске. Формат тот же pg_dump -Fc, отличается только имя."""
+    """Находит дампы базы данных, созданные ботом."""
     path = _bot_backup_dir()
     if not path or not os.path.isdir(path):
         return []
@@ -1442,7 +1646,7 @@ def _list_bot_db_backups() -> list[str]:
 
 
 def _list_restorable_dumps() -> list[tuple[str, str]]:
-    """Все дампы, пригодные для pg_restore: снятые из CLI и снятые ботом."""
+    """Находит дампы, пригодные для восстановления базы данных."""
     items = [(path, "CLI") for path in _list_db_backups()]
     items += [(path, "бот") for path in _list_bot_db_backups()]
     items.sort(key=lambda item: os.path.getmtime(item[0]), reverse=True)
@@ -1875,9 +2079,10 @@ def install_rsync_if_needed():
 
 
 def clean_project_dir_safe(update_buttons=False, update_img=False, update_redis_cache=False):
+    """Удаляет старый код, сохраняя локальные настройки."""
     step_warn("Очистка проекта перед обновлением...")
 
-    preserved_paths = set()
+    preserved_paths = {os.path.join(PROJECT_DIR, path) for path in _local_docker_files()}
 
     preserved_paths.update([
         os.path.join(PROJECT_DIR, "config.py"),
@@ -1892,6 +2097,7 @@ def clean_project_dir_safe(update_buttons=False, update_img=False, update_redis_
         os.path.join(PROJECT_DIR, "modules"),
         os.path.join(PROJECT_DIR, "static"),
         os.path.join(PROJECT_DIR, "static", "web_uploads"),
+        os.path.join(PROJECT_DIR, "static", "web_packs"),
     ])
 
     for root, dirs, files in os.walk(os.path.join(PROJECT_DIR, "modules")):
@@ -1899,6 +2105,10 @@ def clean_project_dir_safe(update_buttons=False, update_img=False, update_redis_
             preserved_paths.add(os.path.join(root, name))
 
     for root, dirs, files in os.walk(os.path.join(PROJECT_DIR, "static", "web_uploads")):
+        for name in dirs + files:
+            preserved_paths.add(os.path.join(root, name))
+
+    for root, dirs, files in os.walk(os.path.join(PROJECT_DIR, "static", "web_packs")):
         for name in dirs + files:
             preserved_paths.add(os.path.join(root, name))
 
@@ -1937,6 +2147,7 @@ def clean_project_dir_safe(update_buttons=False, update_img=False, update_redis_
                 os.path.join(PROJECT_DIR, "settings"),
                 os.path.join(PROJECT_DIR, "static"),
                 os.path.join(PROJECT_DIR, "static", "web_uploads"),
+                os.path.join(PROJECT_DIR, "static", "web_packs"),
             ]:
                 continue
 
@@ -1944,6 +2155,9 @@ def clean_project_dir_safe(update_buttons=False, update_img=False, update_redis_
                 continue
 
             if os.path.abspath(dir_path).startswith(os.path.join(PROJECT_DIR, "static", "web_uploads") + os.sep):
+                continue
+
+            if os.path.abspath(dir_path).startswith(os.path.join(PROJECT_DIR, "static", "web_packs") + os.sep):
                 continue
 
             try:
@@ -2033,9 +2247,11 @@ _STARTUP_SUCCESS_MARKERS = (
     "Run polling for bot",
     "Start polling",
     "Application startup complete",
+    "Webhook URL:",
+    "[Core] Telegram отключён, только backend",
 )
 
-_STARTUP_FATAL_MARKERS = (
+_STARTUP_ERROR_MARKERS = (
     "Traceback (most recent call last)",
     "ModuleNotFoundError",
     "ImportError:",
@@ -2147,7 +2363,7 @@ def _journal_tail(lines: int = 30) -> list[str]:
 
 
 def wait_for_bot_startup(timeout: int = 300) -> None:
-    """Стримит логи службы после рестарта до полного запуска бота или явной ошибки."""
+    """Следит за запуском бота по журналу и состоянию службы."""
     if not is_service_exists(SERVICE_NAME):
         return
     console.print(f"[title]Слежу за логами запуска бота (до {timeout} сек)...[/title]")
@@ -2170,20 +2386,24 @@ def wait_for_bot_startup(timeout: int = 300) -> None:
             step_fail(f"Служба не активна ({state or 'нет статуса'}). Проверьте логи (пункт 5 меню).")
         return
 
-    started_at = time_mod.time()
+    started_at = time_mod.monotonic()
     last_state_check = 0.0
     error_lines: list[str] = []
-    fatal_seen_at: float | None = None
+    error_seen = False
     verdict: str | None = None
 
     try:
         while True:
-            now = time_mod.time()
+            now = time_mod.monotonic()
             if now - started_at > timeout:
                 break
-            if fatal_seen_at is not None and now - fatal_seen_at > 10:
-                verdict = "fail"
-                break
+            if now - last_state_check > 5:
+                last_state_check = now
+                if _service_state() in ("failed", "inactive"):
+                    verdict = "fail"
+                    if not error_lines:
+                        error_lines = _journal_tail(80)
+                    break
 
             ready, _, _ = select.select([proc.stdout], [], [], 1.0)
             if ready:
@@ -2191,26 +2411,16 @@ def wait_for_bot_startup(timeout: int = 300) -> None:
                 if not line:
                     break
                 line = line.rstrip("\n")
-                if not _is_noise_line(line) and fatal_seen_at is None:
+                if not _is_noise_line(line):
                     console.print(line, markup=False, highlight=False, style="dim")
-                if fatal_seen_at is not None:
+                if any(marker in line for marker in _STARTUP_ERROR_MARKERS):
+                    error_seen = True
+                if error_seen:
                     error_lines.append(line)
-                    if _ERROR_LINE_RE.match(line.strip()):
-                        verdict = "fail"
+                if any(marker in line for marker in _STARTUP_SUCCESS_MARKERS):
+                    if _service_state() == "active":
+                        verdict = "ok"
                         break
-                elif any(marker in line for marker in _STARTUP_SUCCESS_MARKERS):
-                    verdict = "ok"
-                    break
-                elif any(marker in line for marker in _STARTUP_FATAL_MARKERS):
-                    fatal_seen_at = time_mod.time()
-                    error_lines.append(line)
-            elif now - last_state_check > 5:
-                last_state_check = now
-                if _service_state() in ("failed", "inactive"):
-                    verdict = "fail"
-                    if not error_lines:
-                        error_lines = _journal_tail(80)
-                    break
     finally:
         try:
             proc.terminate()
@@ -2267,26 +2477,32 @@ def get_last_update_date():
     return datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_remote_version(branch="main"):
+def get_remote_commit(branch="main"):
     try:
-        url = f"https://raw.githubusercontent.com/Vladless/Solo_bot/{branch}/utils/versioning.py"
+        url = f"https://api.github.com/repos/Vladless/Solo_bot/commits/{branch}"
         response = http_get(url, timeout=10)
         if response.status_code == 200:
-            version = extract_version(response.text)
-            if version:
-                return version
+            commit = response.json().get("sha")
+            if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+                return commit[:8]
     except Exception:
         pass
+    return None
+
+
+def get_local_commit(project_dir):
     try:
-        url = f"https://raw.githubusercontent.com/Vladless/Solo_bot/{branch}/bot.py"
-        response = http_get(url, timeout=10)
-        if response.status_code == 200:
-            for line in response.text.splitlines():
-                match = re.search(r'version\s*=\s*["\'](.+?)["\']', line)
-                if match:
-                    return match.group(1)
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "rev-parse", "--short=8", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        commit = result.stdout.strip()
+        if result.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{8}", commit):
+            return commit
     except Exception:
-        return None
+        pass
     return None
 
 
@@ -2314,8 +2530,8 @@ def _prompt_config_update() -> None:
 
 
 def update_from_beta():
-    installed_version = local_version(PROJECT_DIR)
-    remote_version = get_remote_version(branch="dev")
+    installed_commit = get_local_commit(PROJECT_DIR)
+    remote_commit = get_remote_commit(branch="dev")
 
     console.print(
         Panel(
@@ -2335,9 +2551,11 @@ def update_from_beta():
         )
     )
 
-    if installed_version and remote_version:
-        console.print(f"[accent]Локальная версия: {installed_version} | Последняя в dev: {remote_version}[/accent]")
-        if installed_version == remote_version:
+    if installed_commit and remote_commit:
+        console.print(
+            f"[accent]Локальный commit: {installed_commit} | Последний commit в dev: {remote_commit}[/accent]"
+        )
+        if installed_commit == remote_commit:
             if not safe_confirm("Версия актуальна. Обновить всё равно?"):
                 return
 
@@ -2410,6 +2628,7 @@ def update_from_beta():
         subprocess.run(["rm", "-rf", TEMP_DIR])
 
         install_dependencies()
+        _install_redis_for_system_update(local_version(PROJECT_DIR))
         fix_permissions()
         restart_service()
         step_ok("Обновление с ветки dev завершено. Проверяю запуск бота...")
@@ -2427,7 +2646,7 @@ def update_from_beta():
 
 
 def _do_update_to_tag(tag_name: str, update_buttons: bool, update_img: bool, update_redis_cache: bool) -> None:
-    """Общая логика обновления до указанного тега (релиз или произвольный тег)."""
+    """Обновляет проект до указанного тега."""
     if not settings_gate(PROJECT_DIR, "release", console.print, safe_confirm, CONFIG_BUILDER_URL):
         step_warn("Обновление отменено. Обновите config и texts и запустите снова.")
         return
@@ -2473,6 +2692,7 @@ def _do_update_to_tag(tag_name: str, update_buttons: bool, update_img: bool, upd
     subprocess.run(["rm", "-rf", TEMP_DIR])
 
     install_dependencies()
+    _install_redis_for_system_update(tag_name)
     fix_permissions()
     restart_service()
     step_ok(f"Обновление до {tag_name} завершено. Проверяю запуск бота...")
@@ -2605,25 +2825,214 @@ def _ensure_web_logs_dir() -> None:
         pass
 
 
+def _ensure_web_custom_element_data_volume(compose_path: str) -> bool:
+    mount_line = "      - custom_element_builder_data:/app/.data/custom-element-builder"
+    volume_key = "  custom_element_builder_data:"
+    try:
+        with open(compose_path, encoding="utf-8") as f:
+            compose_lines = f.read().splitlines()
+    except Exception as e:
+        step_fail(f"Не удалось прочитать docker-compose.yml веб-приложения: {e}")
+        return False
+
+    service_start = next((i for i, line in enumerate(compose_lines) if line == "  web:"), None)
+    if service_start is None:
+        step_fail("В docker-compose.yml веб-приложения не найден сервис web.")
+        return False
+
+    service_end = len(compose_lines)
+    for i in range(service_start + 1, len(compose_lines)):
+        line = compose_lines[i]
+        if line.strip() and len(line) - len(line.lstrip()) <= 2:
+            service_end = i
+            break
+
+    changed = False
+    if mount_line not in compose_lines[service_start:service_end]:
+        volumes_index = next(
+            (i for i in range(service_start + 1, service_end) if compose_lines[i] == "    volumes:"),
+            None,
+        )
+        if volumes_index is None:
+            compose_lines[service_end:service_end] = ["    volumes:", mount_line]
+        else:
+            compose_lines.insert(volumes_index + 1, mount_line)
+        changed = True
+
+    root_volumes_index = next(
+        (i for i, line in enumerate(compose_lines) if line == "volumes:"),
+        None,
+    )
+    if root_volumes_index is None:
+        compose_lines.extend(["", "volumes:", volume_key])
+        changed = True
+    else:
+        root_volumes_end = next(
+            (
+                i
+                for i in range(root_volumes_index + 1, len(compose_lines))
+                if compose_lines[i].strip() and not compose_lines[i].startswith(" ")
+            ),
+            len(compose_lines),
+        )
+        if volume_key not in compose_lines[root_volumes_index + 1 : root_volumes_end]:
+            compose_lines.insert(root_volumes_index + 1, volume_key)
+            changed = True
+
+    if changed:
+        try:
+            with open(compose_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(compose_lines) + "\n")
+        except Exception as e:
+            step_fail(f"Не удалось сохранить постоянное хранилище веб-приложения: {e}")
+            return False
+    return True
+
+
+def _migrate_web_custom_element_data_to_volume() -> bool:
+    data_path = "/app/.data/custom-element-builder"
+    expected_volume = f"{WEB_CONTAINER_NAME}_custom_element_builder_data"
+    inspected = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            '{{.State.Running}}\n{{range .Mounts}}{{if eq .Destination "/app/.data/custom-element-builder"}}{{.Type}} {{.Name}}{{end}}{{end}}',
+            WEB_CONTAINER_NAME,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspected.returncode != 0:
+        existing = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name=^{WEB_CONTAINER_NAME}$", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if existing.returncode != 0:
+            step_fail("Не удалось проверить контейнер веб-приложения перед переносом данных.")
+            return False
+        if not (existing.stdout or "").strip():
+            return True
+        step_fail("Контейнер веб-приложения найден, но его данные не удалось проверить.")
+        return False
+
+    inspected_lines = (inspected.stdout or "").splitlines()
+    is_running = bool(inspected_lines and inspected_lines[0].strip() == "true")
+    current_mount = inspected_lines[1].strip() if len(inspected_lines) > 1 else ""
+    if current_mount == f"volume {expected_volume}":
+        return True
+
+    was_stopped = False
+    if is_running:
+        stopped = subprocess.run(
+            ["docker", "stop", WEB_CONTAINER_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if stopped.returncode != 0:
+            step_fail("Не удалось остановить веб-контейнер для безопасного переноса файлов.")
+            return False
+        was_stopped = True
+
+    def restore_old_container() -> None:
+        if was_stopped:
+            try:
+                subprocess.run(["docker", "start", WEB_CONTAINER_NAME], capture_output=True, text=True, check=False)
+            except Exception:
+                pass
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="solo-brick-custom-elements-") as temp_dir:
+            source_dir = os.path.join(temp_dir, "custom-element-builder")
+            os.makedirs(source_dir, exist_ok=True)
+            copied = subprocess.run(
+                ["docker", "cp", f"{WEB_CONTAINER_NAME}:{data_path}/.", source_dir],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if copied.returncode != 0:
+                error = (copied.stderr or copied.stdout or "").strip()
+                if "could not find the file" in error.casefold() or "no such file or directory" in error.casefold():
+                    restore_old_container()
+                    return True
+                restore_old_container()
+                step_fail(f"Не удалось сохранить файлы custom elements перед обновлением: {error}")
+                return False
+
+            if not os.listdir(source_dir):
+                restore_old_container()
+                return True
+
+            step_info("Переношу загрузки и файлы сборок custom elements в постоянный Docker volume...")
+            migrated = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--name",
+                    f"solo-brick-custom-elements-migration-{secrets.token_hex(4)}",
+                    "-v",
+                    f"{source_dir}:/migration:ro",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "web",
+                    "-c",
+                    f"cp -R /migration/. {data_path}/",
+                ],
+                cwd=WEB_DIR,
+                check=False,
+            )
+            if migrated.returncode != 0:
+                restore_old_container()
+                step_fail(
+                    "Не удалось перенести файлы custom elements в постоянный Docker volume. "
+                    "Старый контейнер оставлен без обновления."
+                )
+                return False
+
+            step_ok("Загрузки и файлы сборок custom elements перенесены в постоянный Docker volume.")
+            return True
+    except Exception as e:
+        restore_old_container()
+        step_fail(f"Ошибка переноса файлов custom elements: {e}")
+        return False
+
+
 def _read_env_value(env_path: str, key: str) -> str:
-    """Читает значение ключа из .env файла, если файл существует."""
+    """Читает значение из файла окружения."""
     if not os.path.exists(env_path):
         return ""
     try:
-        with open(env_path) as f:
+        value = ""
+        pattern = re.compile(rf"^(?:export\s+)?{re.escape(key)}\s*[=:]\s*(.*)$")
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
+                match = pattern.match(line.strip())
+                if not match:
                     continue
-                if line.startswith(f"{key}="):
-                    return line.split("=", 1)[1].strip()
+                raw = match.group(1)
+                if raw.startswith(("'", '"')):
+                    quote = raw[0]
+                    quoted = re.match(rf"^{quote}((?:\\.|[^{quote}])*){quote}(?:\s*#.*)?$", raw)
+                    if quoted:
+                        value = quoted.group(1).replace("\\" + quote, quote)
+                else:
+                    value = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+        return value
     except Exception:
         pass
     return ""
 
 
 def _ensure_plugin_builder_token(env_path: str) -> tuple[str, bool]:
-    """Возвращает (token, is_new): существующий PLUGIN_BUILDER_TOKEN из .env или свежий 64-hex."""
+    """Возвращает токен сборщика и признак его создания."""
     existing = _read_env_value(env_path, "PLUGIN_BUILDER_TOKEN")
     if existing and len(existing) >= 32:
         return existing, False
@@ -2631,7 +3040,7 @@ def _ensure_plugin_builder_token(env_path: str) -> tuple[str, bool]:
 
 
 def _generate_vapid_keys() -> tuple[str, str] | None:
-    """VAPID keypair (P-256). Returns (public_b64url, private_b64url) или None."""
+    """Создаёт пару ключей VAPID для браузерных уведомлений."""
     try:
         import base64
 
@@ -2784,14 +3193,14 @@ def _ensure_web_image(src_dir: str, tag: str, force_pull: bool = False) -> bool:
 
 def _ensure_rpc_module() -> bool:
     try:
-        import core.rpc  # noqa: F401
+        import core.rpc
 
         return True
     except ImportError:
         pass
     _sync_rpc_files()
     try:
-        import core.rpc  # noqa: F401
+        import core.rpc
 
         return True
     except ImportError:
@@ -2887,7 +3296,7 @@ def _compose_plugin_ready() -> bool:
 
 
 def _ensure_docker():
-    """Проверяет/устанавливает Docker вместе с плагином compose."""
+    """Проверяет и устанавливает Docker с плагином Compose."""
     if shutil.which("docker"):
         if not _docker_daemon_ready(timeout_sec=5):
             step_warn("Docker установлен, но не запущен — запускаю.")
@@ -2952,7 +3361,7 @@ def _check_http_ports_free() -> bool:
 
 
 def _ensure_nginx():
-    """Проверяет/устанавливает nginx."""
+    """Проверяет и устанавливает Nginx."""
     if not _check_http_ports_free():
         return False
     if shutil.which("nginx"):
@@ -3093,7 +3502,7 @@ def _check_bot_api_reachable(api_url: str) -> bool:
 
 
 def _web_nginx_snippet(domain: str, web_port: int) -> str:
-    """Locations для веб-приложения — можно вставить в существующий server-блок."""
+    """Формирует настройки проксирования сайта для Nginx."""
     return f"""    # --- Solo web-app ({domain}) ---
     client_max_body_size 100m;
 
@@ -3140,7 +3549,7 @@ def _print_manual_nginx_hint(domain: str, web_port: int) -> None:
 
 
 def _nginx_domain_conflict(domain: str) -> str | None:
-    """Возвращает путь конфига, в котором уже объявлен server_name = domain."""
+    """Находит конфигурацию Nginx с уже настроенным доменом."""
     sites_dir = "/etc/nginx/sites-enabled"
     if not os.path.isdir(sites_dir):
         return None
@@ -3166,7 +3575,7 @@ def _nginx_domain_conflict(domain: str) -> str | None:
 
 
 def _setup_nginx(domain, web_port=3000):
-    """Настраивает отдельный nginx server-блок для веб-приложения."""
+    """Настраивает отдельный блок домена сайта в Nginx."""
     conf = f"""server {{
     listen 80;
     server_name {domain};
@@ -3188,7 +3597,7 @@ def _setup_nginx(domain, web_port=3000):
 
 
 def _detect_proxies() -> dict:
-    """Какие реверс-прокси есть на сервере и кто из них запущен."""
+    """Определяет установленные и запущенные обратные прокси."""
 
     def _active(svc: str) -> bool:
         try:
@@ -3206,7 +3615,7 @@ def _detect_proxies() -> dict:
 
 
 def _web_caddy_snippet(domain: str, web_port: int) -> str:
-    """Site-блок Caddy для веб-приложения. Caddy сам выпускает SSL (Let's Encrypt)."""
+    """Формирует блок домена сайта для Caddy."""
     return f"""{domain} {{
     encode gzip
     @solo_next path /_next/static/*
@@ -3217,7 +3626,7 @@ def _web_caddy_snippet(domain: str, web_port: int) -> str:
 
 
 def _caddy_domain_conflict(domain: str) -> str | None:
-    """Файл Caddy, в котором домен уже объявлен как site-блок."""
+    """Находит конфигурацию Caddy с уже настроенным доменом."""
     paths = []
     if os.path.isfile("/etc/caddy/Caddyfile"):
         paths.append("/etc/caddy/Caddyfile")
@@ -3242,7 +3651,7 @@ def _caddy_domain_conflict(domain: str) -> str | None:
 
 
 def _ensure_caddy() -> bool:
-    """Проверяет/устанавливает Caddy из официального репозитория."""
+    """Проверяет и устанавливает Caddy из официального репозитория."""
     if shutil.which("caddy"):
         return True
     if not _check_http_ports_free():
@@ -3284,7 +3693,7 @@ def _ensure_caddy() -> bool:
 
 
 def _setup_caddy(domain, web_port=3000) -> bool:
-    """Добавляет site-блок Caddy (авто-SSL), не трогая остальной Caddyfile."""
+    """Добавляет домен сайта в конфигурацию Caddy."""
     caddyfile = "/etc/caddy/Caddyfile"
     snippet = _web_caddy_snippet(domain, int(web_port))
     try:
@@ -3884,7 +4293,6 @@ def install_website():
     src_dir = os.path.join(WEB_DIR, "src")
     if not _ensure_web_image(src_dir, web_tag):
         return
-    _save_web_tag(web_tag)
 
     compose_path = os.path.join(WEB_DIR, "docker-compose.yml")
     network_service = "    networks:\n      - bot\n" if bot_network else ""
@@ -3911,11 +4319,21 @@ services:
       start_period: 10s
     volumes:
       - ./logs:/app/logs
-{network_block}""")
+      - custom_element_builder_data:/app/.data/custom-element-builder
+{network_block}\nvolumes:
+  custom_element_builder_data:
+""")
 
     _ensure_web_logs_dir()
+    if not _migrate_web_custom_element_data_to_volume():
+        return
     console.print("[accent]Запуск контейнера...[/accent]")
-    subprocess.run(["docker", "compose", "up", "-d"], cwd=WEB_DIR, check=True)
+    started = subprocess.run(["docker", "compose", "up", "-d"], cwd=WEB_DIR, check=False)
+    if started.returncode != 0:
+        subprocess.run(["docker", "start", WEB_CONTAINER_NAME], capture_output=True, text=True, check=False)
+        step_fail("Не удалось запустить веб-контейнер. Старый контейнер запущен, если он существовал.")
+        return
+    _save_web_tag(web_tag)
 
     if _wait_for_web_container(int(web_port), timeout_sec=60):
         step_ok(f"Контейнер запущен и отвечает на порту {web_port}")
@@ -4281,9 +4699,21 @@ def manage_website():
                     )
         except Exception as e:
             step_warn(f"Не удалось пропатчить extra_hosts в docker-compose.yml: {e}")
-        _save_web_tag(web_tag)
+        if not _ensure_web_custom_element_data_volume(compose_path):
+            return
+        if not _migrate_web_custom_element_data_to_volume():
+            return
         _ensure_web_logs_dir()
-        subprocess.run(["docker", "compose", "up", "-d", "--force-recreate"], cwd=WEB_DIR)
+        updated = subprocess.run(
+            ["docker", "compose", "up", "-d", "--force-recreate"],
+            cwd=WEB_DIR,
+            check=False,
+        )
+        if updated.returncode != 0:
+            subprocess.run(["docker", "start", WEB_CONTAINER_NAME], capture_output=True, text=True, check=False)
+            step_fail("Не удалось обновить веб-контейнер. Старый контейнер запущен, если он существовал.")
+            return
+        _save_web_tag(web_tag)
         step_ok(f"Обновлено до канала {web_tag}")
     elif choice == "6":
         env_path = os.path.join(WEB_DIR, ".env")
@@ -4369,7 +4799,7 @@ def _parse_solo_brick_semver(tag: str):
 
 
 def _docker_label(kind: str, ref: str) -> str | None:
-    """Лейбл версии у образа или контейнера. None — докер не ответил или лейбла нет."""
+    """Читает метку версии образа или контейнера Docker."""
     try:
         result = subprocess.run(
             [
@@ -4393,12 +4823,7 @@ def _docker_label(kind: str, ref: str) -> str | None:
 
 
 def read_installed_solo_brick_version() -> str | None:
-    """Версия работающего Solo-brick.
-
-    Спрашиваем сперва сам контейнер: только он знает, из какого образа поднят.
-    Образ :latest проверять первым нельзя — на канале dev его может не быть
-    вовсе, и версия показывалась как «не определено».
-    """
+    """Определяет установленную версию сайта."""
     label = _docker_label("container", WEB_CONTAINER_NAME)
     if label:
         return label
@@ -4477,7 +4902,7 @@ def show_website_version_banner():
 
 
 def _dc(*args: str, capture: bool = False, check: bool = False):
-    """docker compose в папке проекта."""
+    """Выполняет команду Compose в папке проекта."""
     cmd = ["docker", "compose", *args]
     return subprocess.run(
         cmd,
@@ -4486,6 +4911,51 @@ def _dc(*args: str, capture: bool = False, check: bool = False):
         text=True,
         check=check,
     )
+
+
+def _validate_bot_docker_config() -> bool:
+    """Проверяет сервисы и постоянное хранилище паков."""
+    try:
+        result = _dc("config", "--format", "json", capture=True)
+    except OSError:
+        step_fail("Не удалось запустить Docker Compose. Контейнер не пересоздан.")
+        return False
+    if result.returncode != 0:
+        step_fail("Конфигурация Docker некорректна. Проверьте Compose и .env; контейнер не пересоздан.")
+        return False
+    try:
+        config = json.loads(result.stdout)
+        services = config.get("services", {})
+        bot = services.get("bot")
+        if not isinstance(bot, dict):
+            step_fail("В конфигурации Compose отсутствует сервис bot.")
+            return False
+        if not _docker_redis_is_external() and "redis" not in services:
+            step_fail("В Compose нет сервиса redis. Добавьте его или настройте внешний Redis в .env.")
+            return False
+        pack_path = "/app/static/web_packs"
+        mounts = list(bot.get("volumes", []))
+        tmpfs = bot.get("tmpfs") or []
+        if isinstance(tmpfs, str):
+            tmpfs = [tmpfs]
+        mounts += [{"type": "tmpfs", "target": entry.split(":", 1)[0]} for entry in tmpfs]
+        covering = []
+        for mount in mounts:
+            target = os.path.normpath(str(mount.get("target", "")))
+            if target.startswith("/") and (pack_path == target or pack_path.startswith(target.rstrip("/") + "/")):
+                covering.append((target, mount))
+        if covering:
+            _, mount = max(covering, key=lambda item: (len(item[0]), item[1].get("type") == "tmpfs"))
+            if mount.get("type") in ("bind", "volume") and mount.get("source") and not mount.get("read_only"):
+                return True
+    except (ValueError, AttributeError, TypeError):
+        step_fail("Не удалось прочитать конфигурацию Compose. Контейнер не пересоздан.")
+        return False
+    step_fail(
+        "В сервисе bot нужен постоянный том с записью в /app/static/web_packs. "
+        "Добавьте его в Compose или docker-compose.override.yml; контейнер не пересоздан."
+    )
+    return False
 
 
 def _docker_bot_state() -> tuple[str, str]:
@@ -4533,7 +5003,7 @@ def _branch_bot_major(branch: str) -> int | None:
     return None
 
 
-def _choose_docker_source_branch() -> str | None:
+def _choose_docker_source_branch(default: str | None = None) -> str | None:
     """Ветка с кодом для установки в Docker: годится только версия 6 и выше."""
     checked = []
     with console.status("[brand]Проверяю версии в ветках проекта...[/brand]", spinner="dots"):
@@ -4567,7 +5037,8 @@ def _choose_docker_source_branch() -> str | None:
     if len(allowed) == 1:
         step_info(f"Беру код из ветки {allowed[0]} — она единственная подходит.")
         return allowed[0]
-    return safe_prompt("[accent]Ветка с кодом[/accent]", choices=allowed, default=allowed[0])
+    preferred = default if default in allowed else allowed[0]
+    return safe_prompt("[accent]Ветка с кодом[/accent]", choices=allowed, default=preferred)
 
 
 def _resolve_source_branch() -> str | None:
@@ -4628,7 +5099,7 @@ def _docker_state_path() -> str:
 
 
 def _read_docker_state() -> dict:
-    """Параметры прошлой установки в Docker: ветка кода и внешние БД."""
+    """Параметры прошлой установки в Docker: ветка кода и расположение данных."""
     try:
         with open(_docker_state_path(), encoding="utf-8") as f:
             data = json.load(f)
@@ -4655,6 +5126,104 @@ def _compose_up_args(build: bool = False) -> list[str]:
     if _read_docker_state().get("external_data"):
         args += ["--no-deps", "bot"]
     return args
+
+
+def _docker_redis_is_external() -> bool:
+    state = _read_docker_state()
+    if "redis_external" in state:
+        return bool(state["redis_external"])
+    env_path = os.path.join(PROJECT_DIR, ".env")
+    return bool(_read_env_value(env_path, "REDIS_URL"))
+
+
+def _docker_redis_is_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Status}}", "solobot-redis"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0 and (result.stdout or "").strip() == "running"
+    except Exception:
+        return False
+
+
+def _start_docker_redis_service() -> bool:
+    """Запускает Redis только внутри compose-сети; сервис не публикует порт на хост."""
+    result = _dc("up", "-d", "--wait", "redis")
+    if result.returncode != 0:
+        result = _dc("up", "-d", "redis")
+    if result.returncode != 0:
+        step_fail("Не удалось запустить Redis-контейнер.")
+        return False
+    for _ in range(30):
+        chk = subprocess.run(
+            ["docker", "exec", "solobot-redis", "redis-cli", "ping"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if chk.returncode == 0 and (chk.stdout or "").strip().upper() == "PONG":
+            return True
+        sleep(2)
+    step_fail("Redis-контейнер запущен, но не ответил за отведённое время.")
+    return False
+
+
+def _migrate_docker_web_packs_to_volume() -> bool:
+    pack_path = "/app/static/web_packs"
+    mounts = subprocess.run(
+        ["docker", "inspect", "--format", "{{range .Mounts}}{{println .Destination}}{{end}}", "solobot"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if mounts.returncode != 0 or pack_path in (mounts.stdout or "").splitlines():
+        return True
+
+    with tempfile.TemporaryDirectory(prefix="solobot-web-packs-") as temp_dir:
+        source_dir = os.path.join(temp_dir, "packs")
+        os.makedirs(source_dir, exist_ok=True)
+        copied = subprocess.run(
+            ["docker", "cp", f"solobot:{pack_path}/.", source_dir],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if copied.returncode != 0:
+            error = (copied.stderr or copied.stdout or "").strip()
+            if "could not find the file" in error.casefold() or "no such file or directory" in error.casefold():
+                return True
+            step_fail(f"Не удалось сохранить установленные наборы блоков: {error}")
+            return False
+
+        if not os.listdir(source_dir):
+            return True
+
+        step_info("Сохраняю установленные наборы блоков перед пересозданием контейнера...")
+        migrated = _dc(
+            "run",
+            "--rm",
+            "--no-deps",
+            "--name",
+            f"solobot-web-packs-migration-{secrets.token_hex(4)}",
+            "-v",
+            f"{source_dir}:/migration:ro",
+            "--entrypoint",
+            "/bin/sh",
+            "bot",
+            "-c",
+            f"cp -R /migration/. {pack_path}/",
+        )
+        if migrated.returncode != 0:
+            step_fail(
+                "Не удалось перенести наборы блоков в постоянный Docker volume. Контейнер оставлен без обновления."
+            )
+            return False
+
+        step_ok("Наборы блоков перенесены в постоянный Docker volume.")
+        return True
 
 
 def _wait_for_bot_container(timeout_sec: int = 120) -> bool:
@@ -4696,6 +5265,7 @@ def _show_bot_container_logs(lines: int = 40) -> None:
 
 
 def _write_docker_env(creds: dict, redis_external: bool) -> bool:
+    """Обновляет доступы, сохраняя остальные настройки Docker."""
     env_path = os.path.join(PROJECT_DIR, ".env")
     lines = [
         f"DB_NAME={creds['name']}",
@@ -4705,6 +5275,12 @@ def _write_docker_env(creds: dict, redis_external: bool) -> bool:
     if redis_external:
         lines.append("REDIS_URL=redis://host.docker.internal:6379/0")
     try:
+        existing = []
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                existing = f.read().splitlines()
+        managed = re.compile(r"^\s*(?:export\s+)?(?:DB_NAME|DB_USER|DB_PASSWORD|REDIS_URL)\s*[=:]")
+        lines = [line for line in existing if not managed.match(line)] + lines
         with open(env_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         os.chmod(env_path, 0o600)
@@ -4731,7 +5307,7 @@ def install_bot_docker():
     if not safe_confirm("Запустить установку в Docker?", default=True):
         return
 
-    total = 6
+    total = 7
     try:
         step_rule(1, total, "Файлы проекта")
         source = _prepare_project_source()
@@ -4788,39 +5364,66 @@ def install_bot_docker():
             return
         step_ok("Docker готов.")
 
-        step_rule(4, total, "База данных и Redis")
-        console.print("[accent]Где будут база и Redis:[/accent]")
+        step_rule(4, total, "База данных")
+        console.print("[accent]Где будет PostgreSQL:[/accent]")
         console.print("  1. Поднять в Docker вместе с ботом (рекомендуется)")
-        console.print("  2. Уже установлены на хосте — подключиться к ним")
+        console.print("  2. Уже установлен на хосте — подключиться к нему")
         mode = safe_prompt("Выбор", choices=["1", "2"], default="1", show_choices=False)
         external = mode == "2"
 
         creds = _prompt_db_creds()
         if external:
             _write_config_value("PG_HOST", "host.docker.internal")
-            redis_external = safe_confirm("Redis тоже на хосте?", default=True)
             console.print(
-                "[faint]Не забудьте разрешить подключения из docker-сети: PostgreSQL — listen_addresses='*' "
-                "и строка «host all all 172.16.0.0/12 scram-sha-256» в pg_hba.conf; Redis — bind 0.0.0.0 + пароль.[/faint]"
+                "[faint]Для PostgreSQL разрешите подключения из Docker-сети: listen_addresses='*' "
+                "и строка «host all all 172.16.0.0/12 scram-sha-256» в pg_hba.conf.[/faint]"
             )
         else:
             _write_config_value("PG_HOST", "postgres")
-            redis_external = False
         _write_config_value("BACK_DIR", "/app/backups")
         _write_config_value("API_HOST", "0.0.0.0")
         _write_config_value("WEBAPP_HOST", "0.0.0.0")
+
+        step_rule(5, total, "Redis")
+        console.print(
+            "[faint]Redis в Docker работает только во внутренней сети контейнеров: порт 6379 не публикуется на хост.[/faint]"
+        )
+        redis_external = external and safe_confirm("Использовать уже установленный Redis на хосте?", default=False)
+        if not redis_external and not safe_confirm("Установить и запустить Redis в Docker?", default=True):
+            step_warn("Установка остановлена: подтвердите установку Redis или выберите уже работающий Redis на хосте.")
+            return
+        if redis_external:
+            console.print(
+                "[faint]Для Redis на хосте разрешите подключения только из Docker-сети; "
+                "не открывайте порт 6379 во внешнюю сеть.[/faint]"
+            )
         if not _write_docker_env(creds, redis_external):
             return
-        _write_docker_state(external_data=external)
+        _write_docker_state(external_data=external, redis_external=redis_external)
         step_ok("Доступы записаны в config.py и .env.")
+        if not _validate_bot_docker_config():
+            return
+        if not redis_external:
+            console.print(
+                "[faint]Поднимаю Redis отдельно до сборки бота; порт 6379 останется внутри Docker-сети.[/faint]"
+            )
+            if not _start_docker_redis_service():
+                return
+            step_ok("Redis установлен и запущен.")
 
-        step_rule(5, total, "HTTPS для бота")
+        step_rule(6, total, "HTTPS для бота")
         domain = _prompt_domain()
         setup_bot_https(domain)
 
-        step_rule(6, total, "Сборка и запуск")
+        step_rule(7, total, "Сборка и запуск")
         console.print("[faint]Первая сборка образа занимает 3–5 минут.[/faint]")
-        result = _dc(*_compose_up_args(build=True))
+        result = _dc("build", "bot")
+        if result.returncode != 0:
+            step_fail("Сборка образа не удалась. Действующий контейнер не пересоздавался.")
+            return
+        if not _migrate_docker_web_packs_to_volume():
+            return
+        result = _dc(*_compose_up_args())
         if result.returncode != 0:
             step_fail("Не удалось запустить контейнеры. Смотрите вывод выше.")
             return
@@ -4837,22 +5440,36 @@ def install_bot_docker():
 
 
 def update_bot_docker():
-    branch = _read_docker_state().get("branch") or "main"
+    """Обновляет Docker-установку с защитой локальных настроек."""
+    saved_branch = _read_docker_state().get("branch") or "main"
+    branch = _choose_docker_source_branch(default=saved_branch)
+    if not branch:
+        return
     if not safe_confirm(f"Обновить код из ветки {branch} и пересобрать образ?", default=True):
         return
-    major = _branch_bot_major(branch)
-    if major is not None and major < MIN_DOCKER_BOT_MAJOR:
-        step_warn(f"В ветке {branch} сейчас версия {major} — выберите другую.")
-        branch = _choose_docker_source_branch() or ""
-        if not branch:
+    if not _docker_redis_is_external() and not _docker_redis_is_running():
+        step_info("Отдельный шаг Redis: в версии 6 он запускается отдельным контейнером без опубликованного порта.")
+        if not safe_confirm("Установить и запустить Redis в Docker?", default=True):
+            step_warn("Обновление отменено: без Redis новая версия будет работать в резервном режиме.")
             return
-        _write_docker_state(branch=branch)
     if not bootstrap_project_files(branch=branch, force=True):
         step_fail("Не удалось обновить файлы проекта.")
         return
+    if not _validate_bot_docker_config():
+        return
+    _write_docker_state(branch=branch)
     _write_config_value("API_HOST", "0.0.0.0")
     _write_config_value("WEBAPP_HOST", "0.0.0.0")
-    result = _dc(*_compose_up_args(build=True))
+    result = _dc("build", "bot")
+    if result.returncode != 0:
+        step_fail("Сборка образа не удалась. Действующий контейнер не пересоздавался.")
+        return
+    if not _migrate_docker_web_packs_to_volume():
+        return
+    if not _docker_redis_is_external():
+        if not _start_docker_redis_service():
+            return
+    result = _dc(*_compose_up_args())
     if result.returncode != 0:
         step_fail("Пересборка не удалась. Смотрите вывод выше.")
         return
@@ -4903,6 +5520,9 @@ def manage_bot_docker():
         )
         choice = ask_choice(8)
         if choice == "1":
+            if _read_docker_state().get("external_data") and not _docker_redis_is_external():
+                if not _start_docker_redis_service():
+                    continue
             _dc(*_compose_up_args())
             if _wait_for_bot_container(timeout_sec=60):
                 step_ok("Контейнеры запущены.")
@@ -4994,10 +5614,7 @@ UPDATE_REPORT_FILE = os.path.join(PROJECT_DIR, ".update_report.json")
 
 
 def _write_update_report(status: str, detail: str, channel: str, tag: str, notify: int = 0) -> None:
-    """Отчёт для бота: он прочитает его после перезапуска и доложит админу.
-
-    Пишется в самом конце, после очистки папки проекта, поэтому переживает обновление.
-    """
+    """Сохраняет результат обновления для уведомления администратора."""
     import json
     import time
 

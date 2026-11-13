@@ -10,6 +10,7 @@ from core.settings.remnawave_config import (
     get_node_health_allowed,
     is_host_auto_disable_enabled,
     is_host_rotation_enabled,
+    is_load_monitor_enabled,
     is_node_health_enabled,
     update_remnawave_config,
 )
@@ -26,17 +27,7 @@ TICK_SLEEP_SEC = 30
 
 
 async def get_client_node_statuses(session, allowed_squad_uuids: set[str] | None = None) -> list[dict]:
-    """Реальные точки подключения клиента для показа в кабинете.
-
-    Источник — хосты Remnawave (host.address:host.port), из которых собирается
-    подписка, т.е. ровно тот endpoint, к которому коннектится устройство клиента.
-    Снапшот строится в _node_health_tick и кэшируется в CLIENT_CONNECTION_TARGETS,
-    чтобы публичный запрос не дёргал панель.
-
-    Скрыты выключенные вручную (host.isDisabled в панели и servers.enabled=false в боте).
-    Если задан allowed_squad_uuids — оставляем только хосты, чей inbound входит в эти сквады
-    (т.е. серверы из тарифа конкретного юзера). None — без фильтра по сквадам (для админа).
-    """
+    """Возвращает доступные точки подключения клиента с учётом разрешённых групп."""
     targets = list(REMNAWAVE_CONFIG.get("CLIENT_CONNECTION_TARGETS") or [])
     if not targets:
         return []
@@ -262,8 +253,7 @@ def _build_inbound_load_map(nodes: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _normalize_hosts(raw: Any) -> list[dict[str, Any]]:
-    """Приводит ответ get_hosts() к списку dict — разные версии Remnawave
-    отдают либо список, либо обёртку {hosts/response/items/data: [...]}."""
+    """Извлекает список хостов из разных форматов ответа панели."""
     if isinstance(raw, list):
         return [h for h in raw if isinstance(h, dict)]
     if isinstance(raw, dict):
@@ -344,17 +334,7 @@ def _host_inbound_uuid(host: dict[str, Any]) -> str | None:
 
 
 async def run_host_rotation() -> dict[str, Any]:
-    """Запускает один проход ротации. Возвращает summary для UI/логов.
-
-    Структура:
-      {
-        "allowed_count": int,
-        "panels": int,
-        "moved_total": int,
-        "details": [str, ...],
-        "errors": [str, ...],
-      }
-    """
+    """Выполняет один проход ротации хостов и возвращает результаты."""
     result: dict[str, Any] = {
         "allowed_count": 0,
         "panels": 0,
@@ -506,11 +486,7 @@ def _build_inbound_alive_map(nodes: list[dict[str, Any]]) -> dict[str, bool]:
 
 
 async def sync_hosts_with_node_state(bot=None) -> dict[str, Any]:
-    """Выключает хосты упавших нод и включает обратно те, что мы сами выключали.
-
-    При восстановлении хотя бы одного хоста — запускает ротацию (если она включена).
-    Возвращает summary для UI/логов.
-    """
+    """Отключает хосты упавших нод и восстанавливает автоматически отключённые хосты."""
     result: dict[str, Any] = {"disabled": [], "enabled": [], "errors": []}
 
     panels = await _collect_remnawave_panels()
@@ -619,6 +595,7 @@ async def remnawave_monitor_loop(bot, _sessionmaker) -> None:
     last_node_tick = -1e9
     last_rotation_tick = 0.0
     last_sync_tick = 0.0
+    last_load_tick = -1e9
 
     loop = asyncio.get_event_loop()
     while True:
@@ -631,6 +608,7 @@ async def remnawave_monitor_loop(bot, _sessionmaker) -> None:
                 max(5, int(REMNAWAVE_CONFIG.get("HOST_ROTATION_INTERVAL_MIN") or HOST_ROTATION_DEFAULT_INTERVAL_MIN))
                 * 60
             )
+            load_interval = max(1, int(REMNAWAVE_CONFIG.get("LOAD_MONITOR_INTERVAL_MIN") or 5)) * 60
 
             node_health_on = is_node_health_enabled()
             tick_intervals = []
@@ -658,6 +636,22 @@ async def remnawave_monitor_loop(bot, _sessionmaker) -> None:
                     await _host_rotation_tick()
                 except Exception as exc:
                     logger.error("[Remnawave-Monitor] Ошибка host rotation tick: {}", exc)
+
+            if is_load_monitor_enabled() and (now - last_load_tick) >= load_interval:
+                last_load_tick = now
+                try:
+                    from services.remnawave_load_monitor import run_load_monitor_cycle
+
+                    result = await run_load_monitor_cycle(bot)
+                    logger.info(
+                        "[Remnawave-Load] groups={} panels={} managed_tags={} restored={}",
+                        result["groups"],
+                        result["panels"],
+                        result["managed_tags"],
+                        result["restored_orphans"],
+                    )
+                except Exception as exc:
+                    logger.error("[Remnawave-Monitor] Ошибка load monitor tick: {}", exc)
         except Exception as exc:
             logger.error("[Remnawave-Monitor] Внешняя ошибка: {}", exc)
 

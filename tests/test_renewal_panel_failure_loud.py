@@ -48,7 +48,16 @@ _stub("sqlalchemy.ext.asyncio", AsyncSession=object)
 _база = _stub("database")
 # Имён из database ядро тянет много и список растёт; отдаём пустышку на любое,
 # чтобы тест не становился skip при каждом новом импорте в renewal.py.
+_база.__path__ = []          # пакет: у него есть подмодули, иначе __getattr__ отдаёт функцию вместо __path__
 _база.__getattr__ = lambda имя: (lambda *a, **k: None)
+_stub("database.access")
+_stub("database.access.resolution", UserId=int, panel_identity_fields=lambda *a, **k: None,
+      subscription_owner_ref=lambda *a, **k: None)
+_stub("database.keys", resolve_key_operation_owner=lambda *a, **k: None)
+_stub("database.traffic_notifications", reset_traffic_notification_state=lambda *a, **k: None)
+_stub("services.subscription_links", saved_public_subscription_tail=lambda *a, **k: None)
+_stub("utils")
+_stub("utils.traffic_resources", traffic_resource_id=lambda *a, **k: None)
 _stub("hooks")
 _stub("hooks.processors", process_get_cryptolink_after_renewal=lambda *a, **k: None)
 _stub("panels")
@@ -60,7 +69,7 @@ _stub("panels.remnawave_runtime",
 _stub("services")
 _stub("services.clusters", ALLOWED_GROUP_CODES=set())
 _stub("settings")
-_stub("settings.config", SUPERNODE=False)
+_stub("settings.config", SUPERNODE=False, PUBLIC_LINK="")
 
 _ПАКЕТ = types.ModuleType("services.operations")
 _ПАКЕТ.__path__ = [str(ROOT / "services" / "operations")]

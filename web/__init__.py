@@ -1,10 +1,12 @@
 from aiohttp.web_urldispatcher import UrlDispatcher
 
+from core.settings.payhot_config import PAYHOT_WEBHOOK_PATH
 from core.slots import slot_ready
 from services.payments.heleket.webhook import heleket_webhook
 from services.payments.kassai.webhook import kassai_webhook
 from services.payments.overpay.webhook import overpay_webhook
 from services.payments.paritypay.webhook import paritypay_webhook
+from services.payments.payhot.webhook import payhot_webhook
 from services.payments.platega.webhook import platega_webhook
 from services.payments.wata.webhook import wata_webhook
 from services.remnawave_events.webhook import make_handler as make_remnawave_handler
@@ -65,6 +67,7 @@ async def register_web_routes(router: UrlDispatcher) -> None:
     router.add_post(PARITYPAY_WEBHOOK_PATH, paritypay_webhook)
     router.add_post(PLATEGA_WEBHOOK_PATH, platega_webhook)
     router.add_post(OVERPAY_WEBHOOK_PATH, overpay_webhook)
+    router.add_post(PAYHOT_WEBHOOK_PATH, payhot_webhook)
     _register_core_provider_webhooks(router)
 
     # Настройки необязательные: в конфиге из шаблона их может не быть.

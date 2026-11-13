@@ -6,8 +6,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message, WebAppIn
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.bootstrap import BUTTONS_CONFIG, MODES_CONFIG
-from core.redis_cache import cache_get, cache_key, cache_set
+from core.redis_cache import cache_get, cache_set
 from database import get_balance_trial_key_count
+from database.access.resolution import TelegramId, UserId, resolve_uid_cached, user_ref_cache_key
+from database.cache_purge import is_purge_pending
+from handlers.email_binding_context import clear_email_binding_context
 from hooks.hook_buttons import insert_hook_buttons
 from hooks.hooks import run_hooks
 from handlers.payments.fast_payment_flow import release_pending_purchase
@@ -16,7 +19,6 @@ from services.payments.currency_rates import format_for_user
 from settings.buttons import (
     ABOUT_VPN,
     ADD_SUB,
-    ADMIN_BTN,
     BACK,
     BALANCE,
     BIND_EMAIL,
@@ -41,7 +43,7 @@ from settings.config import (
 )
 from settings.texts import ADD_SUBSCRIPTION_HINT, PROFILE_CHANNEL_LINK, PROFILE_TEXT
 
-from .admin.panel.keyboard import AdminPanelCallback
+from .admin.panel.keyboard import ADMIN_BTN, AdminPanelCallback
 from .menu_layout import PROFILE_MENU, arrange_menu, split_hook_buttons
 from .utils import edit_or_send_message, get_username, join_blocks, render_text
 
@@ -72,8 +74,17 @@ async def process_callback_view_profile(
 
     chat_id = chat.id
     username = get_username(user or chat)
+    await clear_email_binding_context(state)
 
-    cached = await cache_get(cache_key("profile_data", chat_id))
+    from handlers.tariffs.buy.config import clear_user_renewal_context
+
+    await clear_user_renewal_context(state)
+
+    uid = await resolve_uid_cached(session, TelegramId(chat_id))
+    user_ref = UserId(uid) if uid is not None else TelegramId(chat_id)
+    profile_cache_key = user_ref_cache_key("profile_data", user_ref) if uid is not None else None
+    pending = profile_cache_key is not None and is_purge_pending(session, profile_cache_key)
+    cached = await cache_get(profile_cache_key) if profile_cache_key is not None and not pending else None
     has_email = None
     if isinstance(cached, dict) and "key_count" in cached and "balance_rub" in cached and "trial_status" in cached:
         key_count = int(cached["key_count"])
@@ -82,7 +93,7 @@ async def process_callback_view_profile(
         if isinstance(cached.get("has_email"), bool):
             has_email = cached["has_email"]
     else:
-        balance_rub, trial_status, key_count = await get_balance_trial_key_count(session, chat_id)
+        balance_rub, trial_status, key_count = await get_balance_trial_key_count(session, user_ref)
         balance_rub = balance_rub or 0
         from core.settings.web_config import is_email_binding_enabled as _binding_on
 
@@ -91,12 +102,13 @@ async def process_callback_view_profile(
 
             identity = await get_identity_by_tg_id(session, chat_id)
             has_email = bool(identity and identity.email)
-        await cache_set(cache_key("balance", chat_id), balance_rub, BALANCE_CACHE_TTL_SEC)
-        await cache_set(cache_key("key_count", chat_id), key_count, KEY_COUNT_CACHE_TTL_SEC)
         payload = {"key_count": key_count, "balance_rub": balance_rub, "trial_status": trial_status}
         if has_email is not None:
             payload["has_email"] = has_email
-        await cache_set(cache_key("profile_data", chat_id), payload, PROFILE_DATA_CACHE_TTL_SEC)
+        if uid is not None and not pending:
+            await cache_set(user_ref_cache_key("balance", user_ref), balance_rub, BALANCE_CACHE_TTL_SEC)
+            await cache_set(user_ref_cache_key("key_count", user_ref), key_count, KEY_COUNT_CACHE_TTL_SEC)
+            await cache_set(profile_cache_key, payload, PROFILE_DATA_CACHE_TTL_SEC)
 
     balance_text = await format_for_user(
         session,

@@ -24,3 +24,5 @@ router = make_oauth_router(
         session, yandex_sub=sub, email=email
     ),
 )
+
+yandex_configured = router.configured

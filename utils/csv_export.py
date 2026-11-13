@@ -1,6 +1,6 @@
 import csv
 
-from datetime import datetime
+from datetime import UTC, datetime
 from io import StringIO
 
 from aiogram.types import BufferedInputFile
@@ -8,7 +8,7 @@ from sqlalchemy import exists, func, join, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.constants import PAYMENT_SYSTEMS_EXCLUDED
-from database.access.resolution import resolve_user_optional, user_id_from_legacy_ref
+from database.access.resolution import TelegramId, UserId, public_tg_id, resolve_user_optional, user_id_from_legacy_ref
 from database.models import Key, Payment, Referral, Tariff, User
 
 
@@ -31,11 +31,24 @@ async def export_users_csv(session: AsyncSession) -> BufferedInputFile:
         User.balance,
         User.trial,
         User.created_at,
+        User.id,
     ).order_by(User.created_at.asc())
 
     result = await session.execute(query)
-    header = ["tg_id", "username", "first_name", "last_name", "language_code", "is_bot", "balance", "trial", "created_at"]
-    return _csv_file(header, result.all(), "users_export.csv")
+    header = [
+        "tg_id",
+        "username",
+        "first_name",
+        "last_name",
+        "language_code",
+        "is_bot",
+        "balance",
+        "trial",
+        "created_at",
+        "user_id",
+    ]
+    rows = [[public_tg_id(user[0]), *user[1:]] for user in result.all()]
+    return _csv_file(header, rows, "users_export.csv")
 
 
 async def export_payments_csv(session: AsyncSession) -> BufferedInputFile:
@@ -50,6 +63,7 @@ async def export_payments_csv(session: AsyncSession) -> BufferedInputFile:
             Payment.payment_system,
             Payment.status,
             Payment.created_at,
+            User.id,
         )
         .select_from(j)
         .where(Payment.payment_system.notin_(PAYMENT_SYSTEMS_EXCLUDED))
@@ -57,8 +71,19 @@ async def export_payments_csv(session: AsyncSession) -> BufferedInputFile:
     )
 
     result = await session.execute(query)
-    header = ["tg_id", "username", "first_name", "last_name", "amount", "payment_system", "status", "created_at"]
-    return _csv_file(header, result.all(), "payments_export.csv")
+    header = [
+        "tg_id",
+        "username",
+        "first_name",
+        "last_name",
+        "amount",
+        "payment_system",
+        "status",
+        "created_at",
+        "user_id",
+    ]
+    rows = [[public_tg_id(payment[0]), *payment[1:]] for payment in result.all()]
+    return _csv_file(header, rows, "payments_export.csv")
 
 
 async def export_referrals_csv(referrer_tg_id: int, session: AsyncSession) -> BufferedInputFile | None:
@@ -72,6 +97,7 @@ async def export_referrals_csv(referrer_tg_id: int, session: AsyncSession) -> Bu
             func.coalesce(User.first_name, ""),
             func.coalesce(User.last_name, ""),
             func.coalesce(User.username, ""),
+            User.id,
         )
         .select_from(j)
         .where(Referral.referrer_user_id == ref_owner.id)
@@ -85,20 +111,21 @@ async def export_referrals_csv(referrer_tg_id: int, session: AsyncSession) -> Bu
         return None
 
     out = []
-    for invited_tg, first_name, last_name, username in rows:
+    for invited_tg, first_name, last_name, username, invited_uid in rows:
+        invited_tg = public_tg_id(invited_tg)
         invited_id = invited_tg if invited_tg is not None else "—"
         full_name = first_name.strip() or username or str(invited_id)
         if last_name:
             full_name = f"{full_name} {last_name}"
-        out.append([invited_id, full_name.strip()])
+        out.append([invited_id, full_name.strip(), invited_uid])
 
     return _csv_file(
-        ["Приглашённый (tg_id)", "Имя"], out, f"referrals_{referrer_tg_id}.csv", delimiter=";", encoding="utf-8"
+        ["Приглашённый (tg_id)", "Имя", "user_id"], out, f"referrals_{referrer_tg_id}.csv", delimiter=";", encoding="utf-8"
     )
 
 
 async def export_hot_leads_csv(session: AsyncSession) -> BufferedInputFile:
-    now_ts = int(datetime.utcnow().timestamp() * 1000)
+    now_ts = int(datetime.now(UTC).timestamp() * 1000)
 
     stmt = (
         select(
@@ -124,10 +151,12 @@ async def export_hot_leads_csv(session: AsyncSession) -> BufferedInputFile:
 
     result = await session.execute(stmt)
     rows = [
-        [row.tg_id if row.tg_id is not None else row.id, row.username, row.first_name, row.last_name, row.updated_at]
+        [public_tg_id(row.tg_id), row.username, row.first_name, row.last_name, row.updated_at, row.id]
         for row in result.all()
     ]
-    return _csv_file(["tg_id", "username", "first_name", "last_name", "updated_at"], rows, "hot_leads_export.csv")
+    return _csv_file(
+        ["tg_id", "username", "first_name", "last_name", "updated_at", "user_id"], rows, "hot_leads_export.csv"
+    )
 
 
 async def export_keys_csv(session: AsyncSession) -> BufferedInputFile:
@@ -145,6 +174,7 @@ async def export_keys_csv(session: AsyncSession) -> BufferedInputFile:
             Key.is_frozen,
             Key.alias,
             Tariff.name.label("tariff_name"),
+            User.id.label("user_id"),
         )
         .select_from(j)
         .order_by(Key.created_at.asc())
@@ -163,7 +193,7 @@ async def export_keys_csv(session: AsyncSession) -> BufferedInputFile:
         tariff = row.tariff_name or "—"
 
         rows.append([
-            row.tg_id if row.tg_id is not None else row.client_id,
+            public_tg_id(row.tg_id),
             row.client_id,
             row.email,
             created_at,
@@ -173,9 +203,22 @@ async def export_keys_csv(session: AsyncSession) -> BufferedInputFile:
             row.is_frozen,
             row.alias or "",
             tariff,
+            row.user_id,
         ])
 
-    header = ["tg_id", "client_id", "email", "created_at", "expiry_time", "key", "server_id", "is_frozen", "alias", "tariff"]
+    header = [
+        "tg_id",
+        "client_id",
+        "email",
+        "created_at",
+        "expiry_time",
+        "key",
+        "server_id",
+        "is_frozen",
+        "alias",
+        "tariff",
+        "user_id",
+    ]
     return _csv_file(header, rows, "keys_export.csv")
 
 
@@ -183,9 +226,21 @@ async def export_user_all_payments_csv(
     user_id: int | None = None, session: AsyncSession = None, *, tg_id: int | None = None
 ) -> BufferedInputFile:
     """Выгружает все платежи клиента в CSV."""
-    user_id = await user_id_from_legacy_ref(session, user_id if user_id is not None else tg_id)
+    ref = UserId(user_id) if user_id is not None else TelegramId(tg_id)
+    user_id = await user_id_from_legacy_ref(session, ref)
     owner = await session.scalar(select(User).where(User.id == user_id)) if user_id is not None else None
-    header = ["id", "tg_id", "payment_id", "amount", "currency", "payment_system", "status", "original_amount", "created_at"]
+    header = [
+        "id",
+        "tg_id",
+        "payment_id",
+        "amount",
+        "currency",
+        "payment_system",
+        "status",
+        "original_amount",
+        "created_at",
+        "user_id",
+    ]
     filename = f"user_{user_id}_payments_full.csv"
     if owner is None:
         return _csv_file(header, [], filename)
@@ -221,10 +276,9 @@ async def export_user_all_payments_csv(
         original_amount,
         created_at,
     ) in result.all():
-        display_id = user_tg_id if user_tg_id is not None else owner.id
         out.append([
             internal_id,
-            display_id,
+            public_tg_id(user_tg_id),
             external_payment_id or "",
             amount,
             currency,
@@ -232,6 +286,7 @@ async def export_user_all_payments_csv(
             status,
             original_amount if original_amount is not None else "",
             created_at,
+            owner.id,
         ])
 
     return _csv_file(header, out, filename)

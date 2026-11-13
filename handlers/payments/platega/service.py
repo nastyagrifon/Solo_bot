@@ -10,9 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.bootstrap import PAYMENTS_CONFIG
 from database import add_payment, async_session_maker
+from database.access.resolution import TelegramId
+from database.payments import resolve_payment_creation_owner
 from handlers.payments.topup_flow import register_topup_flow
 from logger import logger
+from services.payments.checkout_snapshot import capture_payment_checkout
 from services.payments.currency_rates import get_rub_rate
+from services.payments.owner_refs import payment_owner_token
 from services.payments.payment_links import register_payment_creator
 from settings.buttons import (
     PLATEGA_CARDS,
@@ -74,6 +78,7 @@ PLATEGA_METHODS: dict[str, dict] = {
         "provider_key": "PLATEGA_INT",
         "method_code": 12,
         "currency": "USD",
+        "payment_currency": "EUR",
         "button": PLATEGA_INT,
         "desc": PLATEGA_INT_DESCRIPTION,
     },
@@ -101,14 +106,16 @@ process_callback_pay_platega = register_topup_flow(
     methods=PLATEGA_METHODS,
     states=ReplenishBalancePlatega,
     enabled=_platega_method_enabled,
-    payment_link=lambda amount, tg_id, method, session: generate_platega_payment_link(amount, tg_id, method, session),
+    payment_link=lambda amount, tg_id, method, session: generate_platega_payment_link(
+        amount, TelegramId(tg_id), method, session
+    ),
     payment_message=PLATEGA_PAYMENT_MESSAGE,
     min_amount=lambda name, method: PLATEGA_MIN_AMOUNTS.get(name, 10),
     input_min_text=lambda name: "❌ Минимальная сумма для оплаты через Platega — {symbol}{min}.",
     amount_min_text=lambda name: "❌ Минимальная сумма для оплаты через Platega — {symbol}{min}.",
     entry_error_log=lambda cq, e: f"[Platega] Ошибка в process_callback_pay_platega для {cq.from_user.id}: {e}",
     multicurrency_input=True,
-    link_by_chat_id=True,
+    link_by_chat_id=False,
     custom_back_cb="pay_platega_{method}",
     custom_requires_method=True,
     per_method_entry=True,
@@ -138,15 +145,17 @@ async def generate_platega_payment_link(
     failure_url: str | None = None,
     metadata: dict | None = None,
 ) -> str | None:
+    tg_id = await resolve_payment_creation_owner(session, tg_id)
+    metadata = await capture_payment_checkout(session, tg_id, metadata)
     if not _platega_credentials_ok():
         logger.error("[Platega] Не заданы PLATEGA_MERCHANT_ID / PLATEGA_API_SECRET")
         return None
 
     method_code = int(method.get("method_code") or 0)
-    currency = str(method.get("currency") or "RUB").upper()
+    payment_currency = str(method.get("payment_currency") or method.get("currency") or "RUB").upper()
     method_name = next((k for k, v in PLATEGA_METHODS.items() if v is method), None) or ""
 
-    unique_order_id = payment_id or f"plg_{int(time.time())}_{tg_id}_{int(amount)}"
+    unique_order_id = payment_id or f"plg_{int(time.time())}_{payment_owner_token(tg_id)}_{int(amount)}"
 
     pending_metadata = dict(metadata or {})
     pending_metadata.setdefault("provider", "platega")
@@ -155,26 +164,26 @@ async def generate_platega_payment_link(
 
     pending_original_amount: float | None = None
 
-    if currency == "RUB":
+    if payment_currency == "RUB":
         api_amount = float(int(amount))
     else:
         try:
             timeout = aiohttp.ClientTimeout(total=15, connect=10)
             async with aiohttp.ClientSession(timeout=timeout) as http_rates:
-                rate = await get_rub_rate(currency, session=http_rates)
-            usd_amount = (Decimal(str(amount)) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            api_amount = float(usd_amount)
-            pending_original_amount = float(usd_amount)
-            pending_metadata["platega_currency"] = currency
+                rate = await get_rub_rate(payment_currency, session=http_rates)
+            foreign_amount = (Decimal(str(amount)) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            api_amount = float(foreign_amount)
+            pending_original_amount = float(foreign_amount)
+            pending_metadata["platega_currency"] = payment_currency
         except Exception as e:
-            logger.error(f"[Platega] Не удалось сконвертировать {amount} RUB → {currency}: {e}")
+            logger.error(f"[Platega] Не удалось сконвертировать {amount} RUB → {payment_currency}: {e}")
             return None
 
     body: dict = {
         "paymentMethod": method_code,
         "paymentDetails": {
             "amount": api_amount,
-            "currency": currency,
+            "currency": payment_currency,
         },
         "description": PLATEGA_PAYMENT_TITLE,
         "payload": unique_order_id,
@@ -240,7 +249,7 @@ async def generate_platega_payment_link(
                 logger.info(
                     f"[Platega] Ссылка создана: tg_id={tg_id}, transaction_id={transaction_id}, "
                     f"order_id={unique_order_id}, rub_amount={amount}, "
-                    f"api_amount={api_amount} {currency}, method={method_code}"
+                    f"api_amount={api_amount} {payment_currency}, method={method_code}"
                 )
                 return payment_url
     except Exception as e:
@@ -258,6 +267,7 @@ def _create_link_factory(method_name: str):
         failure_url: str | None,
         metadata: dict | None,
     ) -> tuple[str, str | None]:
+        tg_id = await resolve_payment_creation_owner(session, tg_id)
         method = PLATEGA_METHODS.get(method_name)
         if not method or not _platega_method_enabled(method):
             raise ValueError("Способ оплаты Platega недоступен")
@@ -271,7 +281,7 @@ def _create_link_factory(method_name: str):
             symbol = "$" if method["currency"] == "USD" else "₽"
             raise ValueError(f"Минимальная сумма Platega — {symbol}{min_amount}")
 
-        payment_id = f"plg_{int(time.time())}_{tg_id}_{amount_int}"
+        payment_id = f"plg_{int(time.time())}_{payment_owner_token(tg_id)}_{amount_int}"
         url = await generate_platega_payment_link(
             amount_int,
             tg_id,

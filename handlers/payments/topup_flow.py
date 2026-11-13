@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_temporary_data
+from database.access.resolution import TelegramId
 from database.models import User
 from handlers.payments.constants import ALLOWED_TEMP_PAYMENT_STATES
 from handlers.payments.keyboards import (
@@ -131,7 +132,7 @@ def register_topup_flow(
         lazy_language: bool,
     ):
         await state.update_data(amount=amount_rub)
-        link_tg_id = target.chat.id if link_by_chat_id else user_id
+        link_tg_id = TelegramId(target.chat.id if link_by_chat_id else user_id)
         payment_url = await payment_link(amount_rub, link_tg_id, method, session)
         if not payment_url:
             await edit_or_send_message(target_message=target, text=PAYMENT_CREATE_FAILED, reply_markup=_empty_kb())
@@ -157,7 +158,7 @@ def register_topup_flow(
         method_name: str | None = None,
     ):
         try:
-            tg_id = callback_query.from_user.id
+            tg_id = TelegramId(callback_query.from_user.id)
             if entry_log:
                 logger.info(entry_log.format(tg_id=tg_id))
             await state.clear()
@@ -391,7 +392,7 @@ async def fast_amount_payment(
     bad_url — заглушка, которую касса отдаёт вместо ссылки при сбое.
     """
     message = event.message
-    tg_id = event.from_user.id
+    tg_id = TelegramId(event.from_user.id)
 
     temp_data = await get_temporary_data(session, tg_id)
     if not temp_data or temp_data["state"] not in ALLOWED_TEMP_PAYMENT_STATES:

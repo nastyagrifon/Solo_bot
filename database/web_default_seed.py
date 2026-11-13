@@ -29,14 +29,14 @@ DEFAULT_PACK_ID = "default"
 
 
 async def _pack_update_available(pack_id: str) -> bool:
-    """Правда, если каталог наборов знает более новую версию, чем установленная локально."""
+    """Правда, если каталог наборов знает строго более новую версию, чем установленная локально."""
     try:
         from core.rpc import get_entitled_pack_meta, refresh_entitled_packs
-        from services.web_packs import installed_pack_version
+        from services.web_packs import installed_pack_version, is_newer_version
 
         await refresh_entitled_packs()
         available = str((get_entitled_pack_meta().get(pack_id) or {}).get("version") or "").strip()
-        return bool(available) and available != installed_pack_version(pack_id)
+        return bool(available) and is_newer_version(available, installed_pack_version(pack_id))
     except Exception as e:
         logger.warning("[Seed] Проверка версии набора {} не удалась: {}", pack_id, e)
         return False
@@ -44,10 +44,15 @@ async def _pack_update_available(pack_id: str) -> bool:
 
 async def _ensure_pack_seed(pack_id: str, refresh: bool = False) -> dict | None:
     """Дизайн набора приезжает из источника наборов; при refresh перекачивается, если в каталоге версия новее."""
-    from services.web_packs import download_and_install_pack, load_pack_seed
+    from services.web_packs import download_and_install_pack, installed_pack_has_blocks, load_pack_seed
 
     seed = load_pack_seed(pack_id)
     if seed is not None:
+        if not installed_pack_has_blocks(pack_id):
+            result = await download_and_install_pack(pack_id)
+            if result.ok:
+                return load_pack_seed(pack_id)
+            logger.warning("[Seed] Набор {} стоит без блоков, обновить не удалось: {}", pack_id, result.error)
         if refresh and await _pack_update_available(pack_id):
             result = await download_and_install_pack(pack_id)
             if result.ok:
@@ -66,6 +71,19 @@ async def _ensure_pack_seed(pack_id: str, refresh: bool = False) -> dict | None:
 
 async def _ensure_default_pack(refresh: bool = False) -> dict | None:
     return await _ensure_pack_seed(DEFAULT_PACK_ID, refresh=refresh)
+
+
+async def ensure_default_pack_installed() -> None:
+    """При старте: у сайта должен стоять набор «Стандарт» с блоками — без него страницы нечем рисовать."""
+    from services.web_packs import download_and_install_pack, installed_pack_has_blocks
+
+    if installed_pack_has_blocks(DEFAULT_PACK_ID):
+        return
+    result = await download_and_install_pack(DEFAULT_PACK_ID)
+    if result.ok:
+        logger.info("[Site:Packs] Набор «Стандарт» установлен, версия {}", result.version)
+        return
+    logger.error("[Site:Packs] Набор «Стандарт» не установлен: {}", result.error)
 
 
 def _split_site(raw: dict | None) -> tuple[dict, dict, list]:
@@ -149,9 +167,7 @@ def _apply_support_links_to_pages(pages: dict) -> None:
 
 
 async def seed_default_site(session: AsyncSession, force: bool = False) -> bool:
-    """Засевает дефолтный сайт. По умолчанию (force=False) — только в пустую БД
-    (идемпотентно). При force=True перезаписывает страницы дефолта (кнопка
-    «Установить дефолтный дизайн»). Возвращает True, если что-то записано."""
+    """Устанавливает стандартный сайт в пустую базу или принудительно обновляет его."""
     if not force:
         existing = await session.execute(select(func.count(WebPageVariantBlock.id)))
         if (existing.scalar() or 0) > 0:
@@ -176,11 +192,7 @@ async def _apply_site(
     page_themes: dict | None = None,
     global_theme: dict | None = None,
 ) -> bool:
-    """Применяет распакованный сайт (тема, страницы, flow) к БД.
-    page_themes[slug] (если задан) переопределяет тему конкретной страницы — нужно
-    для захваченных наборов, где у кабинета свои page-scoped токены.
-    global_theme — палитра, которую набор доносит до остальных страниц сайта
-    (лендинг и т.д.), не трогая их блоки."""
+    """Сохраняет страницы, темы и сценарии распакованного сайта."""
     page_themes = page_themes or {}
     _apply_support_links_to_pages(pages)
     seeded = False
@@ -281,19 +293,14 @@ async def _apply_site(
 
 
 def seed_worthy_slug(slug: str, has_blocks: bool) -> bool:
-    """Идёт ли страница в сид: свои блоки или известный маршрут сайта.
-
-    Сайт заводит запись для любого запрошенного пути, поэтому в базе оседают следы
-    сканеров вроде `phpinfo` или `wordpress` — в поставку дизайна они попадать не должны.
-    """
+    """Проверяет, подходит ли страница для включения в шаблон сайта."""
     if has_blocks:
         return True
     return slug in set(KNOWN_PAGE_SLUGS)
 
 
 async def capture_current_site(session: AsyncSession) -> dict:
-    """Снимок текущего сайта в формате seed: {_theme, _flows, _page_themes, <slug>: [{type,data}]}.
-    Тему берём по каждой странице отдельно (_page_themes), глобальную (_theme) — со страницы landing."""
+    """Создаёт снимок блоков, тем и сценариев текущего сайта."""
     out: dict = {}
     page_themes: dict = {}
     global_theme: dict | None = None
@@ -485,8 +492,7 @@ async def _apply_captured_site(session: AsyncSession, site: dict) -> bool:
 
 
 async def install_pack_design(session: AsyncSession, pack_id: str) -> bool:
-    """Устанавливает дизайн набора (страницы + темы + flow). force=True.
-    Приоритет: сохранённый в БД дизайн → сид набора, при нужде скачанный с сайта."""
+    """Устанавливает дизайн набора из сохранённого снимка или шаблона набора."""
     site = await load_pack_design(session, pack_id)
     if not site:
         site = await _ensure_pack_seed(pack_id)

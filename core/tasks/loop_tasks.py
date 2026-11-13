@@ -9,6 +9,19 @@ async def notifications_loop(bot, sessionmaker) -> None:
     await periodic_notifications(bot, sessionmaker=sessionmaker)
 
 
+async def yookassa_autopay_loop(bot, sessionmaker) -> None:
+    from services.payments.yookassa_autopay.service import autopay_loop
+
+    await autopay_loop(bot, sessionmaker)
+
+
+async def yookassa_refunds_loop(bot, sessionmaker) -> None:
+    """Продолжает сверку отправленных возвратов YooKassa."""
+    from services.payments.yookassa.refunds import refunds_loop
+
+    await refunds_loop(bot, sessionmaker)
+
+
 async def scheduled_broadcasts_loop_task(bot, _sessionmaker) -> None:
     from handlers.admin.sender.scheduled_service import scheduled_broadcasts_loop
 
@@ -117,3 +130,25 @@ async def remnawave_monitor_loop(bot, sessionmaker) -> None:
     from services.remnawave_monitor import remnawave_monitor_loop as run_loop
 
     await run_loop(bot, sessionmaker)
+
+
+async def remnawave_installer_loop(bot, sessionmaker) -> None:
+    """Продолжает установку нод и ожидание DNS после перезапуска."""
+    from services.remnawave_installer.jobs import installer_loop
+
+    await installer_loop(bot, sessionmaker)
+
+
+async def tickets_delivery_loop(_bot, sessionmaker) -> None:
+    """Доставляет сохранённые события поддержки после фиксации транзакции."""
+    from services.tickets.outbox import process_due
+
+    while True:
+        try:
+            processed = await process_due(sessionmaker=sessionmaker)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[Tickets] Ошибка очереди доставки: {}", type(exc).__name__)
+            processed = 0
+        await asyncio.sleep(0.5 if processed else 2)

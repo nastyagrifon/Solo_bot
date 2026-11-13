@@ -77,7 +77,7 @@ class CoreDelivery(unittest.TestCase):
     def test_owner_checked_before_forum_is_touched(self):
         """Иначе ядро успеет подтянуть свою механику топиков."""
         self.assertLess(DELIVERY.index("_taken_by_owner(session, ticket)"),
-                        DELIVERY.index("from .forum import ensure_topic, forum_enabled"))
+                        DELIVERY.index("from .queue import queue_new_ticket"))
 
     def test_hook_still_carries_the_event(self):
         """Владение объявляется заранее, само событие по-прежнему хуком."""

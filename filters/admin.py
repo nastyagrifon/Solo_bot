@@ -8,6 +8,7 @@ from database.db import async_session_maker
 from database.models import Admin
 from settings.config import ADMIN_ID
 
+from .admin_actions import granular_permissions_enabled
 from .permissions import SUPERADMIN_ROLE, normalize_permissions, normalize_role
 
 
@@ -38,8 +39,8 @@ def invalidate_admin_cache(user_id: int | None = None) -> None:
         _ADMIN_CACHE.pop(user_id, None)
 
 
-async def _resolve_admin(user_id: int) -> tuple[bool, bool, frozenset[str], str]:
-    cached = _get_cached_admin(user_id)
+async def _resolve_admin(user_id: int, *, fresh: bool = False) -> tuple[bool, bool, frozenset[str], str]:
+    cached = None if fresh else _get_cached_admin(user_id)
     if cached is not None:
         return cached
 
@@ -76,8 +77,16 @@ class IsAdminFilter(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
         if not event.from_user:
             return False
-        is_admin, _, _, _ = await _resolve_admin(event.from_user.id)
+        is_admin, _, _, _ = await _resolve_admin(event.from_user.id, fresh=granular_permissions_enabled())
         return is_admin
+
+
+class IsSuperAdminFilter(BaseFilter):
+    async def __call__(self, event: Message | CallbackQuery) -> bool:
+        if not event.from_user:
+            return False
+        _, is_super, _, _ = await _resolve_admin(event.from_user.id, fresh=granular_permissions_enabled())
+        return is_super
 
 
 class HasPermission(BaseFilter):
@@ -90,7 +99,7 @@ class HasPermission(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
         if not event.from_user:
             return False
-        is_admin, is_super, perms, _ = await _resolve_admin(event.from_user.id)
+        is_admin, is_super, perms, _ = await _resolve_admin(event.from_user.id, fresh=granular_permissions_enabled())
         if not is_admin:
             return False
         if is_super:
@@ -100,9 +109,9 @@ class HasPermission(BaseFilter):
         return any(p in perms for p in self.permissions)
 
 
-async def get_admin_context(user_id: int) -> tuple[bool, bool, frozenset[str]]:
+async def get_admin_context(user_id: int, *, fresh: bool = False) -> tuple[bool, bool, frozenset[str]]:
     """Прежний договор: админ, суперадмин, права. Роль — `get_admin_role`."""
-    is_admin, is_super, perms, _ = await _resolve_admin(user_id)
+    is_admin, is_super, perms, _ = await _resolve_admin(user_id, fresh=fresh)
     return is_admin, is_super, perms
 
 
