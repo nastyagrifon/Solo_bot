@@ -28,7 +28,9 @@ from filters.permissions import (
     PERM_USERS,
     PERM_USER_BALANCE,
     PERM_USER_BAN,
+    SUPERADMIN_ROLE,
     normalize_permissions,
+    normalize_role,
 )
 from settings.config import ADMIN_ID
 
@@ -88,11 +90,13 @@ async def _admin_access(session, principal) -> tuple[AdminActionAccess, frozense
         if tg_id is None and not isinstance(principal, Admin) and getattr(principal, "is_admin", False):
             return AdminActionAccess(True, frozenset()), frozenset()
         raise HTTPException(status_code=403, detail=ADMIN_ACTION_PERMISSION_DENIED)
-    role = (admin.role or "admin").strip().lower()
+    # Роль та же, что у бота: суперадмин ровно один, иначе `support`, `staff`
+    # и любая незнакомая сайту роль получали полный доступ.
+    role = normalize_role(admin.role)
     if role == "designer":
         raise HTTPException(status_code=403, detail=ADMIN_ACTION_PERMISSION_DENIED)
     permissions = frozenset(normalize_permissions(admin.permissions))
-    return AdminActionAccess(role != "moderator", permissions), permissions
+    return AdminActionAccess(role == SUPERADMIN_ROLE, permissions), permissions
 
 
 def _allows_admin_action(access: AdminActionAccess, permissions: frozenset[str], required: tuple[str, ...]) -> bool:
