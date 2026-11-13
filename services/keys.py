@@ -256,7 +256,7 @@ async def calculate_renewal_pricing(
     )
     total_gb = int(traffic_bytes / GB) if traffic_bytes else 0
 
-    balance = float(await get_balance(session, billing_user_id))
+    balance = float(await get_balance(session, billing_user_id, exact=True))
     required = int(max(0, ceil(float(final_price_rub) - balance)))
 
     return RenewalPricing(

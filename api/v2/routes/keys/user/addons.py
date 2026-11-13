@@ -421,7 +421,7 @@ async def user_key_apply_addons(
         base_price_rub=int(max(0, extra_price_rub)),
         coupon_code=body.coupon_code,
     )
-    balance = float(await get_balance(session, billing_user_id))
+    balance = float(await get_balance(session, billing_user_id, exact=True))
     required_amount = int(max(0, ceil(float(final_extra_price_rub) - balance)))
     if extra_price_rub <= 0:
         return AccountKeyApplyAddonsResponse(

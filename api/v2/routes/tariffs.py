@@ -254,7 +254,7 @@ async def purchase_tariff_with_balance(
         base_price_rub=int(price),
         coupon_code=body.coupon_code,
     )
-    balance = float(await get_balance(session, tg_id))
+    balance = float(await get_balance(session, tg_id, exact=True))
     duration = int(tariff.get("duration_days") or 0)
     if duration <= 0:
         raise HTTPException(status_code=400, detail="Некорректная длительность тарифа")
@@ -451,7 +451,7 @@ async def activate_trial(
             final_price_rub=0,
         )
 
-    balance = float(await get_balance(session, tg_id))
+    balance = float(await get_balance(session, tg_id, exact=True))
     required_amount = int(max(0, ceil(float(price) - balance)))
 
     if required_amount <= 0:

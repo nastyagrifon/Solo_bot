@@ -329,7 +329,7 @@ async def handle_addons_confirm(callback: CallbackQuery, state: FSMContext, sess
             await callback.answer(ADDONS_NO_EXTRA_PAYMENT_TEXT, show_alert=True)
             return
 
-        balance = await get_balance(session, tg_id)
+        balance = await get_balance(session, tg_id, exact=True)
         logger.debug(f"[ADDONS] PACK_MODE balance check: tg_id={tg_id} balance={balance} extra_price={extra_price}")
 
         if balance < extra_price:

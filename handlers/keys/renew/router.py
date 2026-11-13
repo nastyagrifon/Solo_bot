@@ -783,7 +783,7 @@ async def handle_renew_config_confirm(callback_query: CallbackQuery, state: FSMC
         if shown:
             return
 
-        balance = round(await get_balance(session, tg_id), 2)
+        balance = await get_balance(session, tg_id, exact=True)
         cost = round(final_price, 2)
 
         if balance < cost:

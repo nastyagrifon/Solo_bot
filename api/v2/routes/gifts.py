@@ -168,7 +168,7 @@ async def create_gift_for_user(
     except ConfigOptionRejected as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     price = int(calculate_config_price(tariff, body.selected_device_limit, body.selected_traffic_gb))
-    balance = float(await get_balance(session, billing_user_id))
+    balance = float(await get_balance(session, billing_user_id, exact=True))
 
     required_amount = int(max(0, ceil(float(price) - balance)))
 
