@@ -28,6 +28,18 @@ if TYPE_CHECKING:
     from panels.remnawave import RemnawaveAPI
 
 
+try:
+    from panels.remnawave_bind import install as _install_bind_shim
+    from panels.remnawave_bind import remember_db_loop as _remember_db_loop
+
+    _install_bind_shim()
+except Exception as _bind_error:
+    logger.warning(f"[Remnawave] обёртка привязки подписки не установлена: {_bind_error}")
+
+    def _remember_db_loop() -> None:
+        return None
+
+
 _remnawave_semaphore = asyncio.Semaphore(REMNAWAVE_MAX_CONCURRENCY)
 
 
@@ -369,6 +381,7 @@ async def with_remnawave_api(
         logger.warning(f"[Remnawave] Панель на паузе (breaker), операция для server_ref={server_ref} пропущена")
         return None
 
+    _remember_db_loop()
     async with _remnawave_semaphore:
         result = await run_io(
             _run_with_api_in_thread, api_url, operation, timeout_sec, client_id, username, subscription_url

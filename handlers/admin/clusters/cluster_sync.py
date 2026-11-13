@@ -81,9 +81,10 @@ async def _fetch_all_panel_uuids(remna: "remnawave_panel.RemnawaveAPI") -> set[s
             break
 
         for u in users:
-            uid = u.get("vlessUuid") or u.get("uuid")
-            if uid:
-                uuids.add(str(uid))
+            # По username тоже: у части ключей client_id бота не совпадает с id в панели.
+            for uid in (u.get("vlessUuid") or u.get("uuid"), u.get("username")):
+                if uid:
+                    uuids.add(str(uid))
 
         start += len(users)
         if len(users) < page_size or (total and start >= total):
@@ -747,7 +748,7 @@ async def handle_sync_cluster(
                 to_update: list = []
                 to_create: list = []
                 for key in keys_to_sync:
-                    if str(key["client_id"]) in panel_uuids:
+                    if str(key["client_id"]) in panel_uuids or str(key.get("email") or "") in panel_uuids:
                         to_update.append(key)
                     else:
                         to_create.append(key)

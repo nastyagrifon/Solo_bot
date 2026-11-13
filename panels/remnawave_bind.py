@@ -1,0 +1,159 @@
+"""Привязка подписки ключа перед вызовами клиента панели по client_id.
+
+Клиент панели находит пользователя по ссылке подписки, привязанной через
+``bind_subscription``. У части ключей client_id бота не совпадает с id в
+панели, и без привязки пользователь не находится: вызов молча не доходит.
+Вместо правки каждого места вызова оборачиваем методы на самом классе —
+так покрыты и ядро, и модули, которые создают ``RemnawaveAPI`` сами.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+import inspect
+import threading
+
+from logger import logger
+
+
+_METHODS = (
+    "get_user_hwid_devices",
+    "delete_user_hwid_device",
+    "clear_all_hwid_devices",
+    "get_user_by_uuid",
+    "update_user",
+    "delete_user",
+    "disable_user",
+    "enable_user",
+    "revoke_user_subscription",
+    "reset_user_traffic",
+    "bulk_set_expiry",
+    "resolve_user_id",
+)
+_FLAG = "_bind_shim_installed"
+_LOOKUP_TIMEOUT_SEC = 5.0
+# Цикл, в котором живёт пул соединений базы (цикл главного потока бота).
+_db_loop: asyncio.AbstractEventLoop | None = None
+
+
+def remember_db_loop() -> None:
+    """Запоминает текущий цикл как цикл базы; звать из кода главного потока."""
+    global _db_loop
+    try:
+        _db_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+_SEEN = "_bind_shim_seen"
+
+
+def _call_ids(name: str, args: tuple, kwargs: dict) -> list[str]:
+    if name == "bulk_set_expiry":
+        items = args[0] if args else kwargs.get("items") or ()
+        ids = []
+        for item in items or ():
+            if isinstance(item, (tuple, list)) and item:
+                ids.append(item[0])
+            elif isinstance(item, dict):
+                ids.append(item.get("uuid") or item.get("client_id"))
+        return [str(i) for i in ids if i]
+    cid = args[0] if args else kwargs.get("uuid") or kwargs.get("client_id")
+    return [str(cid)] if isinstance(cid, str) and cid else []
+
+
+def _seen(api) -> dict:
+    """id -> True (привязан) / False (ключа нет); на экземпляр клиента."""
+    try:
+        return api.__dict__.setdefault(_SEEN, {})
+    except AttributeError:
+        return {}
+
+
+async def _lookup(ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
+    from sqlalchemy import select
+
+    from database import async_session_maker
+    from database.models import Key
+
+    async with async_session_maker() as session:
+        rows = await session.execute(
+            select(Key.client_id, Key.email, Key.remnawave_link, Key.key).where(Key.client_id.in_(ids))
+        )
+        found: dict[str, tuple[str | None, str | None]] = {}
+        for client_id, email, remnawave_link, key in rows.all():
+            found.setdefault(str(client_id), (email, remnawave_link or key))
+        return found
+
+
+async def _ensure_bound(api, ids: list[str]) -> None:
+    bind = getattr(api, "bind_subscription", None)
+    if not bind or not ids:
+        return
+    seen = _seen(api)
+    missing = list(dict.fromkeys(i for i in ids if i not in seen))
+    if not missing:
+        return
+    if threading.current_thread() is threading.main_thread():
+        remember_db_loop()
+    loop = asyncio.get_running_loop()
+    if _db_loop is loop:
+        found = await asyncio.wait_for(_lookup(missing), _LOOKUP_TIMEOUT_SEC)
+    elif _db_loop is not None and _db_loop.is_running():
+        # Операции with_remnawave_api идут в своём цикле в потоке run_io, а пул
+        # базы привязан к циклу главного потока: запрос уходит туда. Главный
+        # цикл в это время свободен — он ждёт run_io через await.
+        future = asyncio.run_coroutine_threadsafe(_lookup(missing), _db_loop)
+        found = await asyncio.wait_for(asyncio.wrap_future(future), _LOOKUP_TIMEOUT_SEC)
+    else:
+        return
+    for cid in missing:
+        email, link = found.get(cid, (None, None))
+        if link:
+            bind(cid, email, link)
+        seen[cid] = bool(link)
+
+
+def _wrap(name: str, orig):
+    @functools.wraps(orig)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            await _ensure_bound(self, _call_ids(name, args, kwargs))
+        except Exception as error:
+            logger.debug(f"[Remnawave] привязка подписки перед {name} не удалась: {error}")
+        result = orig(self, *args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    return wrapper
+
+
+def _wrap_bind(orig):
+    @functools.wraps(orig)
+    def bind_subscription(self, client_id, *args, **kwargs):
+        result = orig(self, client_id, *args, **kwargs)
+        _seen(self)[str(client_id)] = True
+        return result
+
+    return bind_subscription
+
+
+def install(cls=None) -> bool:
+    """Оборачивает методы класса клиента панели; повторный вызов ничего не делает."""
+    if cls is None:
+        from panels.remnawave import RemnawaveAPI as cls
+    if getattr(cls, _FLAG, False):
+        return False
+    if not hasattr(cls, "bind_subscription"):
+        return False
+    try:
+        setattr(cls, _FLAG, True)
+        cls.bind_subscription = _wrap_bind(cls.bind_subscription)
+        for name in _METHODS:
+            orig = getattr(cls, name, None)
+            if orig is not None:
+                setattr(cls, name, _wrap(name, orig))
+    except (AttributeError, TypeError) as error:
+        logger.warning(f"[Remnawave] обёртка привязки подписки не установлена: {error}")
+        return False
+    return True
