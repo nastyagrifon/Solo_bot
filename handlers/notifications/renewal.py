@@ -95,7 +95,7 @@ async def try_auto_renew(ctx: NotificationContext, key) -> RenewalResult:
     if current_tariff["group_code"] in forbidden:
         return RenewalResult(RenewalStatus.FORBIDDEN_TARIFF)
 
-    balance = await get_balance(ctx.session, owner_ref)
+    balance = await get_balance(ctx.session, owner_ref, exact=True)
 
     renewal_cost = await resolve_price_to_charge(
         ctx.session,

@@ -420,7 +420,7 @@ async def resume_checkout(callback_query: CallbackQuery, state: FSMContext, sess
     if required_amount is None:
         price = checkout_price(temp_key, payload)
         if price is not None:
-            balance = await get_balance(session, tg_id)
+            balance = await get_balance(session, tg_id, exact=True)
             required_amount = max(0, ceil(float(price) - float(balance)))
 
     handled = False

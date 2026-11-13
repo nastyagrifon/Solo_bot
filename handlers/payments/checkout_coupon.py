@@ -69,7 +69,7 @@ async def apply_checkout_coupon(
     if coupon_id is None or discount <= 0:
         return payload, required_amount, ""
 
-    balance = await get_balance(session, user_ref)
+    balance = await get_balance(session, user_ref, exact=True)
     required = int(max(0, ceil(float(new_price) - float(balance))))
 
     updated = dict(payload)

@@ -2,6 +2,7 @@ import os
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+from math import ceil
 from typing import Any
 
 import pytz
@@ -124,9 +125,9 @@ async def handle_key_creation(
                 expiry_time = current_time + timedelta(days=total_days)
 
                 if trial_price > 0:
-                    balance = await get_balance(session, tg_id)
+                    balance = await get_balance(session, tg_id, exact=True)
                     if balance < trial_price:
-                        shortfall = int(trial_price - balance)
+                        shortfall = ceil(trial_price - balance)
                         handled = await try_fast_payment_flow(
                             message_or_query if isinstance(message_or_query, CallbackQuery) else None,
                             session,
