@@ -43,7 +43,18 @@ ACTION_BY_CALLBACK = {
     "users_reset_traffic": (PERM_KEY_TRAFFIC,),
     "users_hwid_menu": (PERM_KEY_DEVICES,),
     "users_hwid_page": (PERM_KEY_DEVICES,),
-    "users_hwid_unbind": (PERM_KEY_DEVICES,),
+    "users_hwid_rm": (PERM_KEY_DEVICES,),
+    "users_hwid_bl": (PERM_KEY_DEVICES,),
+    "users_hwid_ub": (PERM_KEY_DEVICES,),
+    "users_hwid_unbind_all": (PERM_KEY_DEVICES,),
+    "users_hwid_unbind_all_ok": (PERM_KEY_DEVICES,),
+    # Сквады задаёт тариф, поэтому их правка — то же право, что смена тарифа; тег и заметка — туда же.
+    "users_kpu_ext": (PERM_KEY_TARIFF,),
+    "users_kpu_int": (PERM_KEY_TARIFF,),
+    "users_kpu_tag": (PERM_KEY_TARIFF,),
+    "users_kpu_note": (PERM_KEY_TARIFF,),
+    # Перенос отнимает подписку у владельца — по силе это удаление.
+    "users_kpu_tg": (PERM_KEY_DELETE,),
     "users_freeze": (PERM_KEY_FREEZE,),
     "users_unfreeze": (PERM_KEY_FREEZE,),
     "users_trial_restore": (PERM_KEY_CREATE,),
@@ -120,6 +131,9 @@ def callback_action_permissions(value: str | None, state_data: dict | None = Non
         if action.startswith("users_balance_"):
             return (PERM_USER_BALANCE,)
         return ACTION_BY_CALLBACK.get(action, ())
+    if parts[0] == "kpu" and len(parts) > 1:
+        # Экраны полей панели из карточки ключа; «Назад» — без права, иначе из экрана не выйти.
+        return {"mv_ok": (PERM_KEY_DELETE,), "back": ()}.get(parts[1], (PERM_KEY_TARIFF,))
     if parts[0] in ("admin_user_key", "admin_users_key") and len(parts) > 1:
         return (PERM_KEY_EXPIRY,) if parts[1] in ("add", "take", "set") else ()
     if parts[0] == "abulk" and len(parts) > 1:
@@ -167,6 +181,9 @@ def callback_action_permissions(value: str | None, state_data: dict | None = Non
             return (PERM_KEY_REISSUE,)
         if parts[1] == "backup":
             return (FULL_ADMIN,)
+    if value.startswith("dev_acard|"):
+        # Кнопка «Устройства» карточки ключа, когда экран отдан модулю устройств.
+        return (PERM_KEY_DEVICES,)
     if value.startswith(("transfer_to_server|", "transfer_to_cluster|")):
         return (PERM_KEY_LOCATION,)
     if value.startswith("upload_target:"):
@@ -212,6 +229,8 @@ def state_action_permissions(state: str | None, data: dict) -> tuple[str, ...]:
         return (PERM_KEY_CREATE,)
     if state == "UserEditorState:waiting_for_expiry_time":
         return (PERM_KEY_EXPIRY,)
+    if state == "PanelUserState:waiting_value":
+        return (PERM_KEY_DELETE,) if data.get("kpu_field") == "tg" else (PERM_KEY_TARIFF,)
     if state == "UserEditorState:confirm_delete_key":
         return (PERM_KEY_DELETE,)
     if state in (

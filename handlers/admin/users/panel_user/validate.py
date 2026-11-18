@@ -27,14 +27,12 @@ def parse_tag(raw: str | None) -> str | None:
     return value
 
 
-def parse_telegram_id(raw: str | None) -> int | None:
-    """TG ID юзера панели: положительное число. «-» — отвязать."""
+def parse_telegram_id(raw: str | None) -> int:
+    """TG ID клиента-получателя подписки: положительное число, очистки нет."""
     value = (raw or "").strip()
-    if value == CLEAR:
-        return None
     # isdigit() пускает «²» и арабские цифры, а Telegram ID не длиннее 15 знаков.
     if not (value.isascii() and value.isdigit()) or len(value) > 15 or int(value) <= 0:
-        raise InputError("TG ID — положительное число, «-» чтобы убрать.")
+        raise InputError("TG ID — положительное число.")
     return int(value)
 
 

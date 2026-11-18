@@ -83,6 +83,15 @@ async def ensure_on_remnawave(
 
         async def do_update():
             try:
+                squad = external_squad_uuid
+                if not squad:
+                    # Пустой сквад тарифа значит «в тарифе не задан», а не «снять сквад»: оставляем текущий.
+                    try:
+                        current = await api.get_user_by_uuid(client_id, username=email)
+                    except Exception as e:
+                        logger.warning(f"{PANEL_REMNA} сквад {client_id} не прочитан: {e}")
+                        current = None
+                    squad = (current or {}).get("externalSquadUuid")
                 updated = await api.update_user(
                     uuid=client_id,
                     lookup_username=email,
@@ -90,7 +99,7 @@ async def ensure_on_remnawave(
                     active_user_inbounds=inbounds,
                     traffic_limit_bytes=traffic_bytes,
                     hwid_device_limit=hwid_device_limit,
-                    external_squad_uuid=external_squad_uuid,
+                    external_squad_uuid=squad,
                 )
                 if not updated:
                     return None, None

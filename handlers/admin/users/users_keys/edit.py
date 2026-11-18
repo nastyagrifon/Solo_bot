@@ -6,6 +6,7 @@ from filters.permissions import PERM_KEY_VIEW
 from services.subscription_keys import resolve_remnawave_server_ref
 
 from ...panel.headers import card, menu_text, quote, section
+from ..panel_user.handlers import key_card_section
 from ._common import *
 
 
@@ -143,11 +144,14 @@ async def handle_key_edit(
         plan.append(f"Подгруппа: {subgroup_title}")
     plan += [line for line in (devices_line, traffic_line) if line]
 
+    show_subscription_keys = bool(await resolve_remnawave_server_ref(session, key_obj.server_id or ""))
     blocks = [
         section("⏳ Срок", *term),
         section("📦 Тариф", *plan),
         section("🗺 Размещение", f"Кластер: {key_obj.server_id or '—'}", f"Клиент: {key_obj.tg_id or '—'}"),
     ]
+    if show_subscription_keys:
+        blocks.append(await key_card_section(session, key_obj))
     if admin_action_allowed(PERM_KEY_VIEW):
         blocks.insert(0, section("🔗 Ссылка", f"<code>{key_value}</code>"))
     if renewals_block:
@@ -158,7 +162,6 @@ async def handle_key_edit(
     if not update or not getattr(callback_data, "edit", False):
         kb_key_details = dict(key_obj.__dict__)
         kb_key_details["is_frozen"] = is_frozen
-        show_subscription_keys = bool(await resolve_remnawave_server_ref(session, key_obj.server_id or ""))
         kb_markup = build_key_edit_kb(
             kb_key_details,
             email,

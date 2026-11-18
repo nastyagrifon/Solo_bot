@@ -33,11 +33,9 @@ class TelegramIdTest(unittest.TestCase):
     def test_number(self):
         self.assertEqual(validate.parse_telegram_id(" 12345 "), 12345)
 
-    def test_clear(self):
-        self.assertIsNone(validate.parse_telegram_id("-"))
-
     def test_rejects_bad(self):
-        for raw in ("", "0", "-5", "12a", "1.5", "²", "١٢٣", "9" * 16):
+        # «-» больше не очищает: TG ID задаёт получателя переноса, пустого получателя нет.
+        for raw in ("-", "", "0", "-5", "12a", "1.5", "²", "١٢٣", "9" * 16):
             with self.subTest(raw=raw), self.assertRaises(validate.InputError):
                 validate.parse_telegram_id(raw)
 

@@ -150,7 +150,7 @@ class ClearDevicesTest(unittest.TestCase):
             run(svc.clear_devices(None, Key))
 
 
-class HelpersTest(unittest.TestCase):
+class SquadListTest(unittest.TestCase):
     def setUp(self):
         self.svc = _load_service(FakeApi({}), [])
 
@@ -164,8 +164,43 @@ class HelpersTest(unittest.TestCase):
 
 try:
     import aiogram  # noqa: F401
-except ImportError:  # без aiogram размер кнопок не проверить
+except ImportError:  # без aiogram экраны не собрать
     aiogram = None
+
+
+def _load_views():
+    """views.py с подменёнными заголовками: section отдаёт строки как есть, чтобы проверять текст."""
+    from aiogram.filters.callback_data import CallbackData
+
+    def section(title, *lines):
+        return "\n".join((title, *lines))
+
+    stubs = {
+        "settings": types.ModuleType("settings"),
+        "settings.buttons": types.SimpleNamespace(BACK="Назад"),
+        "handlers": types.ModuleType("handlers"),
+        "handlers.admin": types.ModuleType("handlers.admin"),
+        "handlers.admin.panel": types.ModuleType("handlers.admin.panel"),
+        "handlers.admin.panel.headers": types.SimpleNamespace(
+            card=lambda *b: "\n".join(b), menu_text=lambda *p, **k: "\n".join(p), section=section
+        ),
+        "handlers.admin.users": types.ModuleType("handlers.admin.users"),
+        "handlers.admin.users.panel_user": types.ModuleType("handlers.admin.users.panel_user"),
+        "handlers.admin.users.keyboard": types.SimpleNamespace(LegacyTgRefAlias=type("LegacyTgRefAlias", (), {})),
+    }
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location("handlers.admin.users.panel_user.views", PKG / "views.py")
+        views = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(views)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return views, CallbackData
 
 
 @unittest.skipIf(aiogram is None, "aiogram не установлен")
@@ -173,49 +208,43 @@ class CallbackSizeTest(unittest.TestCase):
     """Telegram режет callback_data длиннее 64 байт: кнопка молча не нажимается."""
 
     def test_worst_case_fits_64_bytes(self):
-        from aiogram.filters.callback_data import CallbackData
-
-        stubs = {
-            "settings": types.ModuleType("settings"),
-            "settings.buttons": types.SimpleNamespace(BACK="Назад"),
-            "handlers": types.ModuleType("handlers"),
-            "handlers.admin": types.ModuleType("handlers.admin"),
-            "handlers.admin.panel": types.ModuleType("handlers.admin.panel"),
-            "handlers.admin.panel.headers": types.SimpleNamespace(
-                card=None, menu_text=None, quote=None, section=None
-            ),
-            "handlers.admin.users": types.ModuleType("handlers.admin.users"),
-            "handlers.admin.users.panel_user": types.ModuleType("handlers.admin.users.panel_user"),
-        }
-
-        class AdminUserEditorCallback(CallbackData, prefix="admin_user"):
-            action: str
-            user_id: int
-            data: str = ""
-
-        stubs["handlers.admin.users.keyboard"] = types.SimpleNamespace(
-            AdminUserEditorCallback=AdminUserEditorCallback, LegacyTgRefAlias=type("LegacyTgRefAlias", (), {})
-        )
-        saved = {k: sys.modules.get(k) for k in stubs}
-        sys.modules.update(stubs)
-        try:
-            spec = importlib.util.spec_from_file_location("handlers.admin.users.panel_user.views", PKG / "views.py")
-            views = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(views)
-        finally:
-            for k, v in saved.items():
-                if v is None:
-                    sys.modules.pop(k, None)
-                else:
-                    sys.modules[k] = v
-
+        views, _ = _load_views()
         user_id = 2**63 - 1  # самый длинный id; +1 байт на букву типа id в ядре
         key_ref = "f" * 12  # build_key_ref: blake2s по 6 байт → 12 hex
         longest = max(
             views.PanelUserCallback(action=a, user_id=user_id, key_ref=key_ref, field="note", idx=99).pack()
-            for a in ("card", "ext", "ext_set", "int", "int_tg", "int_save", "ask", "clr", "own")
+            for a in ("back", "ext_set", "int_tg", "int_save", "clr", "mv_ok")
         )
         self.assertLessEqual(len(longest.encode()) + 1, 64, longest)
+
+
+@unittest.skipIf(aiogram is None, "aiogram не установлен")
+class PanelSectionTest(unittest.TestCase):
+    """Секция «Панель» в карточке ключа."""
+
+    def setUp(self):
+        self.views, _ = _load_views()
+
+    def test_names_not_uuids(self):
+        user = {
+            "externalSquadUuid": "e-1",
+            "activeInternalSquads": [{"uuid": "i-1", "name": "Основной"}, "i-2"],
+            "telegramId": 7,
+            "tag": "VIP",
+            "description": "заметка",
+        }
+        text = self.views.panel_section(user, [{"uuid": "e-1", "name": "Внешний А"}])
+        for part in ("Внешний А", "Основной, i-2", "TG ID: 7", "Тег: VIP", "Заметка: заметка"):
+            self.assertIn(part, text)
+        self.assertNotIn("e-1", text)
+
+    def test_long_note_is_cut(self):
+        text = self.views.panel_section({"description": "x" * 1000}, [])
+        self.assertIn("x" * self.views.NOTE_PREVIEW + "…", text)
+        self.assertNotIn("x" * (self.views.NOTE_PREVIEW + 1), text)
+
+    def test_note_is_escaped(self):
+        self.assertIn("&lt;b&gt;", self.views.panel_section({"description": "<b>"}, []))
 
 
 if __name__ == "__main__":

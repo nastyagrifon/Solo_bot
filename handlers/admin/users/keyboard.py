@@ -284,6 +284,27 @@ def build_user_delete_kb(user_id: int):
     return builder.as_markup()
 
 
+DEVICES_MODULE = "devices"
+
+
+def devices_button(tg_id) -> InlineKeyboardButton | None:
+    """Кнопка в экран устройств модуля, если он включён; None — экран ядра.
+
+    Почему: у модуля свой экран устройств с уведомлениями и блоками клиента,
+    и два разных экрана об одних устройствах расходились бы. Модуль ищет
+    подписки по tg_id, поэтому без него остаётся экран ядра.
+    """
+    if not tg_id:
+        return None
+    try:
+        from utils.modules_manager import manager
+
+        enabled = manager.is_enabled(DEVICES_MODULE)
+    except Exception:
+        enabled = False
+    return InlineKeyboardButton(text="💻 Устройства", callback_data=f"dev_acard|{int(tg_id)}") if enabled else None
+
+
 def build_key_edit_kb(
     key_details: dict,
     email: str,
@@ -311,17 +332,20 @@ def build_key_edit_kb(
     if is_configurable:
         limits.insert(0, button("⚙️ Конфигурация", "users_edit_config"))
     if bool(BUTTONS_CONFIG.get("HWID_RESET_BUTTON_ENABLE", HWID_RESET_BUTTON)):
-        limits.append(button("💻 Устройства", "users_hwid_menu"))
+        limits.append(devices_button(key_details.get("tg_id")) or button("💻 Устройства", "users_hwid_menu"))
     for i in range(0, len(limits), 2):
         builder.row(*limits[i : i + 2])
 
     service = [button("🔄 Перевыпустить", "users_reissue_menu"), button("♻️ Сбросить трафик", "users_reset_traffic")]
     if show_subscription_keys:
         service.append(button("🔑 Ключи", "users_keys_list"))
-        # Тот же признак «ключ на Remnawave»: правка пользователя панели.
-        service.append(button("🧩 Панель", "users_panel_user"))
     for i in range(0, len(service), 2):
         builder.row(*service[i : i + 2])
+    if show_subscription_keys:
+        # Тот же признак «ключ на Remnawave»: поля пользователя панели.
+        builder.row(button("👥 Внешний сквад", "users_kpu_ext"), button("🧩 Внутренние", "users_kpu_int"))
+        builder.row(button("🏷 Тег", "users_kpu_tag"), button("📝 Заметка", "users_kpu_note"))
+        builder.row(button("🆔 Сменить владельца", "users_kpu_tg"))
 
     builder.row(
         button("▶️ Включить" if is_frozen else "⛔ Отключить", "users_unfreeze" if is_frozen else "users_freeze"),
@@ -354,21 +378,23 @@ def build_hwid_menu_kb(
     user_id: int,
     page: int = 0,
     total_pages: int = 0,
-    devices_on_page: int = 0,
-    devices_per_page: int = 3,
+    rows: list[tuple[int, str, str, str | None]] = (),
 ) -> InlineKeyboardMarkup:
+    """rows: (номер, модель, отпечаток HWID, действие блока или None)."""
     builder = InlineKeyboardBuilder()
-    for idx in range(devices_on_page):
-        builder.row(
-            InlineKeyboardButton(
-                text=f"🔌 Отвязать #{page * devices_per_page + idx + 1}",
-                callback_data=AdminUserEditorCallback(
-                    action="users_hwid_unbind",
-                    data=f"{key_ref}|{page}|{idx}",
-                    user_id=user_id,
-                ).pack(),
-            )
+
+    def device_button(text: str, action: str, fp: str) -> InlineKeyboardButton:
+        # В кнопке отпечаток, не HWID: обработчик ищет его только среди устройств этого ключа.
+        return InlineKeyboardButton(
+            text=text,
+            callback_data=AdminUserEditorCallback(action=action, data=f"{key_ref}|{fp}", user_id=user_id).pack(),
         )
+
+    for number, model, fp, block_action in rows:
+        line = [device_button(f"🔌 {number}. {model[:18]}", "users_hwid_rm", fp)]
+        if block_action:
+            line.append(device_button(f"{'🔒' if block_action == 'users_hwid_bl' else '🔓'} {number}", block_action, fp))
+        builder.row(*line)
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(
@@ -379,7 +405,7 @@ def build_hwid_menu_kb(
                 ).pack(),
             )
         )
-    if total_pages > 0:
+    if total_pages > 1:
         nav.append(
             InlineKeyboardButton(
                 text=f"{page + 1}/{total_pages}",
@@ -399,7 +425,7 @@ def build_hwid_menu_kb(
         )
     if nav:
         builder.row(*nav)
-    if devices_on_page:
+    if rows:
         builder.row(
             InlineKeyboardButton(
                 text="🧹 Отвязать все",
