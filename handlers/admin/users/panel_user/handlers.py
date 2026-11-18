@@ -244,6 +244,8 @@ async def handle_field_input(message: Message, session: AsyncSession, state: FSM
         return
     key = await _key(session, base.user_id, base.key_ref)
     if field != TRANSFER:
+        # Ждать ввода дальше нельзя: при сбое панели следующий текст админа (поиск клиента) лёг бы в поле.
+        await _forget(state)
         await service.set_field(session, key, views.FIELD_PROMPTS[field][2], value)
         await _show_key_card(message, session, state, base.user_id, base.key_ref)
         return

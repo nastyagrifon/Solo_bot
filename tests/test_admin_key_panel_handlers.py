@@ -220,6 +220,27 @@ class TransferInputTest(unittest.TestCase):
         self.assertEqual(run(self.state.get_state()), self.h.PanelUserState.waiting_value.state)
 
 
+@unittest.skipIf(CallbackData is None, "aiogram не установлен")
+class FieldInputTest(unittest.TestCase):
+    """Сбой панели не оставляет ожидание ввода: иначе следующий текст админа лёг бы в поле."""
+
+    def test_panel_failure_clears_waiting(self):
+        h = _load_handlers()
+        state = FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+        base = h.PanelUserCallback(action="", user_id=1, key_ref="ref")
+        run(state.set_state(h.PanelUserState.waiting_value))
+        run(state.update_data({"kpu_field": "tag", "kpu_base": base.pack()}))
+
+        async def set_field(*a, **k):
+            raise h.PanelUserError("Панель не приняла правку")
+
+        h.service.set_field = set_field
+        message = FakeMessage("VIP")
+        run(h.handle_field_input(message, None, state))
+        self.assertIn("не приняла", message.sent[-1][0])
+        self.assertIsNone(run(state.get_state()))
+
+
 class FakeCallback:
     """Нужен isinstance(..., CallbackQuery) в обработчике — подменяем класс в модуле."""
 
