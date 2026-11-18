@@ -198,6 +198,7 @@ async def handle_manual_bans_export(callback_query: CallbackQuery, session: Asyn
                 ManualBan.user_id,
                 ManualBan.banned_at,
                 ManualBan.reason,
+                ManualBan.public_reason,
                 ManualBan.until,
                 ManualBan.banned_by,
             )
@@ -209,10 +210,12 @@ async def handle_manual_bans_export(callback_query: CallbackQuery, session: Asyn
 
         csv_output = io.StringIO()
         writer = csv.writer(csv_output)
-        writer.writerow(["tg_id", "banned_at", "reason", "until", "banned_by", "user_id"])
+        writer.writerow(["tg_id", "banned_at", "reason", "public_reason", "until", "banned_by", "user_id"])
 
         for row in rows:
-            writer.writerow([row.tg_id, row.banned_at, row.reason, row.until, row.banned_by, row.user_id])
+            writer.writerow([
+                row.tg_id, row.banned_at, row.reason, row.public_reason, row.until, row.banned_by, row.user_id
+            ])
 
         csv_output.seek(0)
         document = BufferedInputFile(file=csv_output.getvalue().encode("utf-8"), filename="manual_bans.csv")
@@ -410,6 +413,7 @@ async def handle_preemptive_ids_input(message: Message, state: FSMContext, sessi
         set_={
             "tg_id": ins.excluded.tg_id,
             "reason": "shadow",
+            "public_reason": None,
             "until": None,
             "banned_by": message.from_user.id,
             "banned_at": now,

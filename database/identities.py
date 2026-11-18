@@ -719,13 +719,14 @@ async def _transfer_user_data(
                 tg_id=dst_tg,
                 banned_at=src_ban.banned_at,
                 reason=src_ban.reason,
+                public_reason=src_ban.public_reason,
                 banned_by=src_ban.banned_by,
                 until=src_ban.until,
             )
         )
     elif src_ban is not None and dst_ban is not None and dst_ban.until is not None:
         if src_ban.until is None or src_ban.until > dst_ban.until:
-            for field in ("banned_at", "reason", "banned_by", "until"):
+            for field in ("banned_at", "reason", "public_reason", "banned_by", "until"):
                 setattr(dst_ban, field, getattr(src_ban, field))
 
     dst_block = (await session.execute(select(BlockedUser).where(BlockedUser.user_id == dst_uid))).scalar_one_or_none()

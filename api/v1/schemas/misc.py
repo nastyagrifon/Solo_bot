@@ -85,6 +85,7 @@ class ManualBanResponse(BaseModel):
     tg_id: int | None = None
     banned_at: datetime
     reason: str | None
+    public_reason: str | None = None
     banned_by: int | None
     until: datetime | None = None
 

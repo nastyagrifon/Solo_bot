@@ -57,6 +57,8 @@ class ManualBan(DictLikeMixin, Base):
     tg_id = Column(BigInteger, nullable=True, index=True)
     banned_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     reason = Column(Text)
+    # reason видят только админы; клиенту показывается public_reason или нейтральный текст
+    public_reason = Column(Text, nullable=True)
     banned_by = Column(BigInteger)
     until = Column(DateTime(timezone=True), nullable=True)
 
