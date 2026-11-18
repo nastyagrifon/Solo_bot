@@ -39,9 +39,12 @@ class FakeApi:
         return dict(self.user)
 
     async def _request(self, method, path, json=None, params=None):
-        self.patches.append((method, path, json))
         if self.status != 200:
             return FakeResponse(self.status)
+        if method == "GET" and path.endswith("-squads"):
+            kind = path.strip("/").split("-")[0]
+            return FakeResponse(200, {"response": {f"{kind}Squads": [{"uuid": "a", "name": "A"}]}})
+        self.patches.append((method, path, json))
         if self.echo:
             self.user.update({k: v for k, v in json.items() if k != "uuid"})
         return FakeResponse(200, {"response": dict(self.user)})
@@ -125,14 +128,10 @@ class LoadTest(unittest.TestCase):
     def test_user_and_squads_in_one_panel_trip(self):
         calls = []
         api = FakeApi({"uuid": "u-1"})
-
-        async def get_internal_squads():
-            return [{"uuid": "a", "name": "A"}]
-
-        api.get_internal_squads = get_internal_squads
         svc = _load_service(api, calls)
         user, squads = run(svc.load(None, Key, "internal"))
-        self.assertEqual((user["uuid"], squads[0]["uuid"]), ("u-1", "a"))
+        # Имя сквада обязательно: без него админ видит в списке голые uuid.
+        self.assertEqual((user["uuid"], squads[0]["name"]), ("u-1", "A"))
         self.assertEqual(len([c for c in calls if c[0] == "api"]), 1)
 
     def test_missing_squad_list_is_error(self):

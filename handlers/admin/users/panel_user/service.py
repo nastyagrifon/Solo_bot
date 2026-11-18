@@ -45,12 +45,13 @@ async def _run(session, key, operation, failure: str):
     return result
 
 
-async def _external_squads(api):
-    # Готового метода у клиента панели нет; путь без /api — он уже в базе клиента.
-    response = await api._request("GET", "/external-squads")
+async def _squads(api, kind: str):
+    # Путь без /api — он уже в базе клиента. Готовый метод клиента для внутренних
+    # сквадов отдаёт их без имён, поэтому оба списка берём одним запросом к панели.
+    response = await api._request("GET", f"/{kind}-squads")
     if response.status_code != 200:
         return None
-    return (response.json().get("response") or {}).get("externalSquads")
+    return (response.json().get("response") or {}).get(f"{kind}Squads")
 
 
 async def load(session, key, squads: str | None = None) -> tuple[dict, list[dict]]:
@@ -62,7 +63,7 @@ async def load(session, key, squads: str | None = None) -> tuple[dict, list[dict
             return None
         if squads is None:
             return user, []
-        listed = await (_external_squads(api) if squads == "external" else api.get_internal_squads())
+        listed = await _squads(api, squads)
         return None if listed is None else (user, listed)
 
     return await _run(session, key, op, "Панель не ответила: пользователь не прочитан")
