@@ -1,14 +1,12 @@
-"""Правка пользователя панели из карточки ключа: тонкие обработчики.
+"""Правка пользователя панели из карточки клиента: тонкие обработчики.
 
-Поля показываются секцией в самой карточке ключа (key_card_section), кнопки
-правки — в её клавиатуре. Запросы к панели — в service, тексты — в views.
+Поля выбранной подписки показываются секцией в карточке клиента (client_panel),
+кнопки правки и выбор подписки — в её клавиатуре. Запросы к панели — в service, тексты — в views.
 FSM общий с другими экранами админки, поэтому храним только свои ключи с
 префиксом и убираем только их.
 """
 
 import functools
-
-from types import SimpleNamespace
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -21,6 +19,7 @@ from database.access.resolution import UserId, get_user_by_tg_id
 from filters.admin import IsAdminFilter
 from logger import logger
 from services.operations.key_transfer import KeyTransferError, transfer_key
+from services.subscription_keys import resolve_remnawave_server_ref
 from services.users_utils import build_admin_key_ref, resolve_admin_key
 
 from ..keyboard import AdminUserEditorCallback
@@ -40,7 +39,7 @@ POPUP = {"popup": True}
 FIELDS = {"tag": validate.parse_tag, "note": validate.parse_description}
 TRANSFER = "tg"
 SAVED = "✅ Сохранено"
-# Кнопки карточки ключа → поле ввода.
+# Кнопки карточки клиента → поле ввода.
 ASK_ACTIONS = {"users_kpu_tag": "tag", "users_kpu_note": "note", "users_kpu_tg": TRANSFER}
 
 
@@ -60,16 +59,32 @@ def loud(handler):
     return wrapper
 
 
-async def key_card_section(session: AsyncSession, key) -> str:
-    """Секция «Панель» для карточки ключа; сбой панели карточку не ломает."""
+async def _panel_section(session: AsyncSession, key) -> str:
+    """Секция «Панель» одной подписки; сбой панели карточку не ломает."""
     try:
         user, external = await service.load(session, key, "external")
     except PanelUserError:
-        return views.panel_section_failed()
+        return views.panel_section_failed(key.email)
     except Exception as error:
         logger.warning(f"[PanelUser] секция панели для {key.client_id}: {error}")
-        return views.panel_section_failed()
-    return views.panel_section(user, external)
+        return views.panel_section_failed(key.email)
+    return views.panel_section(user, external, key.email)
+
+
+async def client_panel(session: AsyncSession, user_id: int, keys, key_ref: str | None = None):
+    """Секция «Панель» и кнопки для карточки клиента; (None, []) — у клиента нет подписок на Remnawave.
+
+    Выбрана подписка key_ref, а если её нет среди подписок клиента — первая в порядке карточки.
+    """
+    refs = []
+    for key in keys:
+        if await resolve_remnawave_server_ref(session, key.server_id or ""):
+            refs.append((build_admin_key_ref(key.client_id, key.email), key))
+    if not refs:
+        return None, []
+    chosen = next((pair for pair in refs if pair[0] == key_ref), refs[0])
+    rows = views.client_panel_rows(user_id, chosen[0], [(ref, key.email) for ref, key in refs])
+    return await _panel_section(session, chosen[1]), rows
 
 
 async def _forget(state: FSMContext) -> None:
@@ -101,21 +116,29 @@ async def _edit(callback: CallbackQuery, text: str, kb) -> None:
             raise
 
 
-async def _show_key_card(
+async def _show_client_card(
     event, session: AsyncSession, state: FSMContext, user_id: int, key_ref: str, notice: str | None = None
 ) -> None:
-    # Импорт внутри: карточка ключа сама импортирует этот пакет ради секции «Панель».
-    from ..users_keys.edit import handle_key_edit
+    # Импорт внутри: карточка клиента сама импортирует этот пакет ради секции «Панель».
+    from ..users_manage import process_user_search
 
     await _forget(state)
-    target = AdminUserEditorCallback(action="users_key_edit", data=key_ref, user_id=user_id)
     if isinstance(event, CallbackQuery):
         if notice:
             await event.answer(notice)
-        await handle_key_edit(event, target, session)
+        await process_user_search(
+            event.message, state, session, user_id, edit=True, actor_tg_id=event.from_user.id, key_ref=key_ref
+        )
     else:
-        # Карточка умеет только править сообщение; после ввода текста шлём её новым.
-        await handle_key_edit(SimpleNamespace(message=SimpleNamespace(edit_text=event.answer)), target, session)
+        # После ввода текста править нечего — карточка уходит новым сообщением.
+        await process_user_search(event, state, session, user_id, key_ref=key_ref)
+
+
+@router.callback_query(AdminUserEditorCallback.filter(F.action == "users_kpu_pick"), IsAdminFilter())
+async def handle_panel_pick(
+    callback: CallbackQuery, callback_data: AdminUserEditorCallback, session: AsyncSession, state: FSMContext
+):
+    await _show_client_card(callback, session, state, callback_data.user_id, str(callback_data.data or ""))
 
 
 def _owner_label(key) -> str:
@@ -153,7 +176,7 @@ async def handle_external_set(
     squad = None if callback_data.idx == -1 else await _picked(state, "ext", callback_data.idx)
     key = await _key(session, callback_data.user_id, callback_data.key_ref)
     await service.set_field(session, key, "externalSquadUuid", squad)
-    await _show_key_card(callback, session, state, callback_data.user_id, callback_data.key_ref, SAVED)
+    await _show_client_card(callback, session, state, callback_data.user_id, callback_data.key_ref, SAVED)
 
 
 @router.callback_query(AdminUserEditorCallback.filter(F.action == "users_kpu_int"), IsAdminFilter(), flags=POPUP)
@@ -188,7 +211,7 @@ async def handle_internal_save(
         raise PanelUserError("Список устарел, откройте его заново.")
     key = await _key(session, callback_data.user_id, callback_data.key_ref)
     await service.set_field(session, key, service.INTERNAL, data[PREFIX + "int_sel"])
-    await _show_key_card(callback, session, state, callback_data.user_id, callback_data.key_ref, SAVED)
+    await _show_client_card(callback, session, state, callback_data.user_id, callback_data.key_ref, SAVED)
 
 
 @router.callback_query(AdminUserEditorCallback.filter(F.action.in_(ASK_ACTIONS)), IsAdminFilter(), flags=POPUP)
@@ -216,15 +239,15 @@ async def handle_field_clear(
 ):
     key = await _key(session, callback_data.user_id, callback_data.key_ref)
     await service.set_field(session, key, views.FIELD_PROMPTS[callback_data.field][2], None)
-    await _show_key_card(callback, session, state, callback_data.user_id, callback_data.key_ref, SAVED)
+    await _show_client_card(callback, session, state, callback_data.user_id, callback_data.key_ref, SAVED)
 
 
 @router.callback_query(PanelUserCallback.filter(F.action == "back"), IsAdminFilter())
 async def handle_panel_back(
     callback: CallbackQuery, callback_data: PanelUserCallback, session: AsyncSession, state: FSMContext
 ):
-    # Через свой обработчик, а не сразу в карточку: иначе ожидание ввода пережило бы уход с экрана.
-    await _show_key_card(callback, session, state, callback_data.user_id, callback_data.key_ref)
+    # Через свой обработчик, а не сразу в карточку клиента: иначе ожидание ввода пережило бы уход с экрана.
+    await _show_client_card(callback, session, state, callback_data.user_id, callback_data.key_ref)
 
 
 @router.message(StateFilter(PanelUserState.waiting_value), IsAdminFilter())
@@ -247,7 +270,7 @@ async def handle_field_input(message: Message, session: AsyncSession, state: FSM
         # Ждать ввода дальше нельзя: при сбое панели следующий текст админа (поиск клиента) лёг бы в поле.
         await _forget(state)
         await service.set_field(session, key, views.FIELD_PROMPTS[field][2], value)
-        await _show_key_card(message, session, state, base.user_id, base.key_ref)
+        await _show_client_card(message, session, state, base.user_id, base.key_ref)
         return
     target = await get_user_by_tg_id(session, value)
     if target is None:
@@ -281,4 +304,4 @@ async def handle_transfer_confirm(
             "⚠️ Подписка перенесена в базе, но панель не обновила TG ID и почту. Поправьте их в панели.",
             show_alert=True,
         )
-    await _show_key_card(callback, session, state, UserId(dst), callback_data.key_ref)
+    await _show_client_card(callback, session, state, UserId(dst), callback_data.key_ref)

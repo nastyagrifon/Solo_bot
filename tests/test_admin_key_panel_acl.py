@@ -1,4 +1,4 @@
-"""Права на кнопки полей панели и переноса подписки в карточке ключа.
+"""Права на кнопки полей панели и переноса подписки в карточке клиента.
 
 Без записи в разбор прав кнопка проходила бы детальные права насквозь:
 пустой набор требований значит «можно всем».
@@ -70,6 +70,20 @@ class KeyPanelPermissionsTest(unittest.TestCase):
             with self.subTest(action=action):
                 value = f"kpu:{action}:u1:ref::-1"
                 self.assertEqual(self.acl.callback_action_permissions(value), (perm,))
+
+    def test_pick_is_read(self):
+        # Выбор подписки только перерисовывает карточку: прятать его от читающего админа нельзя.
+        self.assertEqual(self.acl.callback_action_permissions("admin_user:users_kpu_pick:u1:ref:0"), ())
+
+    def test_pick_handler_is_read_in_card_acl(self):
+        from filters.permissions import PERM_USERS_WRITE
+        spec = importlib.util.spec_from_file_location("users_acl", ROOT / "handlers/admin/users/acl.py")
+        users_acl = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(users_acl)
+
+        module = "handlers.admin.users.panel_user.handlers"
+        self.assertIsNone(users_acl.required_permission(module, "handle_panel_pick"))
+        self.assertEqual(users_acl.required_permission(module, "handle_external_menu"), PERM_USERS_WRITE)
 
     def test_back_needs_nothing(self):
         self.assertEqual(self.acl.callback_action_permissions("kpu:back:u1:ref::-1"), ())

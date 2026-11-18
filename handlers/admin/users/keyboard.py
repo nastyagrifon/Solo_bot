@@ -91,6 +91,7 @@ async def build_user_edit_kb(
     has_email: bool = False,
     has_tg: bool = False,
     legacy_tg_id: int | None = None,
+    panel_rows: list | None = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     current_time = datetime.now(tz=timezone.utc)
@@ -112,6 +113,9 @@ async def build_user_edit_kb(
             )
         )
     builder.row(button("➕ Новая подписка", "users_create_key"))
+    # Поля пользователя панели за выбранной подпиской: собирает panel_user.client_panel.
+    for row in panel_rows or ():
+        builder.row(*row)
 
     builder.row(button("💸 Баланс", "users_balance_edit"), button("✉️ Написать", "users_send_message"))
     builder.row(button("🕘 Действия", "users_audit", "all|all|0"), button("🧾 Подписки", "users_sub_history"))
@@ -345,11 +349,6 @@ def build_key_edit_kb(
         service.append(button("🔑 Ключи", "users_keys_list"))
     for i in range(0, len(service), 2):
         builder.row(*service[i : i + 2])
-    if show_subscription_keys:
-        # Тот же признак «ключ на Remnawave»: поля пользователя панели.
-        builder.row(button("👥 Внешний сквад", "users_kpu_ext"), button("🧩 Внутренние", "users_kpu_int"))
-        builder.row(button("🏷 Тег", "users_kpu_tag"), button("📝 Заметка", "users_kpu_note"))
-        builder.row(button("🆔 Сменить владельца", "users_kpu_tg"))
 
     builder.row(
         button("▶️ Включить" if is_frozen else "⛔ Отключить", "users_unfreeze" if is_frozen else "users_freeze"),

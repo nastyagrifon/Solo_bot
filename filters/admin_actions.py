@@ -132,7 +132,7 @@ def callback_action_permissions(value: str | None, state_data: dict | None = Non
             return (PERM_USER_BALANCE,)
         return ACTION_BY_CALLBACK.get(action, ())
     if parts[0] == "kpu" and len(parts) > 1:
-        # Экраны полей панели из карточки ключа; «Назад» — без права, иначе из экрана не выйти.
+        # Экраны полей панели из карточки клиента; «Назад» — без права, иначе из экрана не выйти.
         return {"mv_ok": (PERM_KEY_DELETE,), "back": ()}.get(parts[1], (PERM_KEY_TARIFF,))
     if parts[0] in ("admin_user_key", "admin_users_key") and len(parts) > 1:
         return (PERM_KEY_EXPIRY,) if parts[1] in ("add", "take", "set") else ()

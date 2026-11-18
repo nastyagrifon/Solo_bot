@@ -1,4 +1,4 @@
-"""Тексты и клавиатуры: секция пользователя панели в карточке ключа и экраны правки.
+"""Тексты и клавиатуры: секция пользователя панели в карточке клиента и экраны правки.
 
 Только сборка, без запросов.
 """
@@ -12,10 +12,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from settings.buttons import BACK
 
 from ...panel.headers import card, menu_text, section
-from ..keyboard import LegacyTgRefAlias
+from ..keyboard import AdminUserEditorCallback, LegacyTgRefAlias
 
 
-# Длинная заметка раздула бы карточку ключа за предел сообщения Telegram.
+# Длинная заметка раздула бы карточку клиента за предел сообщения Telegram.
 NOTE_PREVIEW = 200
 
 # Поля, которые правятся вводом текста: заголовок, подсказка, имя поля в панели.
@@ -48,8 +48,13 @@ def _value(value) -> str:
     return html.escape(str(value)) if value not in (None, "") else "—"
 
 
-def panel_section(user: dict, external_squads: list[dict]) -> str:
-    """Секция карточки ключа: поля пользователя панели."""
+def _title(email: str) -> str:
+    # У клиента бывает несколько подписок — заголовок говорит, чья секция.
+    return f"🧩 Панель · {_value(email)}"
+
+
+def panel_section(user: dict, external_squads: list[dict], email: str) -> str:
+    """Секция карточки клиента: поля пользователя панели за выбранной подпиской."""
     ext_uuid = user.get("externalSquadUuid")
     ext_name = next((s.get("name") for s in external_squads if s.get("uuid") == ext_uuid), ext_uuid)
     internal = [
@@ -59,7 +64,7 @@ def panel_section(user: dict, external_squads: list[dict]) -> str:
     if len(note) > NOTE_PREVIEW:
         note = note[:NOTE_PREVIEW] + "…"
     return section(
-        "🧩 Панель",
+        _title(email),
         f"Внешний сквад: {_value(ext_name)}",
         f"Внутренние: {_value(', '.join(map(str, internal)))}",
         f"TG ID: {_value(user.get('telegramId'))}",
@@ -68,8 +73,36 @@ def panel_section(user: dict, external_squads: list[dict]) -> str:
     )
 
 
-def panel_section_failed() -> str:
-    return section("🧩 Панель", "Панель не ответила")
+def panel_section_failed(email: str) -> str:
+    return section(_title(email), "Панель не ответила")
+
+
+def client_panel_rows(user_id: int, selected: str, subs: list[tuple[str, str]]) -> list[list[InlineKeyboardButton]]:
+    """Ряды карточки клиента: выбор подписки (если их больше одной) и правка выбранной.
+
+    subs — пары [ссылка подписки, почта] в порядке карточки.
+    """
+
+    def button(label: str, action: str, ref: str = selected) -> InlineKeyboardButton:
+        return InlineKeyboardButton(
+            text=label, callback_data=AdminUserEditorCallback(action=action, user_id=user_id, data=ref).pack()
+        )
+
+    rows = []
+    if len(subs) > 1:
+        refs = [ref for ref, _ in subs]
+        pos = refs.index(selected)
+        rows.append([
+            button("◀", "users_kpu_pick", refs[pos - 1]),
+            button(subs[pos][1], "users_kpu_pick"),
+            button("▶", "users_kpu_pick", refs[(pos + 1) % len(refs)]),
+        ])
+    rows += [
+        [button("👥 Внешний сквад", "users_kpu_ext"), button("🧩 Внутренние", "users_kpu_int")],
+        [button("🏷 Тег", "users_kpu_tag"), button("📝 Заметка", "users_kpu_note")],
+        [button("🆔 Сменить владельца", "users_kpu_tg")],
+    ]
+    return rows
 
 
 def external_text() -> str:

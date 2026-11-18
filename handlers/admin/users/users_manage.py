@@ -60,6 +60,7 @@ from .keyboard import (
     build_user_site_send_kb,
     build_user_site_tabs_kb,
 )
+from .panel_user.handlers import client_panel
 from .users_states import UserEditorState
 
 
@@ -654,8 +655,9 @@ async def process_user_search(
     actor_tg_id: int | None = None,
     *,
     tg_id: int | None = None,
+    key_ref: str | None = None,
 ) -> None:
-    """Показывает клиента по внутреннему или Telegram ID."""
+    """Показывает клиента по внутреннему или Telegram ID; key_ref — подписка в секции «Панель»."""
     user_id = UserId(user_id) if user_id is not None else TelegramId(tg_id)
     await state.clear()
 
@@ -772,6 +774,10 @@ async def process_user_search(
     if is_web_enabled() and get_site_url():
         blocks.append(section("🌐 Кабинет", f"<code>https://telegram.me/{USERNAME_BOT}?start=tab_keys</code>"))
 
+    panel_section, panel_rows = await client_panel(session, uid, key_records, key_ref)
+    if panel_section:
+        blocks.append(panel_section)
+
     text = card(*blocks)
 
     effective_actor_tg_id = actor_tg_id or (message.from_user.id if message.from_user else None)
@@ -789,6 +795,7 @@ async def process_user_search(
         has_email=has_email,
         has_tg=has_tg,
         legacy_tg_id=real_tg_id,
+        panel_rows=panel_rows,
     )
 
     screen = menu_text(

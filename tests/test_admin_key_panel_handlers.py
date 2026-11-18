@@ -1,6 +1,7 @@
-"""Поля панели в карточке ключа: секция карточки и ввод TG ID для переноса.
+"""Поля панели в карточке клиента: секция, выбор подписки, возврат и ввод TG ID для переноса.
 
 Ядро подменено заглушками: проверяем, что сбой панели не ломает карточку,
+что секция и кнопки относятся к выбранной подписке на Remnawave,
 что перенос к незнакомому боту клиенту отклоняется до подтверждения и что
 сбой панели после переноса показан админу, а не проглочен.
 Запуск из корня проекта: ``venv/bin/python -m unittest discover -s tests -v``
@@ -26,6 +27,8 @@ except ImportError:  # без aiogram обработчики не собрать
 
 
 class Calls:
+    remnawave: set = {"srv-1"}
+    cards: list = []
     users_by_tg: dict = {}
     transfer_result = True
     transferred: list = []
@@ -62,6 +65,9 @@ def _load_handlers():
     async def noop(*a, **k):
         return None
 
+    async def resolve_remnawave_server_ref(session, server_id):
+        return server_id if server_id in Calls.remnawave else None
+
     class AdminUserEditorCallback(CallbackData, prefix="admin_user"):
         action: str
         user_id: int
@@ -88,7 +94,10 @@ def _load_handlers():
             "services.operations.key_transfer", KeyTransferError=KeyTransferError, transfer_key=transfer_key
         ),
         "services.users_utils": _module(
-            "services.users_utils", build_admin_key_ref=lambda c, e: "ref", resolve_admin_key=resolve_admin_key
+            "services.users_utils", build_admin_key_ref=lambda c, e: f"r{c}", resolve_admin_key=resolve_admin_key
+        ),
+        "services.subscription_keys": _module(
+            "services.subscription_keys", resolve_remnawave_server_ref=resolve_remnawave_server_ref
         ),
         "panels": _module("panels"),
         "panels.remnawave_runtime": _module(
@@ -144,38 +153,135 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def _key(client_id, email, server_id="srv-1"):
+    return types.SimpleNamespace(client_id=client_id, email=email, server_id=server_id)
+
+
+def _buttons(rows):
+    return [(b.text, b.callback_data) for row in rows for b in row]
+
+
 @unittest.skipIf(CallbackData is None, "aiogram не установлен")
-class KeyCardSectionTest(unittest.TestCase):
+class ClientPanelTest(unittest.TestCase):
     def setUp(self):
         self.h = _load_handlers()
+        Calls.remnawave = {"srv-1"}
+        self.loaded = []
 
-    def _section(self, load):
+        async def load(session, key, squads=None):
+            self.loaded.append((key.email, squads))
+            return {"tag": "VIP", "externalSquadUuid": "e"}, [{"uuid": "e", "name": "Внешний"}]
+
         self.h.service.load = load
-        return run(self.h.key_card_section(None, Key))
+
+    def _panel(self, keys, key_ref=None):
+        return run(self.h.client_panel(None, 7, keys, key_ref))
 
     def test_panel_error_does_not_break_card(self):
         async def load(*a, **k):
             raise self.h.PanelUserError("нет")
 
-        self.assertIn("Панель не ответила", self._section(load))
+        self.h.service.load = load
+        text, rows = self._panel([_key("a", "a@x")])
+        self.assertIn("Панель не ответила", text)
+        self.assertTrue(rows)
 
     def test_unexpected_error_does_not_break_card(self):
         async def load(*a, **k):
             raise RuntimeError("сеть")
 
-        self.assertIn("Панель не ответила", self._section(load))
+        self.h.service.load = load
+        self.assertIn("Панель не ответила", self._panel([_key("a", "a@x")])[0])
 
     def test_fields_in_one_trip(self):
-        trips = []
-
-        async def load(session, key, squads=None):
-            trips.append(squads)
-            return {"tag": "VIP", "externalSquadUuid": "e"}, [{"uuid": "e", "name": "Внешний"}]
-
-        text = self._section(load)
+        text, _ = self._panel([_key("a", "a@x")])
         self.assertIn("Тег: VIP", text)
         self.assertIn("Внешний сквад: Внешний", text)
-        self.assertEqual(trips, ["external"])
+        self.assertEqual(self.loaded, [("a@x", "external")])
+
+    def test_no_remnawave_no_section_no_buttons(self):
+        self.assertEqual(self._panel([_key("a", "a@x", "xui"), _key("b", "b@x", "xui")]), (None, []))
+        self.assertEqual(self._panel([]), (None, []))
+        self.assertEqual(self.loaded, [])
+
+    def test_default_is_first_remnawave_sub(self):
+        text, rows = self._panel([_key("x", "x@x", "xui"), _key("a", "a@x"), _key("b", "b@x")])
+        self.assertIn("a@x", text.splitlines()[0])
+        self.assertEqual(self.loaded, [("a@x", "external")])
+        edits = [cb for label, cb in _buttons(rows) if ":users_kpu_" in cb and ":users_kpu_pick:" not in cb]
+        self.assertEqual(len(edits), 5)
+        self.assertEqual({cb.split(":")[3] for cb in edits}, {"ra"})
+
+    def test_key_ref_selects_sub(self):
+        text, rows = self._panel([_key("a", "a@x"), _key("b", "b@x")], "rb")
+        self.assertIn("b@x", text.splitlines()[0])
+        self.assertEqual({cb.split(":")[3] for _, cb in _buttons(rows)[3:]}, {"rb"})
+
+    def test_unknown_key_ref_falls_back_to_first(self):
+        text, _ = self._panel([_key("a", "a@x"), _key("b", "b@x")], "rzz")
+        self.assertIn("a@x", text.splitlines()[0])
+
+    def test_picker_only_for_several_subs(self):
+        _, rows = self._panel([_key("a", "a@x")])
+        self.assertFalse(any(":users_kpu_pick:" in cb for _, cb in _buttons(rows)))
+        _, rows = self._panel([_key("a", "a@x"), _key("b", "b@x"), _key("c", "c@x")], "ra")
+        picker = [(label, cb.split(":")[3]) for label, cb in _buttons(rows[:1])]
+        # По кругу: назад от первой — последняя.
+        self.assertEqual(picker, [("◀", "rc"), ("a@x", "ra"), ("▶", "rb")])
+
+
+class FakeUsersManage:
+    """Карточка клиента подменена: запоминаем, с какой подпиской её позвали."""
+
+    @staticmethod
+    async def process_user_search(message, state, session, user_id=None, edit=False, actor_tg_id=None, **kw):
+        Calls.cards.append((user_id, kw.get("key_ref"), edit, actor_tg_id))
+
+
+def _with_card(h, coro):
+    name = "handlers.admin.users.users_manage"
+    saved = sys.modules.get(name)
+    sys.modules[name] = FakeUsersManage
+    try:
+        return run(coro)
+    finally:
+        if saved is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = saved
+
+
+@unittest.skipIf(CallbackData is None, "aiogram не установлен")
+class ClientCardReturnTest(unittest.TestCase):
+    def setUp(self):
+        self.h = _load_handlers()
+        self.h.CallbackQuery = FakeCallback
+        Calls.cards = []
+        self.state = FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+
+    def test_pick_redraws_client_card_with_other_sub(self):
+        cb = self.h.AdminUserEditorCallback(action="users_kpu_pick", user_id=7, data="rb")
+        _with_card(self.h, self.h.handle_panel_pick(FakeCallback(), cb, None, self.state))
+        self.assertEqual(Calls.cards, [(7, "rb", True, 900)])
+
+    def test_back_returns_to_client_card_with_same_sub(self):
+        run(self.state.set_state(self.h.PanelUserState.waiting_value))
+        cb = self.h.PanelUserCallback(action="back", user_id=7, key_ref="rb")
+        _with_card(self.h, self.h.handle_panel_back(FakeCallback(), cb, None, self.state))
+        self.assertEqual(Calls.cards, [(7, "rb", True, 900)])
+        self.assertIsNone(run(self.state.get_state()))
+
+    def test_saved_input_returns_to_client_card_with_same_sub(self):
+        base = self.h.PanelUserCallback(action="", user_id=7, key_ref="rb")
+        run(self.state.set_state(self.h.PanelUserState.waiting_value))
+        run(self.state.update_data({"kpu_field": "tag", "kpu_base": base.pack()}))
+
+        async def set_field(*a, **k):
+            return {}
+
+        self.h.service.set_field = set_field
+        _with_card(self.h, self.h.handle_field_input(FakeMessage("VIP"), None, self.state))
+        self.assertEqual(Calls.cards, [(7, "rb", False, None)])
 
 
 @unittest.skipIf(CallbackData is None, "aiogram не установлен")
@@ -250,6 +356,7 @@ class FakeCallback:
     def __init__(self):
         self.answers = []
         self.from_user = types.SimpleNamespace(id=900)
+        self.message = None
 
     async def answer(self, text=None, show_alert=False, **k):
         self.answers.append((text, show_alert))
@@ -266,7 +373,7 @@ class TransferConfirmTest(unittest.TestCase):
         async def show(event, session, state, user_id, key_ref, notice=None):
             self.shown.append((user_id, key_ref))
 
-        self.h._show_key_card = show
+        self.h._show_client_card = show
         self.state = FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1))
         self.cb = self.h.PanelUserCallback(action="mv_ok", user_id=1, key_ref="ref")
 

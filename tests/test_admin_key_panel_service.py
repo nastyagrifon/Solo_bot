@@ -1,4 +1,4 @@
-"""Поля юзера панели в карточке ключа: действия с панелью и размер кнопок.
+"""Поля юзера панели в карточке клиента: действия с панелью и размер кнопок.
 
 Панель подменена фейком: проверяем, что уходит ровно одно поле, что правку
 сверяем по ответу панели и что сбой не выдаётся за успех.
@@ -179,6 +179,13 @@ def _load_views():
     def section(title, *lines):
         return "\n".join((title, *lines))
 
+    class AdminUserEditorCallback(CallbackData, prefix="admin_user"):
+        # Поля как у ядра; букву типа id ядро добавляет сверху (+1 байт в проверке размера).
+        action: str
+        user_id: int
+        data: str = ""
+        edit: bool = False
+
     stubs = {
         "settings": types.ModuleType("settings"),
         "settings.buttons": types.SimpleNamespace(BACK="Назад"),
@@ -190,7 +197,9 @@ def _load_views():
         ),
         "handlers.admin.users": types.ModuleType("handlers.admin.users"),
         "handlers.admin.users.panel_user": types.ModuleType("handlers.admin.users.panel_user"),
-        "handlers.admin.users.keyboard": types.SimpleNamespace(LegacyTgRefAlias=type("LegacyTgRefAlias", (), {})),
+        "handlers.admin.users.keyboard": types.SimpleNamespace(
+            LegacyTgRefAlias=type("LegacyTgRefAlias", (), {}), AdminUserEditorCallback=AdminUserEditorCallback
+        ),
     }
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
@@ -221,10 +230,20 @@ class CallbackSizeTest(unittest.TestCase):
         )
         self.assertLessEqual(len(longest.encode()) + 1, 64, longest)
 
+    def test_client_card_buttons_fit_64_bytes(self):
+        views, _ = _load_views()
+        user_id = 2**63 - 1
+        subs = [("f" * 12, "a@x"), ("e" * 12, "b@x")]
+        rows = views.client_panel_rows(user_id, "f" * 12, subs)
+        datas = [b.callback_data for row in rows for b in row]
+        self.assertTrue(any(":users_kpu_pick:" in d for d in datas))
+        for d in datas:
+            self.assertLessEqual(len(d.encode()) + 1, 64, d)
+
 
 @unittest.skipIf(aiogram is None, "aiogram не установлен")
 class PanelSectionTest(unittest.TestCase):
-    """Секция «Панель» в карточке ключа."""
+    """Секция «Панель» в карточке клиента."""
 
     def setUp(self):
         self.views, _ = _load_views()
@@ -237,18 +256,24 @@ class PanelSectionTest(unittest.TestCase):
             "tag": "VIP",
             "description": "заметка",
         }
-        text = self.views.panel_section(user, [{"uuid": "e-1", "name": "Внешний А"}])
+        text = self.views.panel_section(user, [{"uuid": "e-1", "name": "Внешний А"}], "a@x")
         for part in ("Внешний А", "Основной, i-2", "TG ID: 7", "Тег: VIP", "Заметка: заметка"):
             self.assertIn(part, text)
         self.assertNotIn("e-1", text)
 
     def test_long_note_is_cut(self):
-        text = self.views.panel_section({"description": "x" * 1000}, [])
+        text = self.views.panel_section({"description": "x" * 1000}, [], "a@x")
         self.assertIn("x" * self.views.NOTE_PREVIEW + "…", text)
         self.assertNotIn("x" * (self.views.NOTE_PREVIEW + 1), text)
 
     def test_note_is_escaped(self):
-        self.assertIn("&lt;b&gt;", self.views.panel_section({"description": "<b>"}, []))
+        self.assertIn("&lt;b&gt;", self.views.panel_section({"description": "<b>"}, [], "a@x"))
+
+    def test_title_names_subscription(self):
+        title = self.views.panel_section({}, [], "<a@x>").splitlines()[0]
+        self.assertIn("🧩 Панель", title)
+        self.assertIn("&lt;a@x&gt;", title)
+        self.assertIn("a@x", self.views.panel_section_failed("a@x").splitlines()[0])
 
 
 if __name__ == "__main__":

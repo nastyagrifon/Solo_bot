@@ -396,6 +396,13 @@ class HandOverToModuleTest(unittest.TestCase):
         Env.module_enabled = True
         self.assertIn("users_hwid_menu", self._devices_button(None))
 
+    def test_key_card_has_no_panel_fields(self):
+        # Поля панели живут в карточке клиента; в карточке ключа — только «Устройства».
+        markup = self.kb.build_key_edit_kb(
+            {"user_id": 1, "client_id": "c", "tg_id": 42}, "mail@x", key_ref="ref", show_subscription_keys=True
+        )
+        self.assertFalse([b.callback_data for b in buttons(markup) if "users_kpu_" in b.callback_data])
+
 
 @unittest.skipIf(aiogram is None, "aiogram не установлен")
 class PermissionsTest(unittest.TestCase):
