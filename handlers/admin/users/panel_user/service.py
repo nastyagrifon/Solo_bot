@@ -25,6 +25,11 @@ def toggle(selected: list[str], uuid: str) -> list[str]:
     return [u for u in selected if u != uuid] if uuid in selected else [*selected, uuid]
 
 
+def panel_ref(user: dict) -> dict:
+    """Чем адресовать пользователя в PATCH /users: новые версии панели не отдают uuid и ищут по id."""
+    return {"uuid": user["uuid"]} if user.get("uuid") else {"id": user["id"]}
+
+
 async def _run(session, key, operation, failure: str):
     result = await with_remnawave_api(
         session,
@@ -70,7 +75,7 @@ async def set_field(session, key, field: str, value) -> dict:
         user = await api.get_user_by_uuid(key.client_id, username=key.email)
         if not user:
             return None
-        response = await api._request("PATCH", "/users", json={"uuid": user["uuid"], field: value})
+        response = await api._request("PATCH", "/users", json={**panel_ref(user), field: value})
         if response.status_code != 200:
             return None
         return response.json().get("response")

@@ -187,17 +187,19 @@ class FakeResponse:
 
 
 class FakePanel:
-    def __init__(self, echo=True):
+    def __init__(self, echo=True, ref=None):
         self.echo, self.patches = echo, []
+        # ref — как панель адресует пользователя; новые версии отдают id без uuid.
+        self.ref = ref or {"uuid": "u-1"}
 
     async def get_user_by_uuid(self, uuid, username=None):
-        return {"uuid": "u-1", "telegramId": 11, "email": "old@x"}
+        return {**self.ref, "telegramId": 11, "email": "old@x"}
 
     async def _request(self, method, path, json=None):
         self.patches.append(json)
-        body = {"uuid": "u-1", "telegramId": 11, "email": "old@x"}
+        body = {**self.ref, "telegramId": 11, "email": "old@x"}
         if self.echo:
-            body.update({k: v for k, v in json.items() if k != "uuid"})
+            body.update({k: v for k, v in json.items() if k not in ("uuid", "id")})
         return FakeResponse(body)
 
 
@@ -289,6 +291,11 @@ class TransferTest(unittest.TestCase):
         W.panel = FakePanel()
         self.assertTrue(run(kt.transfer_key(None, Key(), 5, actor_tg_id=900)))
         self.assertEqual(W.panel.patches, [{"uuid": "u-1", "telegramId": 55, "email": None}])
+
+    def test_new_panel_without_uuid_is_addressed_by_id(self):
+        W.panel = FakePanel(ref={"id": 10})
+        self.assertTrue(run(kt.transfer_key(None, Key(), 5, actor_tg_id=900)))
+        self.assertEqual(W.panel.patches, [{"id": 10, "telegramId": 55, "email": None}])
 
     def test_panel_ignoring_patch_is_failure(self):
         W.panel = FakePanel(echo=False)

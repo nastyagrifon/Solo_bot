@@ -75,7 +75,8 @@ async def _update_panel(session, key_obj, dst_uid: int) -> bool:
         user = await api.get_user_by_uuid(key_obj.client_id, username=key_obj.email)
         if not user:
             return None
-        response = await api._request("PATCH", "/users", json={"uuid": user["uuid"], **fields})
+        # Новые версии панели не отдают uuid и ищут пользователя в PATCH по id.
+        response = await api._request("PATCH", "/users", json={**({"uuid": user["uuid"]} if user.get("uuid") else {"id": user["id"]}), **fields})
         if response.status_code != 200:
             return None
         saved = response.json().get("response") or {}

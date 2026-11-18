@@ -94,6 +94,11 @@ class PatchOneFieldTest(unittest.TestCase):
         self.assertIn(("api", "srv-1", "cid-1"), self.calls)
         self.assertIn(("invalidate", "srv-1", "cid-1"), self.calls)
 
+    def test_new_panel_without_uuid_is_addressed_by_id(self):
+        self.api.user = {"id": 10, "tag": None}
+        run(self.svc.set_field(None, Key, "tag", "VIP"))
+        self.assertEqual(self.api.patches[-1], ("PATCH", "/users", {"id": 10, "tag": "VIP"}))
+
     def test_internal_squads_order_does_not_matter(self):
         self.api.user["activeInternalSquads"] = [{"uuid": "b"}, {"uuid": "a"}]
         saved = run(self.svc.set_field(None, Key, self.svc.INTERNAL, ["a", "b"]))
