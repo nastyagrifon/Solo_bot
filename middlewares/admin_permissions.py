@@ -5,7 +5,7 @@ from aiogram import BaseMiddleware
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from filters.admin import get_admin_context
+from filters.admin import get_admin_context, get_admin_role
 from filters.admin_actions import (
     ADMIN_ACTION_ACCESS,
     LIMIT_CALLBACKS,
@@ -16,7 +16,7 @@ from filters.admin_actions import (
     granular_permissions_enabled,
     state_action_permissions,
 )
-from filters.permissions import GRANULAR_ACTIONS_CONFIGURED, PERM_KEY_DEVICES, PERM_KEY_TRAFFIC
+from filters.permissions import GRANULAR_ACTIONS_CONFIGURED, PERM_KEY_DEVICES, PERM_KEY_TRAFFIC, ROLE_ACTION_DENY
 
 
 ADMIN_ACTION_PERMISSION_DENIED = "Недостаточно прав для этого действия."
@@ -39,13 +39,23 @@ class AdminKeyboardPermissionsMiddleware(BaseRequestMiddleware):
 
 class AdminActionPermissionsMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Message | CallbackQuery, data: dict):
-        if not granular_permissions_enabled():
-            return await handler(event, data)
         sender = getattr(event, "from_user", None)
+        granular = granular_permissions_enabled()
+        if not granular:
+            # Закрытое роли по умолчанию действует и без детальных прав: иначе
+            # тестировщик с выключенным переключателем снова равен админу.
+            if sender is None or await get_admin_role(sender.id) not in ROLE_ACTION_DENY:
+                return await handler(event, data)
         if sender is None:
             return None
         is_admin, is_super, permissions = await get_admin_context(sender.id, fresh=True)
-        access = AdminActionAccess(is_super, permissions if is_admin else frozenset((GRANULAR_ACTIONS_CONFIGURED,)))
+        # Без переключателя сохранённые детальные права не действуют — только закрытое ролью.
+        stored = permissions if granular else frozenset()
+        access = AdminActionAccess(
+            is_super,
+            stored if is_admin else frozenset((GRANULAR_ACTIONS_CONFIGURED,)),
+            await get_admin_role(sender.id),
+        )
         state = data.get("state")
         state_data = await state.get_data() if state is not None else {}
         current_state = await state.get_state() if state is not None else None

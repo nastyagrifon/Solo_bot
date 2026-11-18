@@ -125,6 +125,7 @@ def build_admins_kb(admins: list[tuple[int, str]]) -> InlineKeyboardMarkup:
         )
 
     builder.button(text="➕ Добавить админа", callback_data=AdminPanelCallback(action="add_admin").pack())
+    builder.button(text="🧪 Сквады тестировщиков", callback_data=AdminPanelCallback(action="tst").pack())
     builder.row(build_admin_back_btn())
     builder.adjust(1)
     return builder.as_markup()

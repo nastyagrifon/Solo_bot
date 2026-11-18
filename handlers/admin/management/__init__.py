@@ -8,7 +8,7 @@ router = Router()
 router.callback_query.filter(HasPermission(PERM_MANAGEMENT, PERM_ADMINS))
 router.message.filter(HasPermission(PERM_MANAGEMENT, PERM_ADMINS))
 
-from . import admins, database, domain, file_upload, import_3xui, import_remnawave, maintenance, update_handler
+from . import admins, database, domain, file_upload, import_3xui, import_remnawave, maintenance, testers, update_handler
 
 
 __all__ = (
@@ -20,5 +20,6 @@ __all__ = (
     "import_3xui",
     "import_remnawave",
     "maintenance",
+    "testers",
     "update_handler",
 )

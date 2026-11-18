@@ -96,7 +96,7 @@ async def _admin_access(session, principal) -> tuple[AdminActionAccess, frozense
     if role == "designer":
         raise HTTPException(status_code=403, detail=ADMIN_ACTION_PERMISSION_DENIED)
     permissions = frozenset(normalize_permissions(admin.permissions))
-    return AdminActionAccess(role == SUPERADMIN_ROLE, permissions), permissions
+    return AdminActionAccess(role == SUPERADMIN_ROLE, permissions, role), permissions
 
 
 def _allows_admin_action(access: AdminActionAccess, permissions: frozenset[str], required: tuple[str, ...]) -> bool:

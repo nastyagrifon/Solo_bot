@@ -1,4 +1,4 @@
-"""Пользователь панели, стоящий за ключом подписки: чтение и правка одного поля.
+"""Пользователь панели, стоящий за ключом подписки: чтение и правка полей.
 
 Панель спрашиваем на сервере КЛЮЧА, без fallback_any: при нескольких панелях
 запрос иначе ушёл бы на произвольную и правил бы чужого пользователя.
@@ -69,27 +69,33 @@ async def load(session, key, squads: str | None = None) -> tuple[dict, list[dict
     return await _run(session, key, op, "Панель не ответила: пользователь не прочитан")
 
 
-async def set_field(session, key, field: str, value) -> dict:
-    """Меняет ровно одно поле пользователя панели и сверяет его по ответу."""
+async def set_fields(session, key, values: dict) -> dict:
+    """Меняет поля пользователя панели одним PATCH и сверяет каждое по ответу."""
 
     async def op(api):
         user = await api.get_user_by_uuid(key.client_id, username=key.email)
         if not user:
             return None
-        response = await api._request("PATCH", "/users", json={**panel_ref(user), field: value})
+        response = await api._request("PATCH", "/users", json={**panel_ref(user), **values})
         if response.status_code != 200:
             return None
         return response.json().get("response")
 
     saved = await _run(session, key, op, "Панель не приняла правку")
-    if field == INTERNAL:
-        ok = sorted(internal_squad_uuids(saved)) == sorted(value)
-    else:
-        ok = saved.get(field) == value
-    if not ok:
-        raise PanelUserError("Панель ответила, но поле не изменилось")
+    for field, value in values.items():
+        if field == INTERNAL:
+            ok = sorted(internal_squad_uuids(saved)) == sorted(value)
+        else:
+            ok = saved.get(field) == value
+        if not ok:
+            raise PanelUserError("Панель ответила, но поле не изменилось")
     await invalidate_remnawave_profile(session, str(key.server_id or ""), str(key.client_id))
     return saved
+
+
+async def set_field(session, key, field: str, value) -> dict:
+    """Меняет ровно одно поле пользователя панели и сверяет его по ответу."""
+    return await set_fields(session, key, {field: value})
 
 
 async def clear_devices(session, key) -> None:

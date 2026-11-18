@@ -93,12 +93,13 @@ LIMIT_PREFIXES = {
 class AdminActionAccess:
     is_super: bool
     permissions: frozenset[str]
+    role: str = ""
 
     def allows(self, required: tuple[str, ...]) -> bool:
         """Проверяет разрешения выбранного действия."""
         if self.is_super:
             return True
-        allowed = action_permissions(self.permissions)
+        allowed = action_permissions(self.permissions, self.role)
         return all(
             bool(allowed.intersection((PERM_KEY_DEVICES, PERM_KEY_TRAFFIC)))
             if permission == ANY_KEY_LIMIT
@@ -142,6 +143,9 @@ def callback_action_permissions(value: str | None, state_data: dict | None = Non
         return (permission,) if permission and parts[1] != "back_actions" else ()
     if parts[0] == "admin_panel" and len(parts) > 1:
         action = parts[1]
+        if action == "tst" or action.startswith("tst_"):
+            # Сквады и тег тестировщиков — часть управления админами.
+            return (FULL_ADMIN,)
         if action in (
             "admins",
             "add_admin",

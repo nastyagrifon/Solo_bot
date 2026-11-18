@@ -156,6 +156,12 @@ class RenewOnRemnawaveTest(unittest.TestCase):
         self.assertIsNone(sent["external_squad_uuid"])
         self.assertEqual(sent["active_user_inbounds"], ["int-cluster"])
 
+    def test_renewal_does_not_send_tag(self):
+        # Тег TESTER ставит настройка тестировщиков; продление его не передаёт, а значит и не сбрасывает.
+        for external, keep in (("ext-tariff", True), ("ext-tariff", False), ("", True)):
+            with self.subTest(external=external, keep=keep):
+                self.assertNotIn("tag", self._renew(external, keep=keep)[1])
+
     def test_empty_panel_internal_squads_fall_back_to_cluster(self):
         _, sent = self._renew("x", keep=True, user={"externalSquadUuid": None, "activeInternalSquads": []})
         self.assertEqual(sent["active_user_inbounds"], ["int-cluster"])
