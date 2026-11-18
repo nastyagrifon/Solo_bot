@@ -730,7 +730,11 @@ async def process_user_search(
     result_keys = await session.execute(stmt_keys)
     key_records = result_keys.scalars().all()
 
-    stmt_ban = select(ManualBan).where(ManualBan.user_id == uid).limit(1)
+    ban_of_client = ManualBan.user_id == uid
+    if real_tg_id is not None:
+        # бан по tg id, поставленный до регистрации, тоже бан этого клиента
+        ban_of_client = or_(ban_of_client, ManualBan.user_id.is_(None) & (ManualBan.tg_id == real_tg_id))
+    stmt_ban = select(ManualBan).where(ban_of_client).order_by(ManualBan.user_id.nulls_last()).limit(1)
     result_ban = await session.execute(stmt_ban)
     ban_record = result_ban.scalar_one_or_none()
 

@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import delete
+from sqlalchemy import delete, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -255,7 +255,10 @@ async def handle_user_unban(
         await callback.answer("Клиент не найден", show_alert=True)
         return
 
-    await session.execute(delete(ManualBan).where(ManualBan.user_id == u.id))
+    ban_of_client = ManualBan.user_id == u.id
+    if u.tg_id is not None:
+        ban_of_client = or_(ban_of_client, ManualBan.user_id.is_(None) & (ManualBan.tg_id == u.tg_id))
+    await session.execute(delete(ManualBan).where(ban_of_client))
     if u.tg_id is not None:
         await invalidate_ban_cache(u.tg_id)
 

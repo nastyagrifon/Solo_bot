@@ -8,13 +8,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import delete_user_data
 from database.access.resolution import TelegramId, UserId, resolve_user_optional
-from database.models import BlockedUser, Key, ManualBan, PreBan, User
+from database.models import BlockedUser, Key, ManualBan, User
 from database.users import add_user
 from filters.admin import HasPermission, IsAdminFilter
 from filters.permissions import PERM_MANAGEMENT
@@ -38,29 +38,19 @@ router.message.filter(HasPermission(PERM_MANAGEMENT))
 
 class PreemptiveBanStates(StatesGroup):
     waiting_for_preemptive_ids = State()
-    waiting_for_preban_file = State()
 
 
-PREBAN_FILE_MAX_BYTES = 2 * 1024 * 1024
-PREBAN_CHUNK = 1000
+class ManualBansStates(StatesGroup):
+    waiting_for_import_file = State()
+    waiting_for_unban_ids = State()
 
 
-def parse_preban_lines(text: str) -> tuple[dict[int, str | None], int]:
-    """Строки «<tg_id> #<причина>» -> {tg_id: причина}. Пустые и «# ...» не считаются; мусор и повторы — пропущено."""
-    entries: dict[int, str | None] = {}
-    skipped = 0
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        head, _, comment = line.partition("#")
-        head = head.strip()
-        tg_id = int(head) if head.isascii() and head.isdigit() else 0
-        if not 0 < tg_id < 2**63 or tg_id in entries:
-            skipped += 1
-            continue
-        entries[tg_id] = comment.strip() or None
-    return entries, skipped
+IMPORT_MAX_BYTES = 1024 * 1024
+IMPORT_BAD_LINES_SHOWN = 10
+_CHUNK = 1000
+# tg id бана: у бана клиента — из users, у бана без клиента — свой (зеркало у старых строк бывает выдуманным)
+BAN_TG_ID = case((ManualBan.user_id.is_(None), ManualBan.tg_id), else_=User.tg_id)
+_ACTIVE_BAN = or_(ManualBan.until.is_(None), ManualBan.until > func.now())
 
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "bans"), IsAdminFilter())
@@ -72,8 +62,7 @@ async def handle_bans(callback_query: CallbackQuery):
             "📋 Виды",
             "Забанившие: закрыли бота сами",
             "Теневые: бот их игнорирует",
-            "Ручные: забанены из админки",
-            "Предбан: по списку Telegram ID, ещё до регистрации",
+            "Ручные: забанены из админки или импортом",
         ),
     )
     await callback_query.message.edit_text(text=text_, reply_markup=build_bans_kb())
@@ -113,7 +102,7 @@ async def handle_manual_bans_menu(callback_query: CallbackQuery):
     text_ = menu_text(
         "Ручные баны",
         "Выберите действие.",
-        quote("Клиенты, которых вы забанили из админки."),
+        quote("Клиенты, которых вы забанили из админки, и tg id из импорта — в том числе ещё не пришедшие в бота."),
     )
     await callback_query.message.edit_text(text=text_, reply_markup=build_manual_bans_kb())
 
@@ -218,7 +207,7 @@ async def handle_manual_bans_export(callback_query: CallbackQuery, session: Asyn
     try:
         result = await session.execute(
             select(
-                User.tg_id,
+                BAN_TG_ID.label("tg_id"),
                 ManualBan.user_id,
                 ManualBan.banned_at,
                 ManualBan.reason,
@@ -227,8 +216,8 @@ async def handle_manual_bans_export(callback_query: CallbackQuery, session: Asyn
                 ManualBan.banned_by,
             )
             .select_from(ManualBan)
-            .join(User, ManualBan.user_id == User.id)
-            .where(or_(ManualBan.reason != "shadow", ManualBan.reason.is_(None)))
+            .outerjoin(User, ManualBan.user_id == User.id)
+            .where(or_(ManualBan.reason != "shadow", ManualBan.reason.is_(None)), _ACTIVE_BAN)
         )
         rows = result.all()
 
@@ -246,7 +235,7 @@ async def handle_manual_bans_export(callback_query: CallbackQuery, session: Asyn
 
         await callback_query.message.answer_document(
             document=document,
-            caption="📥 Экспорт вручную забаненных пользователей (CSV)",
+            caption="📥 Активные баны (CSV) — этот же файл принимает импорт",
         )
     except Exception as e:
         await callback_query.message.answer(
@@ -343,9 +332,9 @@ async def handle_clear_manual_bans(callback_query: CallbackQuery, session: Async
             return
 
         tg_ids_result = await session.execute(
-            select(User.tg_id)
+            select(BAN_TG_ID)
             .select_from(ManualBan)
-            .join(User, ManualBan.user_id == User.id)
+            .outerjoin(User, ManualBan.user_id == User.id)
             .where(or_(ManualBan.reason != "shadow", ManualBan.reason.is_(None)))
         )
         tg_to_invalidate = [r[0] for r in tg_ids_result.all() if r[0] is not None]
@@ -455,111 +444,214 @@ async def handle_preemptive_ids_input(message: Message, state: FSMContext, sessi
     await state.clear()
 
 
-@router.callback_query(AdminPanelCallback.filter(F.action == "bans_preban_upload"), IsAdminFilter())
-async def handle_preban_upload_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(PreemptiveBanStates.waiting_for_preban_file)
+def _parse_tg_id(raw: str) -> int | None:
+    raw = (raw or "").strip()
+    return int(raw) if raw.isdigit() and 0 < int(raw) < 2**63 else None
+
+
+def parse_bans_file(content: str) -> tuple[dict[int, dict], list[int]]:
+    """Разбор файла импорта: свой экспорт CSV или строки «<tg_id> #причина».
+
+    Возвращает баны по tg id (повтор — берётся первая строка) и номера плохих строк.
+    Причина из текстового файла — внутренняя, публичной нет.
+    """
+    bans: dict[int, dict] = {}
+    bad: list[int] = []
+    lines = content.splitlines()
+    first = next((line.strip() for line in lines if line.strip()), "")
+    if first.split(",")[0].strip() == "tg_id":
+        start = next(i for i, line in enumerate(lines) if line.strip())
+        reader = csv.DictReader(lines[start:])
+        now = datetime.now(timezone.utc)
+        for row in reader:
+            line_no = start + reader.line_num
+            if not any((v or "").strip() for v in row.values() if isinstance(v, str)):
+                continue
+            tg_id = _parse_tg_id(row.get("tg_id"))
+            until = None
+            try:
+                if (row.get("until") or "").strip():
+                    until = datetime.fromisoformat(row["until"].strip())
+                    until = until if until.tzinfo else until.replace(tzinfo=timezone.utc)
+            except ValueError:
+                tg_id = None
+            if tg_id is None or (until is not None and until <= now):
+                bad.append(line_no)
+                continue
+            bans.setdefault(
+                tg_id,
+                {
+                    "reason": (row.get("reason") or "").strip() or None,
+                    "public_reason": (row.get("public_reason") or "").strip() or None,
+                    "until": until,
+                },
+            )
+        return bans, bad
+
+    for line_no, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        head, _, comment = line.partition("#")
+        tg_id = _parse_tg_id(head)
+        if tg_id is None:
+            bad.append(line_no)
+            continue
+        bans.setdefault(tg_id, {"reason": comment.strip() or None, "public_reason": None, "until": None})
+    return bans, bad
+
+
+async def import_bans(session: AsyncSession, bans: dict[int, dict], banned_by: int) -> tuple[int, int]:
+    """Дополняет баны: существующий бан по tg id (клиента или без клиента) не трогает.
+
+    Возвращает (добавлено, уже было).
+    """
+    added = already = 0
+    now = datetime.now(timezone.utc)
+    tg_ids = list(bans)
+    for i in range(0, len(tg_ids), _CHUNK):
+        chunk = tg_ids[i : i + _CHUNK]
+        users = dict((await session.execute(select(User.tg_id, User.id).where(User.tg_id.in_(chunk)))).all())
+        banned = {
+            row[0]
+            for row in (
+                await session.execute(
+                    select(BAN_TG_ID)
+                    .select_from(ManualBan)
+                    .outerjoin(User, ManualBan.user_id == User.id)
+                    .where(
+                        or_(
+                            ManualBan.user_id.in_(list(users.values()) or [-1]),
+                            ManualBan.user_id.is_(None) & ManualBan.tg_id.in_(chunk),
+                        )
+                    )
+                )
+            ).all()
+        }
+        rows = [
+            {
+                "user_id": users.get(tg_id),
+                "tg_id": tg_id,
+                "reason": bans[tg_id]["reason"],
+                "public_reason": bans[tg_id]["public_reason"],
+                "until": bans[tg_id]["until"],
+                "banned_by": banned_by,
+                "banned_at": now,
+            }
+            for tg_id in chunk
+            if tg_id not in banned
+        ]
+        already += len(chunk) - len(rows)
+        if not rows:
+            continue
+        # без цели конфликта: гонка с параллельным баном тоже не перезаписывает
+        result = await session.execute(pg_insert(ManualBan).values(rows).on_conflict_do_nothing())
+        inserted = result.rowcount if result.rowcount is not None and result.rowcount >= 0 else len(rows)
+        added += inserted
+        already += len(rows) - inserted
+        for row in rows:
+            await invalidate_ban_cache(row["tg_id"])
+    return added, already
+
+
+def _cancel_kb():
     builder = InlineKeyboardBuilder()
-    builder.button(text="❌ Отмена", callback_data=AdminPanelCallback(action="bans_preban_cancel").pack())
+    builder.button(text="❌ Отмена", callback_data=AdminPanelCallback(action="manual_bans_cancel").pack())
+    return builder.as_markup()
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action == "manual_bans_cancel"), IsAdminFilter())
+async def handle_manual_bans_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await handle_manual_bans_menu(callback)
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action == "manual_bans_import"), IsAdminFilter())
+async def handle_manual_bans_import_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ManualBansStates.waiting_for_import_file)
     await callback.message.edit_text(
         menu_text(
-            "Предбан",
-            "Пришлите .txt документ: по одному Telegram ID в строке, причина после #.",
-            section("📥 Пример", "1234567 #причина", "7654321"),
-            quote(
-                "Причину видят только админы, клиенту — нейтральный текст. "
-                "Строки с # в начале и пустые пропускаются, повтор ID — берётся первая причина."
+            "Импорт банов",
+            "Пришлите файл. Импорт только добавляет: существующие баны не меняются.",
+            section(
+                "📄 Форматы",
+                "CSV из «Экспорт» этого раздела",
+                "или текст: <code>&lt;tg_id&gt; #причина</code>, по одному в строке",
             ),
+            quote("Причина из текста — внутренняя, клиент видит нейтральный текст. Бан навсегда."),
         ),
-        reply_markup=builder.as_markup(),
+        reply_markup=_cancel_kb(),
     )
 
 
-@router.callback_query(AdminPanelCallback.filter(F.action == "bans_preban_cancel"), IsAdminFilter())
-async def handle_preban_upload_cancel(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await handle_bans(callback)
-
-
-@router.message(PreemptiveBanStates.waiting_for_preban_file, IsAdminFilter())
-async def handle_preban_file(message: Message, state: FSMContext, session: AsyncSession):
+@router.message(ManualBansStates.waiting_for_import_file, IsAdminFilter())
+async def handle_manual_bans_import_file(message: Message, state: FSMContext, session: AsyncSession):
     document = message.document
-    if document is None or not (document.file_name or "").lower().endswith(".txt"):
-        await message.answer(menu_text("Предбан", "❌ Нужен .txt документ."))
+    if document is None:
+        await message.answer(menu_text("Импорт банов", "Пришлите файл документом."), reply_markup=_cancel_kb())
         return
-    if (document.file_size or 0) > PREBAN_FILE_MAX_BYTES:
-        await message.answer(menu_text("Предбан", "❌ Файл больше 2 МБ."))
+    limit_text = f"Файл больше {IMPORT_MAX_BYTES // 1024} КБ."
+    if (document.file_size or 0) > IMPORT_MAX_BYTES:
+        await message.answer(menu_text("Импорт банов", limit_text), reply_markup=_cancel_kb())
         return
-
     buffer = io.BytesIO()
     await message.bot.download(document, destination=buffer)
-    entries, skipped = parse_preban_lines(buffer.getvalue().decode("utf-8", errors="replace"))
-    if not entries:
-        await message.answer(menu_text("Предбан", f"❌ Ни одного корректного Telegram ID. Пропущено строк: {skipped}."))
+    if buffer.tell() > IMPORT_MAX_BYTES:
+        await message.answer(menu_text("Импорт банов", limit_text), reply_markup=_cancel_kb())
+        return
+    try:
+        content = buffer.getvalue().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        await message.answer(menu_text("Импорт банов", "Нужен текстовый файл в UTF-8."), reply_markup=_cancel_kb())
         return
 
-    ids = list(entries)
-    source = f"{document.file_name} от {message.from_user.id}"
-    now = datetime.now(timezone.utc)
-    existing = 0
-    clients = 0
-    for start in range(0, len(ids), PREBAN_CHUNK):
-        chunk = ids[start : start + PREBAN_CHUNK]
-        existing += (
-            await session.execute(select(func.count()).select_from(PreBan).where(PreBan.tg_id.in_(chunk)))
-        ).scalar() or 0
-        clients += (
-            await session.execute(select(func.count()).select_from(User).where(User.tg_id.in_(chunk)))
-        ).scalar() or 0
-        ins = pg_insert(PreBan).values([
-            {"tg_id": tid, "reason": entries[tid], "source": source, "created_at": now} for tid in chunk
-        ])
-        await session.execute(
-            ins.on_conflict_do_update(
-                index_elements=[PreBan.tg_id],
-                set_={"reason": ins.excluded.reason, "source": ins.excluded.source, "created_at": now},
-            )
-        )
-    for tid in ids:
-        await invalidate_ban_cache(tid)
-
-    logger.info(f"[BANS] Предбан из файла: {len(ids) - existing} новых, {existing} обновлено, {skipped} пропущено")
-    await message.answer(
-        menu_text(
-            "Предбан",
-            "✅ Список загружен.",
-            section(
-                "📊 Итог",
-                f"Добавлено: <b>{len(ids) - existing}</b>",
-                f"Обновлено: <b>{existing}</b>",
-                f"Пропущено строк: <b>{skipped}</b>",
-                f"Из загруженных уже клиенты бота: <b>{clients}</b>",
-            ),
-            quote("Уже зарегистрированных клиентов предбан тоже отсекает; обычный бан им не ставится — решайте вручную."),
-        ),
-        reply_markup=build_bans_kb(),
-    )
+    bans, bad = parse_bans_file(content)
+    added, already = await import_bans(session, bans, message.from_user.id)
     await state.clear()
+    lines = [f"Добавлено: {added}", f"Уже было: {already}", f"Пропущено строк: {len(bad)}"]
+    if bad:
+        shown = ", ".join(map(str, bad[:IMPORT_BAD_LINES_SHOWN]))
+        lines.append(f"Плохие строки: {shown}" + (" …" if len(bad) > IMPORT_BAD_LINES_SHOWN else ""))
+    logger.info(
+        f"[BANS] Импорт банов от {message.from_user.id}: добавлено {added}, уже было {already}, плохих {len(bad)}"
+    )
+    await message.answer(menu_text("Импорт банов", section("📊 Итог", *lines)), reply_markup=build_manual_bans_kb())
 
 
-@router.callback_query(AdminPanelCallback.filter(F.action == "bans_preban_export"), IsAdminFilter())
-async def handle_preban_export(callback_query: CallbackQuery, session: AsyncSession):
-    try:
-        rows = (
-            await session.execute(
-                select(PreBan.tg_id, PreBan.reason, PreBan.public_reason, PreBan.source, PreBan.created_at)
-            )
-        ).all()
+@router.callback_query(AdminPanelCallback.filter(F.action == "manual_bans_unban"), IsAdminFilter())
+async def handle_manual_bans_unban_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ManualBansStates.waiting_for_unban_ids)
+    await callback.message.edit_text(
+        menu_text(
+            "Разбан по tg id",
+            "Пришлите Telegram ID, по одному в строке.",
+            quote("Снимается бан клиента с этим tg id и бан по tg id без клиента."),
+        ),
+        reply_markup=_cancel_kb(),
+    )
 
-        csv_output = io.StringIO()
-        writer = csv.writer(csv_output)
-        writer.writerow(["tg_id", "reason", "public_reason", "source", "created_at"])
-        for row in rows:
-            writer.writerow([row.tg_id, row.reason, row.public_reason, row.source, row.created_at])
 
-        document = BufferedInputFile(file=csv_output.getvalue().encode("utf-8"), filename="pre_bans.csv")
-        await callback_query.message.answer_document(document=document, caption="📥 Экспорт предбанов (CSV)")
-    except Exception as e:
-        await callback_query.message.answer(
-            text=menu_text("Баны", f"❌ Ошибка при экспорте: {e}"),
-            reply_markup=build_bans_kb(),
+@router.message(ManualBansStates.waiting_for_unban_ids, IsAdminFilter())
+async def handle_manual_bans_unban_input(message: Message, state: FSMContext, session: AsyncSession):
+    tg_ids = {tg for tg in map(_parse_tg_id, (message.text or "").splitlines()) if tg is not None}
+    if not tg_ids:
+        await message.answer(
+            menu_text("Баны", "❌ Не найдено ни одного корректного Telegram ID."), reply_markup=_cancel_kb()
         )
+        return
+    user_ids = (await session.execute(select(User.id).where(User.tg_id.in_(tg_ids)))).scalars().all()
+    result = await session.execute(
+        delete(ManualBan).where(
+            or_(
+                ManualBan.user_id.in_(list(user_ids) or [-1]),
+                ManualBan.user_id.is_(None) & ManualBan.tg_id.in_(tg_ids),
+            )
+        )
+    )
+    for tg_id in tg_ids:
+        await invalidate_ban_cache(tg_id)
+    await state.clear()
+    await message.answer(
+        menu_text("Разбан по tg id", f"🔓 Снято банов: <b>{result.rowcount or 0}</b>"),
+        reply_markup=build_manual_bans_kb(),
+    )

@@ -9,9 +9,11 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Identity as SAIdentity,
+    Index,
     Integer,
     String,
     Text,
+    text,
 )
 
 from ._base import Base, DictLikeMixin
@@ -52,8 +54,14 @@ class User(DictLikeMixin, Base):
 
 class ManualBan(DictLikeMixin, Base):
     __tablename__ = "manual_bans"
+    # бан без клиента (tg id ещё не пришёл в бота): user_id NULL, один на tg_id
+    __table_args__ = (
+        Index("uq_manual_bans_user_id", "user_id", unique=True),
+        Index("uq_manual_bans_tg_id_no_user", "tg_id", unique=True, postgresql_where=text("user_id IS NULL")),
+    )
 
-    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, primary_key=True)
+    id = Column(BigInteger, SAIdentity(always=False), primary_key=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     tg_id = Column(BigInteger, nullable=True, index=True)
     banned_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     reason = Column(Text)
@@ -61,19 +69,6 @@ class ManualBan(DictLikeMixin, Base):
     public_reason = Column(Text, nullable=True)
     banned_by = Column(BigInteger)
     until = Column(DateTime(timezone=True), nullable=True)
-
-
-class PreBan(DictLikeMixin, Base):
-    """Бан по tg id заранее, до регистрации: без строки в users, поэтому отдельно от manual_bans."""
-
-    __tablename__ = "pre_bans"
-
-    tg_id = Column(BigInteger, primary_key=True)
-    reason = Column(Text)
-    # reason видят только админы; клиенту показывается public_reason или нейтральный текст
-    public_reason = Column(Text, nullable=True)
-    source = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 
 class TemporaryData(DictLikeMixin, Base):

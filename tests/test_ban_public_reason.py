@@ -125,7 +125,7 @@ def _load_checker(cache):
     async def resolve_uid_cached(session, tg_id):
         return 1
 
-    manual_ban = types.SimpleNamespace(reason=Col(), public_reason=Col(), until=Col(), user_id=Col())
+    manual_ban = types.SimpleNamespace(reason=Col(), public_reason=Col(), until=Col(), user_id=Col(), tg_id=Col())
     stubs = {
         "pytz": _module("pytz", timezone=lambda name: timezone(timedelta(hours=3))),
         "aiogram": _module("aiogram", BaseMiddleware=object),
@@ -148,9 +148,7 @@ def _load_checker(cache):
         "database.access.resolution": _module(
             "database.access.resolution", TelegramId=int, resolve_uid_cached=resolve_uid_cached
         ),
-        "database.models": _module(
-            "database.models", ManualBan=manual_ban, PreBan=types.SimpleNamespace(tg_id=Col(), public_reason=Col())
-        ),
+        "database.models": _module("database.models", ManualBan=manual_ban),
         "logger": _module("logger", logger=LOG),
         "settings": _module("settings"),
         "settings.cache_config": _module("settings.cache_config", BAN_CACHE_TTL_SEC=60),
@@ -358,7 +356,7 @@ def _load_bans(saved):
         "aiogram.types": _module("aiogram.types", CallbackQuery=object, Message=object),
         "aiogram.utils": _module("aiogram.utils"),
         "aiogram.utils.keyboard": _module("aiogram.utils.keyboard", InlineKeyboardBuilder=Builder),
-        "sqlalchemy": _module("sqlalchemy", delete=lambda *a: None),
+        "sqlalchemy": _module("sqlalchemy", delete=lambda *a: None, or_=lambda *a: None),
         "sqlalchemy.dialects": _module("sqlalchemy.dialects"),
         "sqlalchemy.dialects.postgresql": _module("sqlalchemy.dialects.postgresql", insert=lambda m: Insert(saved)),
         "sqlalchemy.ext": _module("sqlalchemy.ext"),

@@ -21,14 +21,6 @@ def build_bans_kb():
         text="🔒 Ручные баны",
         callback_data=AdminPanelCallback(action="bans_manual_menu").pack(),
     )
-    builder.button(
-        text="📄 Загрузить список",
-        callback_data=AdminPanelCallback(action="bans_preban_upload").pack(),
-    )
-    builder.button(
-        text="📥 Экспорт предбанов",
-        callback_data=AdminPanelCallback(action="bans_preban_export").pack(),
-    )
     builder.adjust(2)
     builder.row(InlineKeyboardButton(text=BACK, callback_data=AdminPanelCallback(action="management").pack()))
     return builder.as_markup()
@@ -80,6 +72,14 @@ def build_manual_bans_kb():
     builder.button(
         text="📥 Экспорт",
         callback_data=AdminPanelCallback(action="manual_bans_export").pack(),
+    )
+    builder.button(
+        text="📤 Импорт",
+        callback_data=AdminPanelCallback(action="manual_bans_import").pack(),
+    )
+    builder.button(
+        text="🔓 Разбан по tg id",
+        callback_data=AdminPanelCallback(action="manual_bans_unban").pack(),
     )
     builder.button(
         text="🧹 Очистить список",
