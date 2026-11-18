@@ -78,6 +78,8 @@ _LEGACY_PERMISSION_ALIASES: dict[str, str] = {
 }
 
 
+TESTER_ROLE = "tester"
+
 # Набор прав по умолчанию на роль. Нужен потому, что админ создавался с пустым
 # списком и выглядел сломанным: роль была, кнопки молчали.
 ROLE_PRESETS: dict[str, tuple[str, ...]] = {
@@ -91,8 +93,9 @@ ROLE_PRESETS: dict[str, tuple[str, ...]] = {
     # компенсации.
     "support": (PERM_USERS, PERM_USERS_WRITE, PERM_BALANCE, PERM_GIFTS,
                 PERM_STATS),
-    # Тестировщик правит подписки и ключи, но денег не касается.
-    "tester": (PERM_USERS, PERM_USERS_WRITE, PERM_STATS),
+    # Тестировщик правит подписки и ключи, но денег не касается. Что в
+    # карточке ему закрыто сверх денег — ROLE_ACTION_DENY.
+    TESTER_ROLE: (PERM_USERS, PERM_USERS_WRITE, PERM_STATS),
     # Маркетолог: купоны и акции, аналитика и рассылки. Карточку клиента
     # только смотрит, деньги не трогает.
     "marketer": (PERM_USERS, PERM_COUPONS, PERM_GIFTS, PERM_ADS, PERM_STATS,
@@ -125,6 +128,14 @@ MODULE_PERMISSIONS: dict[str, str] = {
 }
 
 ALL_ROLES: tuple[str, ...] = tuple(ROLE_PRESETS.keys())
+
+# Действия с подписками, закрытые роли, пока ей не настроены детальные права.
+# Тестировщик ходит в карточки живых клиентов: смена тарифа и полей панели,
+# удаление и перенос подписки, устройства бьют по чужим подпискам, а с правом
+# правки карточки он мог всё это наравне с админом.
+ROLE_ACTION_DENY: dict[str, frozenset[str]] = {
+    TESTER_ROLE: frozenset({PERM_KEY_TARIFF, PERM_KEY_DELETE, PERM_KEY_DEVICES}),
+}
 
 
 def normalize_role(raw) -> str:
@@ -160,9 +171,9 @@ def normalize_permissions(raw) -> list[str]:
     return result
 
 
-def action_permissions(raw) -> frozenset[str]:
-    """Сохраняет прежний доступ до настройки детальных прав."""
+def action_permissions(raw, role: str = "") -> frozenset[str]:
+    """Сохраняет прежний доступ до настройки детальных прав, кроме закрытого роли."""
     permissions = set(normalize_permissions(raw))
     if GRANULAR_ACTIONS_CONFIGURED not in permissions:
-        return frozenset(ALL_ACTION_PERMISSIONS)
+        return frozenset(ALL_ACTION_PERMISSIONS) - ROLE_ACTION_DENY.get(normalize_role(role), frozenset())
     return frozenset(permissions.intersection(ALL_ACTION_PERMISSIONS))

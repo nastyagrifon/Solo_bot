@@ -50,7 +50,12 @@ async def renew_on_remnawave(
     old_device_limit: int | None = None,
     billing_user_id: int | None = None,
     subscription_url: str | None = None,
+    keep_squads: bool = False,
 ) -> bool:
+    """keep_squads — тариф и подгруппа не менялись: сквады берём из панели, а не из тарифа.
+
+    Иначе продление сбрасывало бы сквады, выставленные админом руками.
+    """
     remnawave_nodes = [
         s for s in cluster if str(s.get("panel_type", "3x-ui")).lower() == "remnawave" and s.get("inbound_id")
     ]
@@ -91,6 +96,25 @@ async def renew_on_remnawave(
 
     traffic_was_reset = False
 
+    async def _squads_from_panel(api) -> dict:
+        try:
+            current = await api.get_user_by_uuid(client_id, username=email)
+        except Exception as e:
+            logger.warning(f"{PANEL_REMNA} сквады {client_id} не прочитаны: {e}")
+            current = None
+        if not current:
+            # Не прочитали — внешний сквад не трогаем вовсе, а не сбрасываем пустым тарифным.
+            return {} if external_squad_uuid else {"external_squad_uuid": None}
+        squads = {"external_squad_uuid": current.get("externalSquadUuid")}
+        if keep_squads:
+            internal = [
+                str(s.get("uuid") if isinstance(s, dict) else s) for s in current.get("activeInternalSquads") or []
+            ]
+            # Пустой список оставил бы оплатившего без единой ноды: тогда ноды кластера, как раньше.
+            if internal:
+                squads["active_user_inbounds"] = internal
+        return squads
+
     async def _renew(api):
         nonlocal traffic_was_reset
         if old_device_limit is not None and hwid_device_limit < old_device_limit:
@@ -102,7 +126,10 @@ async def renew_on_remnawave(
             except Exception as e:
                 logger.warning(f"{PANEL_REMNA} Ошибка сброса HWID: {e}")
 
-        updated_local = await api.update_user(**update_kwargs)
+        kwargs = update_kwargs
+        if keep_squads or not external_squad_uuid:
+            kwargs = {**update_kwargs, **await _squads_from_panel(api)}
+        updated_local = await api.update_user(**kwargs)
         if updated_local and reset_traffic:
             try:
                 traffic_was_reset = bool(await api.reset_user_traffic(client_id, username=email))
@@ -412,6 +439,7 @@ async def renew_key_in_cluster(
             old_device_limit=old_device_limit,
             billing_user_id=billing_user_id,
             subscription_url=kd.get("remnawave_link") or kd.get("link"),
+            keep_squads=str(plan) == str(kd.get("tariff_id")) and (target_subgroup or "") == (old_subgroup or ""),
         )
 
         succeeded, _ = await renew_on_3xui(

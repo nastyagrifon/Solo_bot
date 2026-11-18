@@ -38,6 +38,7 @@ READ_ONLY = frozenset({
     "handle_hosts_list", "handle_host_show",
     "handle_user_traffic", "handle_user_sub_history",
     "handle_key_edit", "handle_back_to_key_menu", "handle_back_to_group",
+    "handle_panel_pick",
 })
 
 

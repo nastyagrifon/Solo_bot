@@ -22,12 +22,15 @@ from filters.permissions import (
     PERM_ADMINS,
     SUPERADMIN_ROLE,
     STORED_PERMISSIONS,
+    TESTER_ROLE,
     action_permissions,
     normalize_permissions,
+    normalize_role,
     permissions_for_role,
 )
 
 from ..panel.headers import menu_text, quote, section
+from ..users.panel_user import testers
 from . import router
 from .keyboard import (
     AdminPanelCallback,
@@ -53,6 +56,14 @@ ADMIN_ACTION_PERMISSION_DENIED = "Недостаточно прав для эт�
 
 class AdminState(StatesGroup):
     waiting_for_tg_id = State()
+
+
+async def _tester_panel(session: AsyncSession, tg_id: int, old_role, new_role) -> str:
+    """Стал тестировщиком — сквады и тег на его подписки, перестал — снять тег. Итог строкой для экрана."""
+    was, now = normalize_role(old_role) == TESTER_ROLE, normalize_role(new_role) == TESTER_ROLE
+    if was == now:
+        return ""
+    return "\n" + testers.report(*await testers.apply(session, tg_id, now))
 
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "admins"), HasPermission(PERM_ADMINS))
@@ -126,11 +137,12 @@ async def create_admin_with_role(callback: CallbackQuery, callback_data: AdminPa
     await session.commit()
     invalidate_admin_cache(tg_id)
     granted = ", ".join(PERMISSION_LABELS[p] for p in preset) or "ничего"
+    panel = await _tester_panel(session, tg_id, None, role)
     await callback.message.edit_text(
         menu_text(
             "Админы",
             f"✅ Админ <code>{tg_id}</code> добавлен с ролью <b>{role}</b>.\n"
-            f"Права по роли: {granted}.",
+            f"Права по роли: {granted}.{panel}",
         ),
         reply_markup=build_admin_back_kb_to_admins(),
     )
@@ -214,12 +226,13 @@ async def set_admin_role(callback: CallbackQuery, callback_data: AdminPanelCallb
         await callback.message.edit_text(menu_text("Админы", "Админ не найден"))
         return
 
-    admin.role = role
+    old_role, admin.role = admin.role, role
     await session.commit()
     invalidate_admin_cache(tg_id)
+    panel = await _tester_panel(session, tg_id, old_role, role)
 
     await callback.message.edit_text(
-        menu_text("Админы", f"✅ Роль админа <code>{tg_id}</code> изменена на <b>{role}</b>."),
+        menu_text("Админы", f"✅ Роль админа <code>{tg_id}</code> изменена на <b>{role}</b>.{panel}"),
         reply_markup=build_single_admin_menu(tg_id, role),
     )
 
@@ -287,6 +300,7 @@ async def toggle_admin_permission(callback: CallbackQuery, callback_data: AdminP
 async def delete_admin(callback: CallbackQuery, callback_data: AdminPanelCallback, session: AsyncSession):
     tg_id = int(callback_data.action.split("|")[1])
 
+    old_role = (await session.execute(select(Admin.role).where(Admin.tg_id == tg_id))).scalar_one_or_none()
     await session.execute(delete(Admin).where(Admin.tg_id == tg_id))
     # Иначе снятый админ остаётся админом сайта: флаг в личности и открытые
     # сессии живут отдельно от строки admins.
@@ -297,9 +311,10 @@ async def delete_admin(callback: CallbackQuery, callback_data: AdminPanelCallbac
         await delete_other_sessions(session, identity_id=identity.id, keep_token_hash="")
     await session.commit()
     invalidate_admin_cache(tg_id)
+    panel = await _tester_panel(session, tg_id, old_role, None)
 
     await callback.message.edit_text(
-        menu_text("Админы", f"🗑 Админ <code>{tg_id}</code> удалён."),
+        menu_text("Админы", f"🗑 Админ <code>{tg_id}</code> удалён.{panel}"),
         reply_markup=build_admin_back_kb_to_admins(),
     )
 
@@ -317,7 +332,7 @@ async def edit_admin_action_permissions(
     if admin is None:
         await callback.answer(ADMIN_ACTION_PERMISSIONS_STALE, show_alert=True)
         return
-    current = set(action_permissions(admin.permissions))
+    current = set(action_permissions(admin.permissions, admin.role))
     await state.update_data(admin_action_target=tg_id, admin_action_selected=sorted(current))
     await callback.message.edit_text(
         menu_text(ADMIN_ACTION_PERMISSIONS_TITLE, f"<code>{tg_id}</code>", quote(ADMIN_ACTION_PERMISSIONS_HINT)),
