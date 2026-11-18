@@ -107,24 +107,24 @@ class ПровалСлышен(unittest.TestCase):
         _mod.with_remnawave_api = панель
         return asyncio.run(_mod.renew_on_remnawave(**ВЫЗОВ))
 
-    def test_успех_остаётся_info(self):
+    def test_success_stays_info(self):
         self.assertTrue(self._прогон({"ok": True}))
         уровни = {у for у, _ in ЗАПИСИ}
         self.assertIn("info", уровни)
         self.assertNotIn("error", уровни)
 
-    def test_провал_пишется_уровнем_error(self):
+    def test_failure_logged_as_error(self):
         self.assertFalse(self._прогон(None))
         ошибки = [т for у, т in ЗАПИСИ if у == "error"]
         self.assertEqual(len(ошибки), 1, f"ждём одну error-строку, получили {ЗАПИСИ}")
 
-    def test_в_ошибке_есть_чем_найти_клиента(self):
+    def test_error_identifies_client(self):
         self._прогон(None)
         текст = "".join(т for у, т in ЗАПИСИ if у == "error")
         for опознание in ("testkey1", "1234567", "fixture-uuid-aaaa-bbbb-cccccccccccc"):
             self.assertIn(опознание, текст, f"в error-строке нет {опознание}: {текст}")
 
-    def test_провал_не_пишется_в_debug(self):
+    def test_failure_not_logged_as_debug(self):
         self._прогон(None)
         отладка = [т for у, т in ЗАПИСИ if у == "debug" and "продлить" in т]
         self.assertEqual(отладка, [], "провал всё ещё уходит в debug и будет невидим")
