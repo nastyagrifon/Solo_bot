@@ -293,7 +293,7 @@ class TransferTest(unittest.TestCase):
         self.assertEqual(W.panel.patches, [{"uuid": "u-1", "telegramId": 55, "email": None}])
 
     def test_new_panel_without_uuid_is_addressed_by_id(self):
-        W.panel = FakePanel(ref={"id": 10})
+        W.panel = FakePanel(ref={"id": 10, "uuid": "u-1"})
         self.assertTrue(run(kt.transfer_key(None, Key(), 5, actor_tg_id=900)))
         self.assertEqual(W.panel.patches, [{"id": 10, "telegramId": 55, "email": None}])
 

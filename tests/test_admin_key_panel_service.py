@@ -95,7 +95,7 @@ class PatchOneFieldTest(unittest.TestCase):
         self.assertIn(("invalidate", "srv-1", "cid-1"), self.calls)
 
     def test_new_panel_without_uuid_is_addressed_by_id(self):
-        self.api.user = {"id": 10, "tag": None}
+        self.api.user = {"id": 10, "uuid": "u-1", "tag": None}
         run(self.svc.set_field(None, Key, "tag", "VIP"))
         self.assertEqual(self.api.patches[-1], ("PATCH", "/users", {"id": 10, "tag": "VIP"}))
 

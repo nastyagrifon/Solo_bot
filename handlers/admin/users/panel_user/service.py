@@ -26,8 +26,8 @@ def toggle(selected: list[str], uuid: str) -> list[str]:
 
 
 def panel_ref(user: dict) -> dict:
-    """Чем адресовать пользователя в PATCH /users: новые версии панели не отдают uuid и ищут по id."""
-    return {"uuid": user["uuid"]} if user.get("uuid") else {"id": user["id"]}
+    """Чем адресовать пользователя в PATCH /users: новые версии панели ищут по id и uuid отвергают."""
+    return {"id": user["id"]} if user.get("id") is not None else {"uuid": user["uuid"]}
 
 
 async def _run(session, key, operation, failure: str):
