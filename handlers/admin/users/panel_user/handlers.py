@@ -240,7 +240,7 @@ async def handle_field_input(message: Message, session: AsyncSession, state: FSM
     try:
         value = parse(message.text or "")
     except ValueError as error:
-        await message.answer(str(error))
+        await message.answer(str(error), reply_markup=views.back_kb(base))
         return
     key = await _key(session, base.user_id, base.key_ref)
     if field != TRANSFER:
@@ -251,10 +251,10 @@ async def handle_field_input(message: Message, session: AsyncSession, state: FSM
         return
     target = await get_user_by_tg_id(session, value)
     if target is None:
-        await message.answer("❌ Клиента с таким TG ID нет в базе бота. Пришлите другой.")
+        await message.answer("❌ Клиента с таким TG ID нет в базе бота. Пришлите другой.", reply_markup=views.back_kb(base))
         return
     if int(target.id) == int(key.user_id):
-        await message.answer("❌ Подписка уже у этого клиента. Пришлите другой TG ID.")
+        await message.answer("❌ Подписка уже у этого клиента. Пришлите другой TG ID.", reply_markup=views.back_kb(base))
         return
     await state.set_state(None)
     await state.update_data({PREFIX + "dst": int(target.id)})

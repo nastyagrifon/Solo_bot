@@ -196,6 +196,7 @@ class TransferInputTest(unittest.TestCase):
     def test_unknown_client_is_refused_before_confirm(self):
         message, data = self._input("777")
         self.assertIn("нет в базе бота", message.sent[-1][0])
+        self.assertIsNotNone(message.sent[-1][1].get("reply_markup"))
         self.assertNotIn("kpu_dst", data)
 
     def test_same_owner_is_refused(self):
@@ -218,6 +219,8 @@ class TransferInputTest(unittest.TestCase):
         message, data = self._input("abc")
         self.assertIn("положительное число", message.sent[-1][0])
         self.assertEqual(run(self.state.get_state()), self.h.PanelUserState.waiting_value.state)
+        # Из ожидания должен быть выход прямо из ответа с ошибкой, а не только из старого сообщения выше.
+        self.assertIsNotNone(message.sent[-1][1].get("reply_markup"))
 
 
 @unittest.skipIf(CallbackData is None, "aiogram не установлен")
