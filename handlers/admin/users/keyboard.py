@@ -318,6 +318,8 @@ def build_key_edit_kb(
     service = [button("🔄 Перевыпустить", "users_reissue_menu"), button("♻️ Сбросить трафик", "users_reset_traffic")]
     if show_subscription_keys:
         service.append(button("🔑 Ключи", "users_keys_list"))
+        # Тот же признак «ключ на Remnawave»: правка пользователя панели.
+        service.append(button("🧩 Панель", "users_panel_user"))
     for i in range(0, len(service), 2):
         builder.row(*service[i : i + 2])
 
@@ -397,12 +399,35 @@ def build_hwid_menu_kb(
         )
     if nav:
         builder.row(*nav)
+    if devices_on_page:
+        builder.row(
+            InlineKeyboardButton(
+                text="🧹 Отвязать все",
+                callback_data=AdminUserEditorCallback(
+                    action="users_hwid_unbind_all", data=key_ref, user_id=user_id
+                ).pack(),
+            )
+        )
     builder.row(
         InlineKeyboardButton(
             text=BACK,
             callback_data=AdminUserEditorCallback(action="users_key_edit", data=key_ref, user_id=user_id).pack(),
         )
     )
+    return builder.as_markup()
+
+
+def build_hwid_unbind_all_kb(key_ref: str, user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✅ Да, отвязать все",
+        callback_data=AdminUserEditorCallback(action="users_hwid_unbind_all_ok", data=key_ref, user_id=user_id).pack(),
+    )
+    builder.button(
+        text=BACK,
+        callback_data=AdminUserEditorCallback(action="users_hwid_menu", data=key_ref, user_id=user_id).pack(),
+    )
+    builder.adjust(1)
     return builder.as_markup()
 
 

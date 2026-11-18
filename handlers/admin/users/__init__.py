@@ -17,6 +17,7 @@ from . import (
     users_gifts,
     users_hwid,
     users_keys,
+    panel_user,
     users_manage,
     users_subscription_keys,
     users_tariffs,
@@ -27,6 +28,7 @@ router.include_router(users_manage.router)
 router.include_router(users_audit.router)
 router.include_router(users_balance.router)
 router.include_router(users_hwid.router)
+router.include_router(panel_user.router)
 router.include_router(users_subscription_keys.router)
 router.include_router(users_keys.router)
 router.include_router(users_bans.router)

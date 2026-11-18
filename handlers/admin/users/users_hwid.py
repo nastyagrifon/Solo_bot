@@ -14,7 +14,8 @@ from services.users_utils import resolve_admin_key
 from settings.texts import MY_DEVICES_UNAVAILABLE_TEXT
 
 from ..panel.headers import card, menu_text, quote, section
-from .keyboard import AdminUserEditorCallback, build_editor_kb, build_hwid_menu_kb
+from .keyboard import AdminUserEditorCallback, build_editor_kb, build_hwid_menu_kb, build_hwid_unbind_all_kb
+from .panel_user.service import KeyTarget, PanelUserError, clear_devices
 
 
 router = Router()
@@ -249,3 +250,42 @@ async def handle_hwid_unbind(
         await callback_query.answer(menu_text("Устройства", "✅ Устройство отвязано."))
 
     await _render_admin_devices(callback_query, session, key_ref, user_id, page)
+
+
+@router.callback_query(
+    AdminUserEditorCallback.filter(F.action == "users_hwid_unbind_all"),
+    IsAdminFilter(),
+)
+async def handle_hwid_unbind_all(
+    callback_query: CallbackQuery,
+    callback_data: AdminUserEditorCallback,
+):
+    key_ref = str(callback_data.data)
+    await callback_query.message.edit_text(
+        menu_text("Устройства", "Отвязать все устройства этой подписки? Клиенту придётся подключиться заново."),
+        reply_markup=build_hwid_unbind_all_kb(key_ref, callback_data.user_id),
+    )
+
+
+@router.callback_query(
+    AdminUserEditorCallback.filter(F.action == "users_hwid_unbind_all_ok"),
+    IsAdminFilter(),
+    flags={"popup": True},
+)
+async def handle_hwid_unbind_all_ok(
+    callback_query: CallbackQuery,
+    callback_data: AdminUserEditorCallback,
+    session: AsyncSession,
+):
+    key_ref = str(callback_data.data)
+    key_obj = await resolve_admin_key(session, callback_data.user_id, key_ref)
+    if not key_obj:
+        await callback_query.answer("❌ Подписка не найдена.", show_alert=True)
+        return
+    try:
+        await clear_devices(session, KeyTarget.of(key_obj))
+    except PanelUserError as error:
+        await callback_query.answer(f"❌ {error}", show_alert=True)
+        return
+    await callback_query.answer("✅ Все устройства отвязаны.")
+    await _render_admin_devices(callback_query, session, key_ref, callback_data.user_id, 0)

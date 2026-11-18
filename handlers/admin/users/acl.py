@@ -31,6 +31,7 @@ READ_ONLY = frozenset({
     "handle_user_audit", "handle_user_audit_page",
     "handle_users_gifts", "handle_gifts_page",
     "handle_hwid_menu", "handle_hwid_page",
+    "handle_panel_user_entry", "handle_panel_user_card",
     "handle_search_user", "handle_user_data_input", "handle_search_page",
     "handle_users_export_referrals", "handle_users_editor",
     "handle_users_site", "handle_users_site_tab",
