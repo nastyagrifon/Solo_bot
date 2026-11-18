@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.redis_cache import cache_delete, cache_get, cache_key, cache_set
 from database import async_session_maker
 from database.access.resolution import TelegramId, resolve_uid_cached
-from database.models import ManualBan
+from database.models import ManualBan, PreBan
 from logger import logger
 from settings.cache_config import BAN_CACHE_TTL_SEC
 from settings.config import ADMIN_ID, SUPPORT_CHAT_URL
@@ -27,6 +27,7 @@ DEFAULT_PUBLIC_BAN_REASON = "не указана"
 async def invalidate_ban_cache(tg_id: int) -> None:
     """Сбросить кэш статуса бана после добавления/снятия бана."""
     await cache_delete(cache_key("ban_status", tg_id))
+    await cache_delete(cache_key("preban_status", tg_id))
 
 
 class BanCheckerMiddleware(BaseMiddleware):
@@ -94,6 +95,21 @@ class BanCheckerMiddleware(BaseMiddleware):
             "until": until_parsed,
         }
 
+    async def _cached_preban_info(self, session: AsyncSession, tg_id: int) -> dict[str, Any] | None:
+        """Предбан по tg id: срабатывает и для тех, кого ещё нет в базе. В кэш — только публичная причина."""
+        key = cache_key("preban_status", tg_id)
+        cached = await cache_get(key)
+        if not isinstance(cached, dict):
+            row = (await session.execute(select(PreBan.public_reason).where(PreBan.tg_id == tg_id).limit(1))).first()
+            cached = {"has_ban": row is not None, "public_reason": row[0] if row else None}
+            await cache_set(key, cached, _BAN_CACHE_TTL)
+        if not cached.get("has_ban"):
+            return None
+        return {"shadow": False, "public_reason": cached.get("public_reason"), "until": None}
+
+    async def _ban_info(self, session: AsyncSession, tg_id: int) -> dict[str, Any] | None:
+        return await self._cached_ban_info(session, tg_id) or await self._cached_preban_info(session, tg_id)
+
     async def __call__(
         self,
         handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
@@ -119,10 +135,10 @@ class BanCheckerMiddleware(BaseMiddleware):
 
         session = data.get("session")
         if session is not None and getattr(session, "execute", None) is not None:
-            ban_info = await self._cached_ban_info(session, tg_id)
+            ban_info = await self._ban_info(session, tg_id)
         else:
             async with async_session_maker() as short_session:
-                ban_info = await self._cached_ban_info(short_session, tg_id)
+                ban_info = await self._ban_info(short_session, tg_id)
                 await short_session.commit()
 
         if not ban_info:

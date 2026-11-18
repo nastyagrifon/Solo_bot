@@ -63,6 +63,19 @@ class ManualBan(DictLikeMixin, Base):
     until = Column(DateTime(timezone=True), nullable=True)
 
 
+class PreBan(DictLikeMixin, Base):
+    """Бан по tg id заранее, до регистрации: без строки в users, поэтому отдельно от manual_bans."""
+
+    __tablename__ = "pre_bans"
+
+    tg_id = Column(BigInteger, primary_key=True)
+    reason = Column(Text)
+    # reason видят только админы; клиенту показывается public_reason или нейтральный текст
+    public_reason = Column(Text, nullable=True)
+    source = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class TemporaryData(DictLikeMixin, Base):
     __tablename__ = "temporary_data"
 

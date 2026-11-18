@@ -21,6 +21,14 @@ def build_bans_kb():
         text="🔒 Ручные баны",
         callback_data=AdminPanelCallback(action="bans_manual_menu").pack(),
     )
+    builder.button(
+        text="📄 Загрузить список",
+        callback_data=AdminPanelCallback(action="bans_preban_upload").pack(),
+    )
+    builder.button(
+        text="📥 Экспорт предбанов",
+        callback_data=AdminPanelCallback(action="bans_preban_export").pack(),
+    )
     builder.adjust(2)
     builder.row(InlineKeyboardButton(text=BACK, callback_data=AdminPanelCallback(action="management").pack()))
     return builder.as_markup()

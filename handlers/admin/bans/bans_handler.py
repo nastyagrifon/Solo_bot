@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import delete_user_data
 from database.access.resolution import TelegramId, UserId, resolve_user_optional
-from database.models import BlockedUser, Key, ManualBan, User
+from database.models import BlockedUser, Key, ManualBan, PreBan, User
 from database.users import add_user
 from filters.admin import HasPermission, IsAdminFilter
 from filters.permissions import PERM_MANAGEMENT
@@ -38,6 +38,29 @@ router.message.filter(HasPermission(PERM_MANAGEMENT))
 
 class PreemptiveBanStates(StatesGroup):
     waiting_for_preemptive_ids = State()
+    waiting_for_preban_file = State()
+
+
+PREBAN_FILE_MAX_BYTES = 2 * 1024 * 1024
+PREBAN_CHUNK = 1000
+
+
+def parse_preban_lines(text: str) -> tuple[dict[int, str | None], int]:
+    """Строки «<tg_id> #<причина>» -> {tg_id: причина}. Пустые и «# ...» не считаются; мусор и повторы — пропущено."""
+    entries: dict[int, str | None] = {}
+    skipped = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head, _, comment = line.partition("#")
+        head = head.strip()
+        tg_id = int(head) if head.isascii() and head.isdigit() else 0
+        if not 0 < tg_id < 2**63 or tg_id in entries:
+            skipped += 1
+            continue
+        entries[tg_id] = comment.strip() or None
+    return entries, skipped
 
 
 @router.callback_query(AdminPanelCallback.filter(F.action == "bans"), IsAdminFilter())
@@ -50,6 +73,7 @@ async def handle_bans(callback_query: CallbackQuery):
             "Забанившие: закрыли бота сами",
             "Теневые: бот их игнорирует",
             "Ручные: забанены из админки",
+            "Предбан: по списку Telegram ID, ещё до регистрации",
         ),
     )
     await callback_query.message.edit_text(text=text_, reply_markup=build_bans_kb())
@@ -429,3 +453,113 @@ async def handle_preemptive_ids_input(message: Message, state: FSMContext, sessi
         reply_markup=build_shadow_bans_kb(),
     )
     await state.clear()
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action == "bans_preban_upload"), IsAdminFilter())
+async def handle_preban_upload_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(PreemptiveBanStates.waiting_for_preban_file)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data=AdminPanelCallback(action="bans_preban_cancel").pack())
+    await callback.message.edit_text(
+        menu_text(
+            "Предбан",
+            "Пришлите .txt документ: по одному Telegram ID в строке, причина после #.",
+            section("📥 Пример", "1234567 #причина", "7654321"),
+            quote(
+                "Причину видят только админы, клиенту — нейтральный текст. "
+                "Строки с # в начале и пустые пропускаются, повтор ID — берётся первая причина."
+            ),
+        ),
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action == "bans_preban_cancel"), IsAdminFilter())
+async def handle_preban_upload_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await handle_bans(callback)
+
+
+@router.message(PreemptiveBanStates.waiting_for_preban_file, IsAdminFilter())
+async def handle_preban_file(message: Message, state: FSMContext, session: AsyncSession):
+    document = message.document
+    if document is None or not (document.file_name or "").lower().endswith(".txt"):
+        await message.answer(menu_text("Предбан", "❌ Нужен .txt документ."))
+        return
+    if (document.file_size or 0) > PREBAN_FILE_MAX_BYTES:
+        await message.answer(menu_text("Предбан", "❌ Файл больше 2 МБ."))
+        return
+
+    buffer = io.BytesIO()
+    await message.bot.download(document, destination=buffer)
+    entries, skipped = parse_preban_lines(buffer.getvalue().decode("utf-8", errors="replace"))
+    if not entries:
+        await message.answer(menu_text("Предбан", f"❌ Ни одного корректного Telegram ID. Пропущено строк: {skipped}."))
+        return
+
+    ids = list(entries)
+    source = f"{document.file_name} от {message.from_user.id}"
+    now = datetime.now(timezone.utc)
+    existing = 0
+    clients = 0
+    for start in range(0, len(ids), PREBAN_CHUNK):
+        chunk = ids[start : start + PREBAN_CHUNK]
+        existing += (
+            await session.execute(select(func.count()).select_from(PreBan).where(PreBan.tg_id.in_(chunk)))
+        ).scalar() or 0
+        clients += (
+            await session.execute(select(func.count()).select_from(User).where(User.tg_id.in_(chunk)))
+        ).scalar() or 0
+        ins = pg_insert(PreBan).values([
+            {"tg_id": tid, "reason": entries[tid], "source": source, "created_at": now} for tid in chunk
+        ])
+        await session.execute(
+            ins.on_conflict_do_update(
+                index_elements=[PreBan.tg_id],
+                set_={"reason": ins.excluded.reason, "source": ins.excluded.source, "created_at": now},
+            )
+        )
+    for tid in ids:
+        await invalidate_ban_cache(tid)
+
+    logger.info(f"[BANS] Предбан из файла: {len(ids) - existing} новых, {existing} обновлено, {skipped} пропущено")
+    await message.answer(
+        menu_text(
+            "Предбан",
+            "✅ Список загружен.",
+            section(
+                "📊 Итог",
+                f"Добавлено: <b>{len(ids) - existing}</b>",
+                f"Обновлено: <b>{existing}</b>",
+                f"Пропущено строк: <b>{skipped}</b>",
+                f"Из загруженных уже клиенты бота: <b>{clients}</b>",
+            ),
+            quote("Уже зарегистрированных клиентов предбан тоже отсекает; обычный бан им не ставится — решайте вручную."),
+        ),
+        reply_markup=build_bans_kb(),
+    )
+    await state.clear()
+
+
+@router.callback_query(AdminPanelCallback.filter(F.action == "bans_preban_export"), IsAdminFilter())
+async def handle_preban_export(callback_query: CallbackQuery, session: AsyncSession):
+    try:
+        rows = (
+            await session.execute(
+                select(PreBan.tg_id, PreBan.reason, PreBan.public_reason, PreBan.source, PreBan.created_at)
+            )
+        ).all()
+
+        csv_output = io.StringIO()
+        writer = csv.writer(csv_output)
+        writer.writerow(["tg_id", "reason", "public_reason", "source", "created_at"])
+        for row in rows:
+            writer.writerow([row.tg_id, row.reason, row.public_reason, row.source, row.created_at])
+
+        document = BufferedInputFile(file=csv_output.getvalue().encode("utf-8"), filename="pre_bans.csv")
+        await callback_query.message.answer_document(document=document, caption="📥 Экспорт предбанов (CSV)")
+    except Exception as e:
+        await callback_query.message.answer(
+            text=menu_text("Баны", f"❌ Ошибка при экспорте: {e}"),
+            reply_markup=build_bans_kb(),
+        )

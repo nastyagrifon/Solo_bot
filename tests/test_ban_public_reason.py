@@ -148,7 +148,9 @@ def _load_checker(cache):
         "database.access.resolution": _module(
             "database.access.resolution", TelegramId=int, resolve_uid_cached=resolve_uid_cached
         ),
-        "database.models": _module("database.models", ManualBan=manual_ban),
+        "database.models": _module(
+            "database.models", ManualBan=manual_ban, PreBan=types.SimpleNamespace(tg_id=Col(), public_reason=Col())
+        ),
         "logger": _module("logger", logger=LOG),
         "settings": _module("settings"),
         "settings.cache_config": _module("settings.cache_config", BAN_CACHE_TTL_SEC=60),
