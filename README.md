@@ -235,6 +235,7 @@
 | [#15](https://github.com/nastyagrifon/Solo_bot/pull/15) | названия прежнего проекта убраны из комментариев и логов ядра | в журнале своё имя, а не чужое |
 | [#40](https://github.com/nastyagrifon/Solo_bot/pull/40) | метод быстрой оплаты берётся из таблицы провайдеров | нет обёрток на каждый метод |
 | [#44](https://github.com/nastyagrifon/Solo_bot/pull/44) | тонкие обёртки: заморозка ключа, месяцы, кластер | один `UPDATE` вместо двух |
+| [#191](https://github.com/nastyagrifon/Solo_bot/pull/191) | латинские имена тестов в `test_renewal_panel_failure_loud` | имя `test_<кириллица>` не прочитать глазами: латиница и кириллица в нём выглядят одинаково |
 
 ## Лицензия
 
