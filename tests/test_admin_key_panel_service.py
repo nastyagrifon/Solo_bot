@@ -87,46 +87,67 @@ class PatchOneFieldTest(unittest.TestCase):
         self.calls = []
         self.api = FakeApi({"uuid": "u-1", "tag": None, "activeInternalSquads": [{"uuid": "a"}]})
         self.svc = _load_service(self.api, self.calls)
-        self.target = self.svc.KeyTarget.of(Key)
 
     def test_sends_only_uuid_and_field_to_key_server(self):
-        run(self.svc.set_tag(None, self.target, "VIP"))
+        run(self.svc.set_field(None, Key, "tag", "VIP"))
         self.assertEqual(self.api.patches, [("PATCH", "/users", {"uuid": "u-1", "tag": "VIP"})])
         self.assertIn(("api", "srv-1", "cid-1"), self.calls)
         self.assertIn(("invalidate", "srv-1", "cid-1"), self.calls)
 
     def test_internal_squads_order_does_not_matter(self):
         self.api.user["activeInternalSquads"] = [{"uuid": "b"}, {"uuid": "a"}]
-        saved = run(self.svc.set_internal_squads(None, self.target, ["a", "b"]))
+        saved = run(self.svc.set_field(None, Key, self.svc.INTERNAL, ["a", "b"]))
         self.assertEqual(sorted(self.svc.internal_squad_uuids(saved)), ["a", "b"])
 
     def test_panel_ignored_change_is_error_not_success(self):
         self.api.echo = False
         with self.assertRaises(self.svc.PanelUserError):
-            run(self.svc.set_description(None, self.target, "note"))
+            run(self.svc.set_field(None, Key, "description", "note"))
         self.assertNotIn(("invalidate", "srv-1", "cid-1"), self.calls)
 
     def test_panel_rejected_is_error(self):
         self.api.status = 400
         with self.assertRaises(self.svc.PanelUserError):
-            run(self.svc.set_telegram_id(None, self.target, 7))
+            run(self.svc.set_field(None, Key, "telegramId", 7))
 
     def test_panel_unreachable_is_error(self):
         svc = _load_service(None, self.calls)
         with self.assertRaises(svc.PanelUserError):
-            run(svc.set_external_squad(None, svc.KeyTarget.of(Key), "ext"))
+            run(svc.set_field(None, Key, "externalSquadUuid", "ext"))
+
+
+class LoadTest(unittest.TestCase):
+    def test_user_and_squads_in_one_panel_trip(self):
+        calls = []
+        api = FakeApi({"uuid": "u-1"})
+
+        async def get_internal_squads():
+            return [{"uuid": "a", "name": "A"}]
+
+        api.get_internal_squads = get_internal_squads
+        svc = _load_service(api, calls)
+        user, squads = run(svc.load(None, Key, "internal"))
+        self.assertEqual((user["uuid"], squads[0]["uuid"]), ("u-1", "a"))
+        self.assertEqual(len([c for c in calls if c[0] == "api"]), 1)
+
+    def test_missing_squad_list_is_error(self):
+        api = FakeApi({"uuid": "u-1"})
+        api.status = 500
+        svc = _load_service(api, [])
+        with self.assertRaises(svc.PanelUserError):
+            run(svc.load(None, Key, "external"))
 
 
 class ClearDevicesTest(unittest.TestCase):
     def test_success_only_when_list_is_empty(self):
         calls = []
         svc = _load_service(FakeApi({"uuid": "u-1"}), calls)
-        self.assertTrue(run(svc.clear_devices(None, svc.KeyTarget.of(Key))))
+        run(svc.clear_devices(None, Key))
 
     def test_devices_left_is_error(self):
         svc = _load_service(FakeApi({"uuid": "u-1"}, devices_after_clear=[{"hwid": "y"}]), [])
         with self.assertRaises(svc.PanelUserError):
-            run(svc.clear_devices(None, svc.KeyTarget.of(Key)))
+            run(svc.clear_devices(None, Key))
 
 
 class HelpersTest(unittest.TestCase):

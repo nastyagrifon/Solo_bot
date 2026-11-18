@@ -19,7 +19,7 @@ from services.users_utils import build_admin_key_ref, resolve_admin_key
 
 from ..keyboard import AdminUserEditorCallback
 from . import service, validate, views
-from .service import KeyTarget, PanelUserError
+from .service import PanelUserError
 from .states import PanelUserState
 from .views import PanelUserCallback
 
@@ -30,12 +30,12 @@ PREFIX = "kpu_"
 # Без флага общий middleware отвечает на нажатие до обработчика, и show_alert со сбоем уже не дойдёт.
 POPUP = {"popup": True}
 
-# Поле ввода → (разборщик, действие с панелью).
-FIELDS = {
-    "tg": (validate.parse_telegram_id, service.set_telegram_id),
-    "tag": (validate.parse_tag, service.set_tag),
-    "note": (validate.parse_description, service.set_description),
-}
+# Поле ввода → разборщик; имя поля в панели — в views.FIELD_PROMPTS.
+FIELDS = {"tg": validate.parse_telegram_id, "tag": validate.parse_tag, "note": validate.parse_description}
+
+
+def _panel_field(field: str) -> str:
+    return views.FIELD_PROMPTS[field][2]
 
 
 def loud(handler):
@@ -77,9 +77,7 @@ async def _edit(callback: CallbackQuery, text: str, kb) -> None:
 
 
 async def _card(session: AsyncSession, key, base: PanelUserCallback):
-    target = KeyTarget.of(key)
-    user = await service.load_user(session, target)
-    external = await service.list_external_squads(session, target)
+    user, external = await service.load(session, key, "external")
     return views.card_text(user, key.tg_id, external), views.card_kb(base)
 
 
@@ -139,9 +137,8 @@ async def handle_panel_user_card(
 async def handle_external_menu(
     callback: CallbackQuery, callback_data: PanelUserCallback, session: AsyncSession, state: FSMContext
 ):
-    target = KeyTarget.of(await _key(session, callback_data))
-    pairs = _pairs(await service.list_external_squads(session, target))
-    user = await service.load_user(session, target)
+    user, squads = await service.load(session, await _key(session, callback_data), "external")
+    pairs = _pairs(squads)
     await state.update_data({PREFIX + "ext": pairs})
     await _edit(callback, views.external_text(), views.external_kb(callback_data, pairs, user.get("externalSquadUuid")))
 
@@ -153,7 +150,7 @@ async def handle_external_set(
 ):
     squad = None if callback_data.idx == -1 else await _picked(state, "ext", callback_data.idx)
     key = await _key(session, callback_data)
-    await service.set_external_squad(session, KeyTarget.of(key), squad)
+    await service.set_field(session, key, "externalSquadUuid", squad)
     await _show_saved(callback, session, state, key, callback_data)
 
 
@@ -162,9 +159,8 @@ async def handle_external_set(
 async def handle_internal_menu(
     callback: CallbackQuery, callback_data: PanelUserCallback, session: AsyncSession, state: FSMContext
 ):
-    target = KeyTarget.of(await _key(session, callback_data))
-    pairs = _pairs(await service.list_internal_squads(session, target))
-    selected = service.internal_squad_uuids(await service.load_user(session, target))
+    user, squads = await service.load(session, await _key(session, callback_data), "internal")
+    pairs, selected = _pairs(squads), service.internal_squad_uuids(user)
     await state.update_data({PREFIX + "int": pairs, PREFIX + "int_sel": selected})
     await _edit(callback, views.internal_text(), views.internal_kb(callback_data, pairs, selected))
 
@@ -188,7 +184,7 @@ async def handle_internal_save(
     if PREFIX + "int_sel" not in data:
         raise PanelUserError("Список устарел, откройте его заново.")
     key = await _key(session, callback_data)
-    await service.set_internal_squads(session, KeyTarget.of(key), data[PREFIX + "int_sel"])
+    await service.set_field(session, key, service.INTERNAL, data[PREFIX + "int_sel"])
     await _show_saved(callback, session, state, key, callback_data)
 
 
@@ -200,7 +196,7 @@ async def handle_field_ask(
     callback: CallbackQuery, callback_data: PanelUserCallback, session: AsyncSession, state: FSMContext
 ):
     key = await _key(session, callback_data)
-    user = await service.load_user(session, KeyTarget.of(key))
+    user, _ = await service.load(session, key)
     await state.set_state(PanelUserState.waiting_value)
     card_cb = PanelUserCallback(action="card", user_id=callback_data.user_id, key_ref=callback_data.key_ref)
     await state.update_data({PREFIX + "field": callback_data.field, PREFIX + "card": card_cb.pack()})
@@ -218,9 +214,8 @@ async def handle_field_ask(
 async def handle_field_clear(
     callback: CallbackQuery, callback_data: PanelUserCallback, session: AsyncSession, state: FSMContext
 ):
-    _, action = FIELDS[callback_data.field]
     key = await _key(session, callback_data)
-    await action(session, KeyTarget.of(key), None)
+    await service.set_field(session, key, _panel_field(callback_data.field), None)
     await _show_saved(callback, session, state, key, callback_data)
 
 
@@ -232,7 +227,7 @@ async def handle_telegram_id_from_owner(
     key = await _key(session, callback_data)
     if not key.tg_id:
         raise PanelUserError("У владельца ключа нет TG ID.")
-    await service.set_telegram_id(session, KeyTarget.of(key), int(key.tg_id))
+    await service.set_field(session, key, "telegramId", int(key.tg_id))
     await _show_saved(callback, session, state, key, callback_data)
 
 
@@ -244,13 +239,12 @@ async def handle_field_input(message: Message, session: AsyncSession, state: FSM
     if field not in FIELDS or not packed:
         await _forget(state)
         raise PanelUserError("Ввод устарел, откройте поле заново.")
-    parse, action = FIELDS[field]
     try:
-        value = parse(message.text or "")
+        value = FIELDS[field](message.text or "")
     except ValueError as error:
         await message.answer(str(error))
         return
     base = PanelUserCallback.unpack(packed)
     key = await _key(session, base)
-    await action(session, KeyTarget.of(key), value)
+    await service.set_field(session, key, _panel_field(field), value)
     await _show_saved(message, session, state, key, base)

@@ -15,7 +15,7 @@ from settings.texts import MY_DEVICES_UNAVAILABLE_TEXT
 
 from ..panel.headers import card, menu_text, quote, section
 from .keyboard import AdminUserEditorCallback, build_editor_kb, build_hwid_menu_kb, build_hwid_unbind_all_kb
-from .panel_user.service import KeyTarget, PanelUserError, clear_devices
+from .panel_user.service import PanelUserError, clear_devices
 
 
 router = Router()
@@ -283,7 +283,7 @@ async def handle_hwid_unbind_all_ok(
         await callback_query.answer("❌ Подписка не найдена.", show_alert=True)
         return
     try:
-        await clear_devices(session, KeyTarget.of(key_obj))
+        await clear_devices(session, key_obj)
     except PanelUserError as error:
         await callback_query.answer(f"❌ {error}", show_alert=True)
         return
