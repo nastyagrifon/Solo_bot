@@ -25,3 +25,4 @@ class BanUserStates(StatesGroup):
     waiting_for_reason = State()
     waiting_for_ban_duration = State()
     waiting_for_forever_reason = State()
+    waiting_for_public_reason = State()

@@ -42,6 +42,7 @@ from database.web_notifications import notify_web
 from filters.admin import HasPermission, IsAdminFilter
 from filters.permissions import PERM_USERS
 from logger import logger
+from middlewares.ban_checker import DEFAULT_PUBLIC_BAN_REASON
 from settings.config import USERNAME_BOT
 from utils.csv_export import export_referrals_csv
 
@@ -729,25 +730,29 @@ async def process_user_search(
     result_keys = await session.execute(stmt_keys)
     key_records = result_keys.scalars().all()
 
-    stmt_ban = select(ManualBan).where(ManualBan.user_id == uid).limit(1)
+    ban_of_client = ManualBan.user_id == uid
+    if real_tg_id is not None:
+        # бан по tg id, поставленный до регистрации, тоже бан этого клиента
+        ban_of_client = or_(ban_of_client, ManualBan.user_id.is_(None) & (ManualBan.tg_id == real_tg_id))
+    stmt_ban = select(ManualBan).where(ban_of_client).order_by(ManualBan.user_id.nulls_last()).limit(1)
     result_ban = await session.execute(stmt_ban)
     ban_record = result_ban.scalar_one_or_none()
 
     ban_info = None
-    ban_reason = None
+    ban_reasons = []
     is_banned = ban_record is not None
     if ban_record:
         if ban_record.reason == "shadow":
             ban_info = "Теневой бан"
-        elif ban_record.until:
-            until_str = ban_record.until.replace(tzinfo=pytz.UTC).astimezone(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
-            ban_info = f"До {until_str}"
-            if ban_record.reason:
-                ban_reason = ban_record.reason
         else:
-            ban_info = "Навсегда"
+            if ban_record.until:
+                until_str = ban_record.until.replace(tzinfo=pytz.UTC).astimezone(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+                ban_info = f"До {until_str}"
+            else:
+                ban_info = "Навсегда"
             if ban_record.reason:
-                ban_reason = ban_record.reason
+                ban_reasons.append(f"Причина (внутр.): {ban_record.reason}")
+            ban_reasons.append(f"Клиент видит: {ban_record.public_reason or DEFAULT_PUBLIC_BAN_REASON}")
 
     from core.settings.web_config import get_site_url, is_web_enabled
 
@@ -770,7 +775,7 @@ async def process_user_search(
 
     blocks = [section("👤 Данные", *who), section("💰 Деньги", *money), section("📈 Активность", *activity)]
     if ban_info:
-        blocks.append(section("🚫 Блокировка", ban_info, f"Причина: {ban_reason}" if ban_reason else ""))
+        blocks.append(section("🚫 Блокировка", ban_info, *ban_reasons))
     if is_web_enabled() and get_site_url():
         blocks.append(section("🌐 Кабинет", f"<code>https://telegram.me/{USERNAME_BOT}?start=tab_keys</code>"))
 

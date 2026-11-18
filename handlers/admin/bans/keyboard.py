@@ -74,6 +74,14 @@ def build_manual_bans_kb():
         callback_data=AdminPanelCallback(action="manual_bans_export").pack(),
     )
     builder.button(
+        text="📤 Импорт",
+        callback_data=AdminPanelCallback(action="manual_bans_import").pack(),
+    )
+    builder.button(
+        text="🔓 Разбан по tg id",
+        callback_data=AdminPanelCallback(action="manual_bans_unban").pack(),
+    )
+    builder.button(
         text="🧹 Очистить список",
         callback_data=AdminPanelCallback(action="bans_clear_manual").pack(),
     )

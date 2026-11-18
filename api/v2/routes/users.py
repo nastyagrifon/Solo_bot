@@ -257,6 +257,7 @@ async def user_card(
         "invited_by": int(invited_by_row) if invited_by_row else None,
         "banned": ban is not None,
         "ban_reason": getattr(ban, "reason", None) if ban else None,
+        "ban_public_reason": getattr(ban, "public_reason", None) if ban else None,
     }
 
 

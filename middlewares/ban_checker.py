@@ -20,6 +20,8 @@ from settings.config import ADMIN_ID, SUPPORT_CHAT_URL
 
 TZ = pytz.timezone("Europe/Moscow")
 _BAN_CACHE_TTL = BAN_CACHE_TTL_SEC
+# Клиенту никогда не показывается внутренняя причина (ManualBan.reason), только публичная или этот текст.
+DEFAULT_PUBLIC_BAN_REASON = "не указана"
 
 
 async def invalidate_ban_cache(tg_id: int) -> None:
@@ -31,43 +33,44 @@ class BanCheckerMiddleware(BaseMiddleware):
     """Проверка банов."""
 
     async def _load_ban_info(
-        self, session: AsyncSession, tg_id: int, *, owner_uid: int | None = None
+        self, session: AsyncSession, tg_id: int, *, owner_uid: int | None
     ) -> dict[str, Any] | None:
-        if owner_uid is None:
-            owner_uid = await resolve_uid_cached(session, TelegramId(tg_id))
-        query = (
-            select(ManualBan.reason, ManualBan.until)
-            .where(
-                ManualBan.user_id == owner_uid,
-                (ManualBan.until.is_(None)) | (ManualBan.until > datetime.now(timezone.utc)),
-            )
-            .limit(1)
-        )
-        result = await session.execute(query)
-        row = result.first()
+        active = (ManualBan.until.is_(None)) | (ManualBan.until > datetime.now(timezone.utc))
+        columns = (ManualBan.reason, ManualBan.public_reason, ManualBan.until)
+        row = None
+        if owner_uid is not None:
+            query = select(*columns).where(ManualBan.user_id == owner_uid, active).limit(1)
+            row = (await session.execute(query)).first()
+        if row is None:
+            # бан по tg id без клиента: ставится импортом до прихода человека и держит его и после регистрации
+            query = select(*columns).where(ManualBan.user_id.is_(None), ManualBan.tg_id == tg_id, active).limit(1)
+            row = (await session.execute(query)).first()
         if row:
-            reason, until = row
+            reason, public_reason, until = row
+            shadow = reason == "shadow"
             await cache_set(
                 cache_key("ban_status", tg_id),
                 {
                     "user_id": owner_uid,
                     "has_ban": True,
-                    "reason": reason or "не указана",
+                    "shadow": shadow,
+                    "public_reason": public_reason,
                     "until": until.isoformat() if until else None,
                 },
                 _BAN_CACHE_TTL,
             )
-            return {"reason": reason or "не указана", "until": until}
+            return {"shadow": shadow, "public_reason": public_reason, "until": until}
 
         await cache_set(cache_key("ban_status", tg_id), {"user_id": owner_uid, "has_ban": False}, _BAN_CACHE_TTL)
         return None
 
     async def _cached_ban_info(self, session: AsyncSession, tg_id: int) -> dict[str, Any] | None:
         owner_uid = await resolve_uid_cached(session, TelegramId(tg_id))
-        if owner_uid is None:
-            return None
         cached = await cache_get(cache_key("ban_status", tg_id))
-        if not isinstance(cached, dict) or cached.get("user_id") != owner_uid:
+        # запись старого формата (без shadow) хранила внутреннюю причину — перечитываем из базы
+        if not isinstance(cached, dict) or cached.get("user_id") != owner_uid or (
+            cached.get("has_ban") and "shadow" not in cached
+        ):
             return await self._load_ban_info(session, tg_id, owner_uid=owner_uid)
         if not cached.get("has_ban"):
             return None
@@ -81,7 +84,11 @@ class BanCheckerMiddleware(BaseMiddleware):
         if until_parsed is not None and until_parsed < datetime.now(timezone.utc):
             await cache_delete(cache_key("ban_status", tg_id))
             return None
-        return {"reason": cached.get("reason") or "не указана", "until": until_parsed}
+        return {
+            "shadow": bool(cached.get("shadow")),
+            "public_reason": cached.get("public_reason"),
+            "until": until_parsed,
+        }
 
     async def __call__(
         self,
@@ -117,14 +124,14 @@ class BanCheckerMiddleware(BaseMiddleware):
         if not ban_info:
             return await handler(event, data)
 
-        reason = ban_info["reason"]
+        reason = ban_info["public_reason"] or DEFAULT_PUBLIC_BAN_REASON
         until = ban_info["until"]
 
         admin_ids = set(ADMIN_ID) if isinstance(ADMIN_ID, list | tuple) else {ADMIN_ID}
         if tg_id in admin_ids:
             return await handler(event, data)
 
-        if reason == "shadow":
+        if ban_info["shadow"]:
             logger.info(f"[BanChecker] Теневой бан: пользователь {tg_id} — действия игнорируются.")
             return
 
