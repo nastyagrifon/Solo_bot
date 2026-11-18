@@ -331,8 +331,12 @@ def build_key_edit_kb(
     limits = [button("📊 Трафик", "users_traffic")]
     if is_configurable:
         limits.insert(0, button("⚙️ Конфигурация", "users_edit_config"))
-    if bool(BUTTONS_CONFIG.get("HWID_RESET_BUTTON_ENABLE", HWID_RESET_BUTTON)):
-        limits.append(devices_button(key_details.get("tg_id")) or button("💻 Устройства", "users_hwid_menu"))
+    # Экран модуля устройств — всегда: флаг ниже про сброс устройств самим клиентом, не про админа.
+    module_devices = devices_button(key_details.get("tg_id"))
+    if module_devices:
+        limits.append(module_devices)
+    elif bool(BUTTONS_CONFIG.get("HWID_RESET_BUTTON_ENABLE", HWID_RESET_BUTTON)):
+        limits.append(button("💻 Устройства", "users_hwid_menu"))
     for i in range(0, len(limits), 2):
         builder.row(*limits[i : i + 2])
 

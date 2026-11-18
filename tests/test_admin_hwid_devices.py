@@ -381,6 +381,14 @@ class HandOverToModuleTest(unittest.TestCase):
         Env.module_enabled = True
         self.assertEqual(self._devices_button(42), "dev_acard|42")
 
+    def test_module_button_does_not_depend_on_client_reset_flag(self):
+        Env.module_enabled = True
+        self.kb.HWID_RESET_BUTTON = False
+        try:
+            self.assertEqual(self._devices_button(42), "dev_acard|42")
+        finally:
+            self.kb.HWID_RESET_BUTTON = True
+
     def test_module_off_core_screen(self):
         self.assertIn("users_hwid_menu", self._devices_button(42))
 
